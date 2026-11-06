@@ -193,13 +193,10 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 .ctx-chip svg { color: var(--blue); }
 .ctx-chip:first-of-type svg { color: #b42318; }
 .ctx-add { width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 1px dashed #c9c5b9; background: transparent; color: var(--muted); display: flex; align-items: center; justify-content: center; }
-.ai-field { height: 44px; padding: 0 6px 0 14px; display: flex; align-items: center; gap: 10px; background: #faf9f6; border: 1px solid #d6d3c9; border-radius: 12px; }
+.ai-field { min-height: 44px; padding: 5px 6px 5px 6px; display: flex; align-items: flex-end; gap: 8px; background: #faf9f6; border: 1px solid #d6d3c9; border-radius: 12px; }
 .ai-field svg { color: #5b5f6e; flex: none; }
-.ai-field input { flex: 1 1 auto; min-width: 0; border: 0; background: transparent; font-family: inherit; font-size: 14.5px; color: var(--ink); outline: none; }
+.ai-field textarea { flex: 1 1 auto; min-width: 0; resize: none; padding: 7px 0; line-height: 1.4; max-height: 96px; border: 0; background: transparent; font-family: inherit; font-size: 14.5px; color: var(--ink); outline: none; }
 .ai-field:focus-within { border-color: var(--blue); }
-.ai-note { font-size: 12.5px; line-height: 1.4; color: var(--muted); padding: 0 4px; }
-.ai-note.ok { color: #1a7f4b; }
-.ai-note.err { color: #b42318; }
 .ai-send:not(:disabled) { opacity: 1; cursor: pointer; }
 .ai-model { flex: none; height: 32px; max-width: 150px; padding: 0 8px; border: 0; border-radius: 9px; background: transparent; color: var(--ink); font: 600 12.5px/1 inherit; font-family: inherit; cursor: pointer; }
 .ai-model:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
@@ -734,3 +731,32 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
   .ai-ghost, .ai-dot, .ai-in, .ai-skel span, .ai-steps li.now .ai-mark { animation: none; }
   .ai-cursor { transition: none; }
 }
+
+/* ---------- чат с ИИ ---------- */
+.ai-bar.open { gap: 6px; }
+.ai-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 0 4px; }
+.ai-head-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.ai-head-title svg { color: #7c5cff; }
+.ai-head-actions { display: inline-flex; gap: 2px; }
+.ai-ic, .ai-toggle { width: 28px; height: 28px; padding: 0; border: 0; border-radius: 8px; background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; flex: none; }
+.ai-ic:hover:not(:disabled), .ai-toggle:hover { background: #efede6; color: var(--ink); }
+.ai-ic:disabled { opacity: 0.4; cursor: default; }
+.ai-toggle { height: 32px; width: 30px; }
+.ai-log { max-height: min(52vh, 440px); min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 4px 6px; scroll-behavior: smooth; overscroll-behavior: contain; }
+.ai-msg { max-width: 88%; display: flex; flex-direction: column; gap: 8px; padding: 9px 12px; border-radius: 14px; font-size: 13.5px; line-height: 1.45; }
+.ai-msg.user { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 5px; }
+.ai-msg.assistant { align-self: flex-start; background: #f3f1ea; color: var(--ink); border-bottom-left-radius: 5px; }
+.ai-msg.assistant.live { background: #f1edff; }
+.ai-msg.assistant.error { background: #fdecea; color: #8a1f14; }
+.ai-msg.assistant.note { background: transparent; color: var(--muted); padding-left: 4px; font-size: 12.5px; }
+.ai-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-msg .ai-steps { padding: 0; }
+.ai-empty { display: flex; flex-direction: column; gap: 10px; padding: 6px 4px; color: var(--ink-2); font-size: 13px; }
+.ai-empty p { margin: 0; line-height: 1.45; }
+.ai-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ai-chip { max-width: 100%; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border: 1px solid #d9d4c6; border-radius: 999px; background: #fff; color: var(--ink); font: 500 12.5px/1 inherit; font-family: inherit; cursor: pointer; }
+.ai-chip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ai-chip svg { flex: none; color: var(--blue); }
+.ai-chip:hover { border-color: var(--blue-line); background: var(--blue-soft); }
+.ai-msg .ai-chip:focus-visible, .ai-ic:focus-visible, .ai-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.ai-field textarea:focus-visible { outline: none; }

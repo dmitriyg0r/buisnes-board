@@ -17,8 +17,17 @@ export interface GenFlow {
   label?: string;
 }
 export interface GenResult {
-  process: { title: string; nodes: GenNode[]; flows: GenFlow[] };
-  document: { title: string; sections: { title: string; markdown: string; steps: string[] }[] };
+  /** ответ в чат: есть всегда */
+  reply: string;
+  /** только если модель построила процесс */
+  process?: { title: string; nodes: GenNode[]; flows: GenFlow[] };
+  document?: { title: string; sections: { title: string; markdown: string; steps: string[] }[] };
+}
+
+/** Реплика диалога, которую уносим модели, чтобы она понимала уточнения. */
+export interface Turn {
+  role: 'user' | 'assistant';
+  text: string;
 }
 
 /** Ошибка генерации с текстом для пользователя. */
@@ -31,11 +40,11 @@ export type StreamEvent = { type: 'start' } | { type: 'delta'; text: string };
  * Возвращает проверенный сервером результат. Отмена через signal закрывает соединение, и сервер
  * перестаёт читать ответ модели.
  */
-export async function streamGenerate(prompt: string, model: AiModel, context: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<GenResult> {
+export async function streamGenerate(prompt: string, model: AiModel, context: string, history: Turn[], onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<GenResult> {
   const res = await fetch('/api/ai/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt, model, context }),
+    body: JSON.stringify({ prompt, model, context, history }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -81,6 +90,10 @@ export async function streamGenerate(prompt: string, model: AiModel, context: st
 /* ---------- разбор недописанного ответа: черновик на доске ---------- */
 
 export interface Plan {
+  /** реплика, которую модель пишет прямо сейчас (может быть недописана) */
+  reply: string;
+  /** модель перешла к схеме */
+  hasProcess: boolean;
   processTitle: string;
   nodes: GenNode[];
   flows: GenFlow[];
@@ -138,6 +151,20 @@ function stringAfter(text: string, from: number, key: string): string {
   }
 }
 
+/** Значение строкового поля, даже если оно ещё не закрыто кавычкой: реплика печатается на глазах. */
+function partialString(text: string, key: string): string {
+  const m = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(text);
+  if (!m) return '';
+  let raw = m[1];
+  // оборванный на середине escape-код не разбираем
+  raw = raw.replace(/\\(u[0-9a-fA-F]{0,3})?$/, '').replace(/\\$/, '');
+  try {
+    return JSON.parse(`"${raw}"`) as string;
+  } catch {
+    return raw;
+  }
+}
+
 const str = (v: unknown) => (typeof v === 'string' ? v : '');
 const KINDS = ['start', 'task', 'gateway', 'end'];
 
@@ -165,6 +192,8 @@ export function partialPlan(text: string): Plan {
         })
       : [];
   return {
+    reply: partialString(text, 'reply'),
+    hasProcess: text.includes('"process"'),
     processTitle: stringAfter(text, 0, 'title'),
     nodes,
     flows,
@@ -377,35 +406,39 @@ const demote = (md: string) => {
     .join('\n');
 };
 
-/** Добавляет в модель новый процесс, документ и связи «шаг ↔ пункт». */
-export function applyGenerated(m: Model, r: GenResult): Model {
-  const pid = rid('p');
-  const did = rid('d');
-  const built = buildBpmnXml(oneLine(r.process.title), r.process.nodes, r.process.flows);
+export interface Applied {
+  model: Model;
+  procId?: string;
+  docId?: string;
+}
 
+/** Добавляет в модель то, что построила модель: процесс, документ и связи «шаг ↔ пункт». Если процесса нет, модель не меняется. */
+export function applyGenerated(m: Model, r: GenResult): Applied {
+  if (!r.process) return { model: m };
+  const pid = rid('p');
+  const built = buildBpmnXml(oneLine(r.process.title), r.process.nodes, r.process.flows);
+  let next: Model = { ...m, processes: [...m.processes, { id: pid, title: oneLine(r.process.title), xml: built.xml }] };
+  if (!r.document) return { model: next, procId: pid };
+
+  const did = rid('d');
   const dtitle = oneLine(r.document.title);
   const markdown = `# ${dtitle}\n\n` + r.document.sections.map((s) => `## ${oneLine(s.title)}\n\n${demote(s.markdown)}\n`).join('\n');
   const titles = sectionTitles(markdown);
   const sections = reconcileSections([], titles);
 
   // связи ставим, только если пункты разобрались один к одному; иначе документ всё равно добавится
-  const links =
-    sections.length === r.document.sections.length
-      ? r.document.sections.flatMap((s, i) =>
-          s.steps.filter((st) => built.elementId[st]).map((st) => ({ id: rid('l'), nodeId: nodeRef(pid, built.elementId[st]), sectionId: sections[i].id })),
-        )
-      : [];
+  const ok = sections.length === r.document.sections.length;
+  const links = ok
+    ? r.document.sections.flatMap((s, i) =>
+        s.steps.filter((st) => built.elementId[st]).map((st) => ({ id: rid('l'), nodeId: nodeRef(pid, built.elementId[st]), sectionId: sections[i].id })),
+      )
+    : [];
 
   // пункты без шагов (цель, участники, определения) помечаем справочными, чтобы проверка покрытия не считала их замечаниями
-  const info = sections.length === r.document.sections.length ? r.document.sections.flatMap((s, i) => (s.steps.some((st) => built.elementId[st]) ? [] : [sections[i].id])) : [];
+  const info = ok ? r.document.sections.flatMap((s, i) => (s.steps.some((st) => built.elementId[st]) ? [] : [sections[i].id])) : [];
   const meta = { ...m.meta };
   for (const id of info) meta[key.section(id)] = { ...meta[key.section(id)], coverage: INFO_SECTION };
 
-  return {
-    ...m,
-    processes: [...m.processes, { id: pid, title: oneLine(r.process.title), xml: built.xml }],
-    docs: [...m.docs, { id: did, title: dtitle, markdown, sections }],
-    links: [...m.links, ...links],
-    meta,
-  };
+  next = { ...next, docs: [...m.docs, { id: did, title: dtitle, markdown, sections }], links: [...m.links, ...links], meta };
+  return { model: next, procId: pid, docId: did };
 }
