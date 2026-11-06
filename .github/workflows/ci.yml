@@ -19,4 +19,5 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with: { workspaces: backend }
-      - run: cargo check --manifest-path backend/Cargo.toml
+      # test, а не check: check не собирает тесты, и их поломка оставалась незамеченной
+      - run: cargo test --manifest-path backend/Cargo.toml
