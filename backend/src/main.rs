@@ -40,6 +40,8 @@ pub struct AppState {
     /// неудачные попытки входа по почте: (число, время первой)
     pub limiter: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
     pub http: reqwest::Client,
+    /// начатые входы через ChatGPT (device-code): по одному на пользователя, живут в памяти
+    pub codex_flows: Arc<Mutex<HashMap<uuid::Uuid, integrations::DeviceFlow>>>,
 }
 
 pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
@@ -51,8 +53,10 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
         .route("/auth/me", get(auth::me).patch(auth::update_me))
         .route(
             "/integrations/codex",
-            get(integrations::get_codex).put(integrations::put_codex).delete(integrations::delete_codex),
+            get(integrations::get_codex).delete(integrations::delete_codex),
         )
+        .route("/integrations/codex/device", post(integrations::start_device))
+        .route("/integrations/codex/device/poll", post(integrations::poll_device))
         .route("/integrations/codex/check", post(integrations::check_codex))
         .route("/workspaces", get(routes::workspaces::list).post(routes::workspaces::create))
         .route("/workspaces/:id", patch(routes::workspaces::update).delete(routes::workspaces::delete))
@@ -113,6 +117,7 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
             db,
             cfg,
             limiter: Arc::new(Mutex::new(HashMap::new())),
+            codex_flows: Arc::new(Mutex::new(HashMap::new())),
             http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().expect("http client"),
         })
 }
