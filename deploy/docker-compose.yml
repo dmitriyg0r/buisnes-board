@@ -25,10 +25,20 @@ services:
       COOKIE_SECURE: "true"
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
       RUST_LOG: bb_backend=info,tower_http=info
+      # запросы к OpenAI/ChatGPT идут через ретранслятор к xray на хосте (OpenAI блокирует регион сервера)
+      OPENAI_PROXY: http://172.26.0.1:1081
     ports:
       - "127.0.0.1:18090:8080"
     labels:
       - com.centurylinklabs.watchtower.enable=true
+
+  # Мост до xray на хосте: xray слушает только 127.0.0.1, а контейнеры его не видят.
+  # Слушаем только на адресе шлюза сети этого проекта и пересылаем на 127.0.0.1:1081.
+  openai-proxy:
+    image: alpine/socat
+    restart: unless-stopped
+    network_mode: host
+    command: TCP-LISTEN:1081,bind=172.26.0.1,fork,reuseaddr TCP:127.0.0.1:1081
 
   watchtower:
     image: containrrr/watchtower
@@ -36,6 +46,13 @@ services:
     command: --label-enable --interval 60 --cleanup
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.26.0.0/16
+          gateway: 172.26.0.1
 
 volumes:
   pgdata:

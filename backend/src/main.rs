@@ -31,6 +31,8 @@ pub struct Config {
     pub dummy_hash: String,
     /// ключ шифрования секретов пользователей; без него подключение сервисов отключено
     pub secrets_key: Option<[u8; 32]>,
+    /// HTTP-прокси для запросов к OpenAI/ChatGPT (там блокируют часть регионов); остальные запросы идут напрямую
+    pub openai_proxy: Option<String>,
 }
 
 #[derive(Clone)]
@@ -45,6 +47,7 @@ pub struct AppState {
 }
 
 pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
+    let openai_proxy = cfg.openai_proxy.clone();
     let api = Router::new()
         .route("/health", get(health))
         .route("/auth/register", post(auth::register))
@@ -118,8 +121,24 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
             cfg,
             limiter: Arc::new(Mutex::new(HashMap::new())),
             codex_flows: Arc::new(Mutex::new(HashMap::new())),
-            http: reqwest::Client::builder().timeout(std::time::Duration::from_secs(10)).build().expect("http client"),
+            http: http_client(openai_proxy.as_deref()),
         })
+}
+
+/// Только OpenAI и ChatGPT (включая поддомены) идут через прокси.
+fn via_openai_proxy(host: &str) -> bool {
+    ["openai.com", "chatgpt.com"].iter().any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
+/// Клиент для внешних запросов. Через прокси идут только хосты OpenAI и ChatGPT.
+fn http_client(proxy: Option<&str>) -> reqwest::Client {
+    let mut b = reqwest::Client::builder().timeout(std::time::Duration::from_secs(10));
+    if let Some(url) = proxy.and_then(|p| reqwest::Url::parse(p).ok()) {
+        b = b.proxy(reqwest::Proxy::custom(move |u| {
+            via_openai_proxy(u.host_str().unwrap_or("")).then(|| url.clone())
+        }));
+    }
+    b.build().expect("http client")
 }
 
 async fn health(axum::extract::State(s): axum::extract::State<AppState>) -> Json<serde_json::Value> {
@@ -151,6 +170,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Config {
         cookie_secure: flag("COOKIE_SECURE", false),
         allow_registration: flag("ALLOW_REGISTRATION", true),
+        openai_proxy: std::env::var("OPENAI_PROXY").ok().filter(|v| !v.trim().is_empty()),
         secrets_key: match std::env::var("SECRETS_KEY").ok().filter(|v| !v.trim().is_empty()) {
             Some(v) => Some(integrations::parse_secrets_key(&v)?),
             None => {
@@ -170,4 +190,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })
         .await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::via_openai_proxy;
+
+    #[test]
+    fn proxy_only_for_openai_hosts() {
+        assert!(via_openai_proxy("auth.openai.com"));
+        assert!(via_openai_proxy("chatgpt.com"));
+        assert!(via_openai_proxy("api.openai.com"));
+        assert!(!via_openai_proxy("evilopenai.com"));
+        assert!(!via_openai_proxy("openai.com.evil.ru"));
+        assert!(!via_openai_proxy("example.com"));
+    }
 }
