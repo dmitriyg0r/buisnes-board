@@ -72,7 +72,7 @@ mod tests {
             .connect_lazy("postgres://localhost/unused").unwrap();
         let cfg = crate::Config {
             cookie_secure: false, allow_registration: false,
-            dummy_hash: String::new(), secrets_key: None,
+            dummy_hash: String::new(), secrets_key: None, openai_proxy: None,
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
