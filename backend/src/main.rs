@@ -1,4 +1,5 @@
 mod auth;
+mod ai;
 mod error;
 mod integrations;
 mod routes;
@@ -43,6 +44,8 @@ pub struct AppState {
     pub limiter: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
     pub http: reqwest::Client,
     /// начатые входы через ChatGPT (device-code): по одному на пользователя, живут в памяти
+    /// пользователи, у которых сейчас идёт генерация (по одной на человека)
+    pub ai_busy: Arc<Mutex<std::collections::HashSet<uuid::Uuid>>>,
     pub codex_flows: Arc<Mutex<HashMap<uuid::Uuid, integrations::DeviceFlow>>>,
 }
 
@@ -61,6 +64,7 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
         .route("/integrations/codex/device", post(integrations::start_device))
         .route("/integrations/codex/device/poll", post(integrations::poll_device))
         .route("/integrations/codex/check", post(integrations::check_codex))
+        .route("/ai/generate", post(ai::generate))
         .route("/workspaces", get(routes::workspaces::list).post(routes::workspaces::create))
         .route("/workspaces/:id", patch(routes::workspaces::update).delete(routes::workspaces::delete))
         .route("/workspaces/:id/folders", get(routes::workspaces::list_folders))
@@ -120,6 +124,7 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
             db,
             cfg,
             limiter: Arc::new(Mutex::new(HashMap::new())),
+            ai_busy: Arc::new(Mutex::new(Default::default())),
             codex_flows: Arc::new(Mutex::new(HashMap::new())),
             http: http_client(openai_proxy.as_deref()),
         })
