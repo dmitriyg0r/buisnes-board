@@ -453,6 +453,7 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .codex-head b { font-size: 15px; font-weight: 600; }
 .codex-head small { font-size: 12.5px; color: var(--muted); }
 .codex-form { display: flex; flex-direction: column; gap: 12px; }
+.codex-code { font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em; padding: 8px 12px; border: 1px solid currentColor; border-radius: 8px; display: inline-block; user-select: all; }
 .codex-ok { padding: 10px 12px; border-radius: 10px; background: #e6f2e8; border: 1px solid #b8d9bf; color: #245a31; font-size: 13px; line-height: 18px; }
 
 /* ---------- BPMN: карточка и редактор ---------- */
