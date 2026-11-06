@@ -337,6 +337,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const { sources, docs, processes, gateways } = api.model;
   const pnodes = projectNodes(processes);
 
+  /** документы раскладываются сеткой в три столбца справа от моделей: их может быть много */
+  const docCell = (i: number): Pos => ({ x: 232 + MODEL_SIZE.w + 48 + (i % 3) * (DOC_SIZE.w + 24), y: 120 + Math.floor(i / 3) * (DOC_SIZE.h + 48) });
   /** положение по умолчанию: источники столбцом слева, модели в центре, документы справа */
   const defaultPos = (id: string): Pos => {
     const [kind, ...rest] = id.split(':');
@@ -347,7 +349,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     }
     if (kind === 'doc') {
       const i = Math.max(0, docs.findIndex((d) => d.id === key));
-      return { x: 232 + MODEL_SIZE.w + 48, y: 120 + i * (DOC_SIZE.h + 48) };
+      return docCell(i);
     }
     if (kind === 'gw') {
       const i = Math.max(0, gateways.findIndex((g) => g.id === key));
@@ -836,7 +838,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   /** где появятся новые карточки: как и положение по умолчанию, по порядку в своём столбце */
   const procPos = { x: 232, y: 60 + processes.length * (MODEL_SIZE.h + 48) };
-  const docPos = { x: 232 + MODEL_SIZE.w + 48, y: 120 + docs.length * (DOC_SIZE.h + 48) };
+  const docPos = docCell(docs.length);
   /** если будущие карточки за краем экрана, сдвигаем доску к ним */
   const revealDraft = () => {
     const r = ghostRect(procPos, docPos);

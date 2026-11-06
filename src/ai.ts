@@ -5,7 +5,7 @@ import { reconcileSections, sectionTitles } from './markdown';
 import { INFO_SECTION, key } from './schema';
 import type { AiModel } from './settings';
 
-/** Ответ сервера: проверенный процесс и документ. */
+/** Ответ сервера: проверенные процессы, документы и правки. */
 export interface GenNode {
   id: string;
   type: 'start' | 'task' | 'gateway' | 'end';
@@ -16,12 +16,38 @@ export interface GenFlow {
   to: string;
   label?: string;
 }
+export interface GenProcess {
+  /** ключ внутри ответа: на него ссылаются документы */
+  key: string;
+  title: string;
+  nodes: GenNode[];
+  flows: GenFlow[];
+}
+export interface GenSection {
+  title: string;
+  markdown: string;
+  steps: string[];
+}
+export interface GenDoc {
+  title: string;
+  /** ключ процесса из этого же ответа, к которому привязаны шаги пунктов */
+  process?: string;
+  /** свободный текст документа без пунктов */
+  markdown?: string;
+  sections: GenSection[];
+}
+/** Правка существующего объекта доски: переименование и дописывание в конец документа. */
+export interface GenUpdate {
+  id: string;
+  title?: string;
+  append?: string;
+}
 export interface GenResult {
   /** ответ в чат: есть всегда */
   reply: string;
-  /** только если модель построила процесс */
-  process?: { title: string; nodes: GenNode[]; flows: GenFlow[] };
-  document?: { title: string; sections: { title: string; markdown: string; steps: string[] }[] };
+  processes?: GenProcess[];
+  documents?: GenDoc[];
+  updates?: GenUpdate[];
 }
 
 /** Реплика диалога, которую уносим модели, чтобы она понимала уточнения. */
@@ -94,12 +120,18 @@ export interface Plan {
   reply: string;
   /** модель перешла к схеме */
   hasProcess: boolean;
+  /** модель перешла к документам */
+  hasDocs: boolean;
   processTitle: string;
   nodes: GenNode[];
   flows: GenFlow[];
+  /** названия полностью написанных документов */
+  docTitles: string[];
+  /** название первого документа (может быть недописано) */
   docTitle: string;
-  sections: { title: string; markdown: string; steps: string[] }[];
-  /** модель уже перешла к документу */
+  /** пункты первого документа, которые уже написаны */
+  sections: GenSection[];
+  /** модель уже перешла к документам (то же, что hasDocs) */
   inDoc: boolean;
 }
 
@@ -170,36 +202,46 @@ const KINDS = ['start', 'task', 'gateway', 'end'];
 
 /** Что модель успела написать к этому моменту. Безопасно для недописанного JSON. */
 export function partialPlan(text: string): Plan {
-  const docAt = text.indexOf('"document"');
-  const head = docAt >= 0 ? text.slice(0, docAt) : text;
+  const procAt = text.indexOf('"processes"');
+  const docsAt = text.indexOf('"documents"');
+  const head = docsAt >= 0 ? text.slice(0, docsAt) : text;
   const seen = new Set<string>();
-  const nodes = completeObjects(head, 'nodes').flatMap((o) => {
-    const n = o as Record<string, unknown>;
-    const id = str(n.id);
-    if (!id || seen.has(id) || !KINDS.includes(str(n.type))) return [];
-    seen.add(id);
-    return [{ id, type: str(n.type) as GenNode['type'], name: str(n.name) }];
-  });
-  const flows = completeObjects(head, 'flows').flatMap((o) => {
-    const f = o as Record<string, unknown>;
-    return seen.has(str(f.from)) && seen.has(str(f.to)) && f.from !== f.to ? [{ from: str(f.from), to: str(f.to), label: str(f.label) || undefined }] : [];
-  });
+  const nodes =
+    procAt < 0
+      ? []
+      : completeObjects(head, 'nodes', procAt).flatMap((o) => {
+          const n = o as Record<string, unknown>;
+          const id = str(n.id);
+          if (!id || seen.has(id) || !KINDS.includes(str(n.type))) return [];
+          seen.add(id);
+          return [{ id, type: str(n.type) as GenNode['type'], name: str(n.name) }];
+        });
+  const flows =
+    procAt < 0
+      ? []
+      : completeObjects(head, 'flows', procAt).flatMap((o) => {
+          const f = o as Record<string, unknown>;
+          return seen.has(str(f.from)) && seen.has(str(f.to)) && f.from !== f.to ? [{ from: str(f.from), to: str(f.to), label: str(f.label) || undefined }] : [];
+        });
+  const docObjs = docsAt >= 0 ? completeObjects(text, 'documents', docsAt) : [];
   const sections =
-    docAt >= 0
-      ? completeObjects(text, 'sections', docAt).flatMap((o) => {
+    docsAt >= 0
+      ? completeObjects(text, 'sections', docsAt).flatMap((o) => {
           const x = o as Record<string, unknown>;
           return str(x.title) ? [{ title: str(x.title), markdown: str(x.markdown), steps: Array.isArray(x.steps) ? x.steps.filter((t): t is string => typeof t === 'string') : [] }] : [];
         })
       : [];
   return {
     reply: partialString(text, 'reply'),
-    hasProcess: text.includes('"process"'),
-    processTitle: stringAfter(text, 0, 'title'),
+    hasProcess: procAt >= 0,
+    hasDocs: docsAt >= 0,
+    processTitle: procAt >= 0 ? stringAfter(text, procAt, 'title') : '',
     nodes,
     flows,
-    docTitle: docAt >= 0 ? stringAfter(text, docAt, 'title') : '',
+    docTitles: docObjs.map((o) => str((o as Record<string, unknown>).title)).filter(Boolean),
+    docTitle: docsAt >= 0 ? stringAfter(text, docsAt, 'title') : '',
     sections,
-    inDoc: docAt >= 0,
+    inDoc: docsAt >= 0,
   };
 }
 
@@ -216,11 +258,11 @@ export function buildContext(m: Model): string {
     const name = (id: string) => nodes.find((n) => n.id === id)?.name || id;
     const steps = nodes.filter((n) => n.name).map((n) => `${n.kind === 'gateway' ? 'развилка' : 'шаг'}: ${n.name}`);
     const trans = flows.map((f) => `${name(f.from)} → ${name(f.to)}${f.name ? ` (${f.name})` : ''}`);
-    parts.push(`Процесс «${p.title}»\n${steps.slice(0, 60).join('\n')}${trans.length ? `\nПереходы:\n${trans.slice(0, 100).join('\n')}` : ''}`);
+    parts.push(`Процесс «${p.title}» [id: ${p.id}]\n${steps.slice(0, 60).join('\n')}${trans.length ? `\nПереходы:\n${trans.slice(0, 100).join('\n')}` : ''}`);
   }
   for (const d of m.docs) {
     const text = d.markdown.length > DOC_CHARS ? d.markdown.slice(0, DOC_CHARS) + '\n…' : d.markdown;
-    parts.push(`Документ «${d.title}»\n${text}`);
+    parts.push(`Документ «${d.title}» [id: ${d.id}]\n${text}`);
   }
   if (m.sources.length) parts.push('Источники (только названия):\n' + m.sources.map((s) => `${s.name}.${s.ext.toLowerCase()}, ${s.pages} стр.`).join('\n'));
   return parts.join('\n\n').slice(0, CONTEXT_CHARS);
@@ -406,39 +448,93 @@ const demote = (md: string) => {
     .join('\n');
 };
 
-export interface Applied {
-  model: Model;
-  procId?: string;
-  docId?: string;
+export interface Created {
+  id: string;
+  title: string;
+  kind: 'proc' | 'doc';
 }
 
-/** Добавляет в модель то, что построила модель: процесс, документ и связи «шаг ↔ пункт». Если процесса нет, модель не меняется. */
+export interface Applied {
+  model: Model;
+  procs: Created[];
+  docs: Created[];
+  /** переименованные или дополненные существующие объекты */
+  updated: Created[];
+  /** правки, id которых на доске не нашлись */
+  missing: number;
+}
+
+/** Первая строка «# Название» в тексте документа заменяется новым названием. */
+const retitle = (md: string, title: string) => (md.startsWith('# ') ? title && `# ${title}` + md.slice(md.indexOf('\n') < 0 ? md.length : md.indexOf('\n')) : md);
+
+/**
+ * Применяет к модели доски то, что вернул ИИ: процессы, документы со связями «шаг ↔ пункт»,
+ * переименования и дописывание в документы. Всё одним изменением, поэтому Ctrl+Z откатывает его целиком.
+ */
 export function applyGenerated(m: Model, r: GenResult): Applied {
-  if (!r.process) return { model: m };
-  const pid = rid('p');
-  const built = buildBpmnXml(oneLine(r.process.title), r.process.nodes, r.process.flows);
-  let next: Model = { ...m, processes: [...m.processes, { id: pid, title: oneLine(r.process.title), xml: built.xml }] };
-  if (!r.document) return { model: next, procId: pid };
+  let model = m;
+  const procs: Created[] = [];
+  const docs: Created[] = [];
+  const updated: Created[] = [];
+  let missing = 0;
+  const built = new Map<string, { pid: string; elementId: Record<string, string> }>();
 
-  const did = rid('d');
-  const dtitle = oneLine(r.document.title);
-  const markdown = `# ${dtitle}\n\n` + r.document.sections.map((s) => `## ${oneLine(s.title)}\n\n${demote(s.markdown)}\n`).join('\n');
-  const titles = sectionTitles(markdown);
-  const sections = reconcileSections([], titles);
+  for (const p of r.processes ?? []) {
+    const pid = rid('p');
+    const title = oneLine(p.title);
+    const b = buildBpmnXml(title, p.nodes, p.flows);
+    built.set(p.key, { pid, elementId: b.elementId });
+    model = { ...model, processes: [...model.processes, { id: pid, title, xml: b.xml }] };
+    procs.push({ id: pid, title, kind: 'proc' });
+  }
 
-  // связи ставим, только если пункты разобрались один к одному; иначе документ всё равно добавится
-  const ok = sections.length === r.document.sections.length;
-  const links = ok
-    ? r.document.sections.flatMap((s, i) =>
-        s.steps.filter((st) => built.elementId[st]).map((st) => ({ id: rid('l'), nodeId: nodeRef(pid, built.elementId[st]), sectionId: sections[i].id })),
-      )
-    : [];
+  for (const d of r.documents ?? []) {
+    const secs = d.sections ?? [];
+    const did = rid('d');
+    const title = oneLine(d.title);
+    const bound = d.process ? built.get(d.process) : undefined;
+    // пункты, свободный текст или пустой документ только с названием
+    const body = secs.length
+      ? secs.map((s) => `## ${oneLine(s.title)}\n\n${demote(s.markdown)}\n`).join('\n')
+      : d.markdown
+        ? `${demote(d.markdown)}\n`
+        : '';
+    const markdown = `# ${title}\n\n${body}`;
+    const sections = reconcileSections([], sectionTitles(markdown));
 
-  // пункты без шагов (цель, участники, определения) помечаем справочными, чтобы проверка покрытия не считала их замечаниями
-  const info = ok ? r.document.sections.flatMap((s, i) => (s.steps.some((st) => built.elementId[st]) ? [] : [sections[i].id])) : [];
-  const meta = { ...m.meta };
-  for (const id of info) meta[key.section(id)] = { ...meta[key.section(id)], coverage: INFO_SECTION };
+    // связи ставим, только если пункты разобрались один к одному; иначе документ всё равно добавится
+    const ok = bound !== undefined && sections.length === secs.length;
+    const links = ok
+      ? secs.flatMap((s, i) => (s.steps ?? []).filter((st) => bound!.elementId[st]).map((st) => ({ id: rid('l'), nodeId: nodeRef(bound!.pid, bound!.elementId[st]), sectionId: sections[i].id })))
+      : [];
+    // пункты без шагов (цель, участники, определения) и все пункты документов без процесса справочные: проверка покрытия не считает их замечаниями
+    const meta = { ...model.meta };
+    sections.forEach((sec, i) => {
+      const linked = ok && (secs[i]?.steps ?? []).some((st) => bound!.elementId[st]);
+      if (!linked) meta[key.section(sec.id)] = { ...meta[key.section(sec.id)], coverage: INFO_SECTION };
+    });
+    model = { ...model, docs: [...model.docs, { id: did, title, markdown, sections }], links: [...model.links, ...links], meta };
+    docs.push({ id: did, title, kind: 'doc' });
+  }
 
-  next = { ...next, docs: [...m.docs, { id: did, title: dtitle, markdown, sections }], links: [...m.links, ...links], meta };
-  return { model: next, procId: pid, docId: did };
+  for (const u of r.updates ?? []) {
+    const doc = model.docs.find((x) => x.id === u.id);
+    const proc = model.processes.find((x) => x.id === u.id);
+    if (doc) {
+      const title = u.title ? oneLine(u.title) : doc.title;
+      let markdown = u.title ? retitle(doc.markdown, title) : doc.markdown;
+      if (u.append) markdown = `${markdown.replace(/\s+$/, '')}\n\n${u.append.trim()}\n`;
+      const sections = reconcileSections(doc.sections, sectionTitles(markdown));
+      // добавленные пункты текстовые, шагов у них нет: не считаем их замечаниями
+      const meta = { ...model.meta };
+      for (const sec of sections) if (!doc.sections.some((o) => o.id === sec.id)) meta[key.section(sec.id)] = { ...meta[key.section(sec.id)], coverage: INFO_SECTION };
+      model = { ...model, docs: model.docs.map((x) => (x.id === doc.id ? { ...x, title, markdown, sections } : x)), meta };
+      updated.push({ id: doc.id, title, kind: 'doc' });
+    } else if (proc && u.title) {
+      const title = oneLine(u.title);
+      model = { ...model, processes: model.processes.map((x) => (x.id === proc.id ? { ...x, title } : x)) };
+      updated.push({ id: proc.id, title, kind: 'proc' });
+    } else missing++;
+  }
+  return { model, procs, docs, updated, missing };
 }

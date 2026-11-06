@@ -760,3 +760,8 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ai-chip:hover { border-color: var(--blue-line); background: var(--blue-soft); }
 .ai-msg .ai-chip:focus-visible, .ai-ic:focus-visible, .ai-toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
 .ai-field textarea:focus-visible { outline: none; }
+
+.ai-doclist { margin: 0; padding: 10px 14px; list-style: none; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; overflow: hidden; }
+.ai-doclist li { padding: 5px 9px; border-radius: 7px; background: #f6f5f1; border: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ai-doclist li.more { background: transparent; border-color: transparent; color: var(--muted); }
+.ai-more { align-self: center; font-size: 12px; color: var(--muted); }
