@@ -26,14 +26,14 @@ const subscribe = (f: () => void) => {
   };
 };
 /** Идёт ли построение процесса. Меняется редко, поэтому Canvas не перерисовывается на каждый токен. */
-export const useDraftBuilding = () => useSyncExternalStore(subscribe, () => !!state && state.plan.hasProcess);
+export const useDraftBuilding = () => useSyncExternalStore(subscribe, () => !!state && (state.plan.hasProcess || state.plan.hasDocs));
 export const useDraft = () => useSyncExternalStore(subscribe, () => state);
 
-const EMPTY: Plan = { reply: '', hasProcess: false, processTitle: '', nodes: [], flows: [], docTitle: '', sections: [], inDoc: false };
+const EMPTY: Plan = { reply: '', hasProcess: false, hasDocs: false, processTitle: '', nodes: [], flows: [], docTitles: [], docTitle: '', sections: [], inDoc: false };
 
 /**
  * Начинает черновик. push принимает кусочки текста модели, end убирает черновик с доски.
- * onProcess вызывается один раз, когда модель начала строить процесс: до этого она может просто отвечать в чат.
+ * onProcess вызывается один раз, когда модель начала строить процесс или документы: до этого она может просто отвечать в чат.
  */
 export function beginDraft(label: string, onProcess?: () => void) {
   let text = '';
@@ -42,7 +42,7 @@ export function beginDraft(label: string, onProcess?: () => void) {
   const flush = () => {
     timer = null;
     const plan = partialPlan(text);
-    if (plan.hasProcess && !announced) {
+    if ((plan.hasProcess || plan.hasDocs) && !announced) {
       announced = true;
       onProcess?.();
     }
@@ -182,25 +182,37 @@ type Pt = { x: number; y: number };
 export function AiDraftLayer({ procPos, docPos }: { procPos: Pt; docPos: Pt }) {
   const d = useDraft();
   // пока модель только отвечает в чат, на доске ничего не рисуем
-  if (!d || !d.plan.hasProcess) return null;
+  if (!d || !(d.plan.hasProcess || d.plan.hasDocs)) return null;
   const { plan } = d;
+  // несколько документов показываем одним списком: настоящие карточки лягут сеткой
+  const docCount = Math.max(plan.docTitles.length, plan.docTitle ? 1 : 0);
+  const many = docCount > 1;
   return (
     <>
-      <div className="ai-ghost" style={{ left: procPos.x, top: procPos.y, width: MODEL_SIZE.w, height: MODEL_SIZE.h }} aria-hidden>
-        <div className="ai-ghost-head">
-          <span className="ai-dot" />
-          <b>{plan.processTitle || 'Новый процесс'}</b>
-          <em>строится…</em>
+      {plan.hasProcess && (
+        <div className="ai-ghost" style={{ left: procPos.x, top: procPos.y, width: MODEL_SIZE.w, height: MODEL_SIZE.h }} aria-hidden>
+          <div className="ai-ghost-head">
+            <span className="ai-dot" />
+            <b>{plan.processTitle || 'Новый процесс'}</b>
+            <em>строится…</em>
+          </div>
+          <GhostDiagram plan={plan} label={d.label} />
         </div>
-        <GhostDiagram plan={plan} label={d.label} />
-      </div>
+      )}
       <div className="ai-ghost ai-ghost-doc" style={{ left: docPos.x, top: docPos.y, width: DOC_SIZE.w, height: DOC_SIZE.h }} aria-hidden>
         <div className="ai-ghost-head">
           <span className="ai-dot" />
-          <b>{plan.docTitle || 'Регламент'}</b>
-          <em>{plan.inDoc ? 'пишется…' : 'ждёт схему'}</em>
+          <b>{many ? 'Документы' : plan.docTitle || 'Регламент'}</b>
+          <em>{many ? `${docCount} шт.` : plan.inDoc ? 'пишется…' : 'ждёт схему'}</em>
         </div>
-        {plan.sections.length === 0 ? (
+        {many ? (
+          <ul className="ai-doclist">
+            {plan.docTitles.slice(0, 14).map((t, i) => (
+              <li key={i} className="ai-in">{t}</li>
+            ))}
+            {plan.docTitles.length > 14 && <li className="more">и ещё {plan.docTitles.length - 14}</li>}
+          </ul>
+        ) : plan.sections.length === 0 ? (
           <div className="ai-skel" aria-hidden>
             <span /><span /><span />
           </div>
@@ -229,16 +241,22 @@ export function AiProgress({ onCancel }: { onCancel: () => void }) {
   if (!d) return null;
   const { plan } = d;
   // этапы зависят от того, что делает модель: строит процесс или просто отвечает в чат
+  const docCount = Math.max(plan.docTitles.length, plan.docTitle ? 1 : 0);
   const steps = plan.hasProcess
     ? [
         { name: 'Читаю доску', note: '' },
         { name: 'Строю схему', note: plan.nodes.length ? `${plan.nodes.length} шаг.` : '' },
-        { name: 'Пишу регламент', note: plan.sections.length ? `${plan.sections.length} пункт.` : '' },
+        { name: docCount > 1 ? 'Пишу документы' : 'Пишу регламент', note: docCount > 1 ? `${docCount} шт.` : plan.sections.length ? `${plan.sections.length} пункт.` : '' },
       ]
-    : [
-        { name: 'Читаю доску', note: '' },
-        { name: 'Отвечаю', note: '' },
-      ];
+    : plan.hasDocs
+      ? [
+          { name: 'Читаю доску', note: '' },
+          { name: 'Создаю документы', note: docCount ? `${docCount} шт.` : '' },
+        ]
+      : [
+          { name: 'Читаю доску', note: '' },
+          { name: 'Отвечаю', note: '' },
+        ];
   const stage = !d.hasText ? 0 : plan.hasProcess ? (plan.inDoc ? 2 : 1) : 1;
   return (
     <div className="ai-steps" role="status" aria-live="polite">

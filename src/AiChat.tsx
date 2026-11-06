@@ -1,17 +1,19 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { applyGenerated, buildContext, GenError, streamGenerate, type Applied, type Turn } from './ai';
+import { applyGenerated, buildContext, GenError, streamGenerate, type Applied, type Created, type Turn } from './ai';
 import { HttpError } from './api';
 import { AiProgress, beginDraft, useDraft } from './AiDraft';
 import { Icon } from './Icon';
 import { aiModels, type AiModel } from './settings';
 import type { ModelApi } from './useModel';
 
+/** Что ИИ сделал на доске: созданное и изменённое. */
 interface Refs {
-  procId?: string;
-  procTitle?: string;
-  docId?: string;
-  docTitle?: string;
+  procs: Created[];
+  docs: Created[];
+  updated: Created[];
 }
+
+const CHIPS_SHOWN = 8;
 
 interface Msg {
   id: string;
@@ -35,10 +37,15 @@ const isMsg = (m: unknown): m is Msg => {
   const x = m as Msg;
   return !!x && typeof x.id === 'string' && (x.role === 'user' || x.role === 'assistant') && typeof x.text === 'string';
 };
+const goodRefs = (r: unknown): r is Refs => {
+  const x = r as Refs;
+  return !!x && Array.isArray(x.procs) && Array.isArray(x.docs) && Array.isArray(x.updated);
+};
 function loadMsgs(projectId: string): Msg[] {
   try {
     const v: unknown = JSON.parse(localStorage.getItem(msgKey(projectId)) ?? '[]');
-    return Array.isArray(v) ? v.filter(isMsg) : [];
+    // ссылки в формате прежней версии (один процесс и один документ) отбрасываем, текст сообщения остаётся
+    return Array.isArray(v) ? v.filter(isMsg).map((m) => (m.refs && !goodRefs(m.refs) ? { ...m, refs: undefined } : m)) : [];
   } catch {
     return [];
   }
@@ -61,39 +68,47 @@ const loadOpen = () => {
 
 const mk = (role: Msg['role'], text: string, extra: Partial<Msg> = {}): Msg => ({ id: Math.random().toString(36).slice(2, 10), role, text, at: Date.now(), ...extra });
 
-/** Последние реплики для модели; про построенное на доске добавляем пометку, чтобы она не строила то же самое заново. */
+const names = (list: Created[]) => list.map((c) => `«${c.title}»`).join(', ');
+
+/** Последние реплики для модели; про сделанное на доске добавляем пометку, чтобы она не делала то же самое заново. */
 function toTurns(msgs: Msg[]): Turn[] {
   return msgs
     .filter((m) => !m.tone)
     .slice(-HISTORY_TURNS)
     .map((m) => {
-      const built = m.refs?.procTitle ? ` [на доске построен процесс «${m.refs.procTitle}»${m.refs.docTitle ? ` и документ «${m.refs.docTitle}»` : ''}]` : '';
-      return { role: m.role, text: m.text + built };
+      const r = m.refs;
+      const done = r
+        ? [r.procs.length ? `построены процессы ${names(r.procs)}` : '', r.docs.length ? `созданы документы ${names(r.docs)}` : '', r.updated.length ? `изменены ${names(r.updated)}` : ''].filter(Boolean).join('; ')
+        : '';
+      return { role: m.role, text: done ? `${m.text} [на доске: ${done}]` : m.text };
     });
 }
 
-const errText = (err: unknown) => (err instanceof GenError ? err.message : err instanceof HttpError && err.detail ? err.detail : 'Нет связи с сервером');
+const errText = (err: unknown) => {
+  if (err instanceof GenError) return err.message;
+  if (err instanceof HttpError) return err.detail ?? 'Нет связи с сервером';
+  // сеть оборвалась (fetch бросает TypeError), всё остальное наша ошибка: не выдаём её за проблему связи
+  if (err instanceof TypeError && /fetch|network|load failed/i.test(err.message)) return 'Нет связи с сервером';
+  console.error(err);
+  return 'Не удалось применить ответ ИИ. Попробуйте ещё раз.';
+};
 
 /* ---------- сообщения ---------- */
 
 function Bubble({ m, onFocus }: { m: Msg; onFocus: (cardId: string) => void }) {
+  const items = m.refs ? [...m.refs.procs, ...m.refs.docs, ...m.refs.updated] : [];
   return (
     <div className={`ai-msg ${m.role}${m.tone ? ` ${m.tone}` : ''}`} role={m.tone === 'error' ? 'alert' : undefined}>
       <p className="ai-text">{m.text}</p>
-      {m.refs && (m.refs.procId || m.refs.docId) && (
+      {items.length > 0 && (
         <div className="ai-chips">
-          {m.refs.procId && (
-            <button type="button" className="ai-chip" onClick={() => onFocus(`proc:${m.refs!.procId}`)} title="Показать на доске">
-              <Icon name="model" size={13} />
-              <span>{m.refs.procTitle}</span>
+          {items.slice(0, CHIPS_SHOWN).map((c) => (
+            <button key={`${c.kind}:${c.id}`} type="button" className="ai-chip" onClick={() => onFocus(`${c.kind}:${c.id}`)} title="Показать на доске">
+              <Icon name={c.kind === 'proc' ? 'model' : 'file'} size={13} />
+              <span>{c.title}</span>
             </button>
-          )}
-          {m.refs.docId && (
-            <button type="button" className="ai-chip" onClick={() => onFocus(`doc:${m.refs!.docId}`)} title="Показать на доске">
-              <Icon name="file" size={13} />
-              <span>{m.refs.docTitle}</span>
-            </button>
-          )}
+          ))}
+          {items.length > CHIPS_SHOWN && <span className="ai-more">и ещё {items.length - CHIPS_SHOWN}</span>}
         </div>
       )}
     </div>
@@ -174,14 +189,17 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
     try {
       const r = await streamGenerate(prompt, aiModel, buildContext(api.model), history, (ev) => ev.type === 'delta' && draft.push(ev.text), ctl.signal);
       let applied = null as Applied | null;
-      if (r.process) {
+      if (r.processes?.length || r.documents?.length || r.updates?.length) {
         api.apply((m) => {
           applied = applyGenerated(m, r);
           return applied.model;
         });
       }
-      const refs: Refs | undefined = applied ? { procId: applied.procId, procTitle: r.process?.title, docId: applied.docId, docTitle: r.document?.title } : undefined;
-      setMsgs((m) => [...m, mk('assistant', r.reply.trim() || (refs ? 'Готово.' : 'Ответа нет, попробуйте переформулировать.'), { refs })]);
+      const a = applied as Applied | null;
+      const refs: Refs | undefined = a && (a.procs.length || a.docs.length || a.updated.length) ? { procs: a.procs, docs: a.docs, updated: a.updated } : undefined;
+      let reply = r.reply.trim() || (refs ? 'Готово.' : 'Ответа нет, попробуйте переформулировать.');
+      if (a?.missing) reply += `\n(Не нашёл на доске ${a.missing} объект(ов), которые нужно было изменить.)`;
+      setMsgs((m) => [...m, mk('assistant', reply, { refs })]);
     } catch (err) {
       setMsgs((m) => [...m, ctl.signal.aborted ? mk('assistant', 'Генерация отменена.', { tone: 'note' }) : mk('assistant', errText(err), { tone: 'error' })]);
     }
@@ -210,9 +228,6 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
                   <Icon name="trash" size={15} />
                 </button>
               )}
-              <button type="button" className="ai-ic" title="Свернуть" aria-label="Свернуть чат" onClick={() => setOpen(false)}>
-                <Icon name="chevronDown" size={16} />
-              </button>
             </span>
           </div>
           <div className="ai-log" ref={log} role="log" aria-label="История чата с ИИ" aria-live="polite">

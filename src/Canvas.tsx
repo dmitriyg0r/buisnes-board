@@ -30,6 +30,9 @@ interface Props {
   settings: Settings;
   onModel: (m: AiModel) => void;
   projectId: string;
+  /** выделенные карточки (proc:…, doc:…, src:…, gw:…): состояние живёт выше, его показывает и дерево слева */
+  selCards: string[];
+  onSelCards: React.Dispatch<React.SetStateAction<string[]>>;
   onAddMaterial: () => void;
   /** открыть редактор BPMN-модели */
   onEditProcess: (id: string) => void;
@@ -473,11 +476,13 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways } = api.model;
   const pnodes = projectNodes(processes);
 
+  /** документы раскладываются сеткой в три столбца справа от моделей: их может быть много */
+  const docCell = (i: number): Pos => ({ x: 232 + MODEL_SIZE.w + 48 + (i % 3) * (DOC_SIZE.w + 24), y: 120 + Math.floor(i / 3) * (DOC_SIZE.h + 48) });
   /** положение по умолчанию: источники столбцом слева, модели в центре, документы справа */
   const defaultPos = (id: string): Pos => {
     const [kind, ...rest] = id.split(':');
@@ -488,7 +493,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     }
     if (kind === 'doc') {
       const i = Math.max(0, docs.findIndex((d) => d.id === key));
-      return { x: 232 + MODEL_SIZE.w + 48, y: 120 + i * (DOC_SIZE.h + 48) };
+      return docCell(i);
     }
     if (kind === 'gw') {
       const i = Math.max(0, gateways.findIndex((g) => g.id === key));
@@ -522,7 +527,6 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     gestureCk.current = true;
     api.checkpoint();
   };
-  const [selCards, setSelCards] = useState<string[]>([]);
   /** карточки не должны заходить друг на друга: между ними остаётся зазор CARD_GAP */
   const CARD_GAP = 12;
   const clash = (a: Box, b: Box) =>
@@ -1146,7 +1150,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   /** где появятся новые карточки: как и положение по умолчанию, по порядку в своём столбце */
   const procPos = { x: 232, y: 60 + processes.length * (MODEL_SIZE.h + 48) };
-  const docPos = { x: 232 + MODEL_SIZE.w + 48, y: 120 + docs.length * (DOC_SIZE.h + 48) };
+  const docPos = docCell(docs.length);
   /** если будущие карточки за краем экрана, сдвигаем доску к ним */
   const revealDraft = () => {
     const r = ghostRect(procPos, docPos);
@@ -1185,22 +1189,30 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     setSelCards([`gw:${id}`]);
   };
 
-  /** Модель, документ или источник убираются из проекта; связи с ними удаляются вместе с ними. */
-  const removeCard = (id: string) => {
-    const [kind, ...rest] = id.split(':');
-    const key = rest.join(':');
+  /**
+   * Модели, документы, шлюзы и источники убираются с доски; связи с ними удаляются вместе с ними.
+   * Несколько карточек удаляются одним изменением: Ctrl+Z возвращает их все сразу.
+   */
+  const removeCards = (ids: string[]) => {
+    if (!ids.length) return;
+    const gone = new Set(ids);
     api.apply((m) => {
       let next = m;
-      if (kind === 'proc') next = { ...m, processes: m.processes.filter((p) => p.id !== key), links: m.links.filter((l) => !l.nodeId.startsWith(`${key}:`)) };
-      else if (kind === 'doc') {
-        const secs = new Set(m.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
-        next = { ...m, docs: m.docs.filter((d) => d.id !== key), links: m.links.filter((l) => !secs.has(l.sectionId)) };
-      } else if (kind === 'gw') next = { ...m, gateways: m.gateways.filter((g) => g.id !== key) };
-      else next = { ...m, sources: m.sources.filter((s) => s.id !== key) };
-      return { ...next, cardLinks: next.cardLinks.filter((l) => l.from !== id && l.to !== id) };
+      for (const id of ids) {
+        const [kind, ...rest] = id.split(':');
+        const key = rest.join(':');
+        if (kind === 'proc') next = { ...next, processes: next.processes.filter((p) => p.id !== key), links: next.links.filter((l) => !l.nodeId.startsWith(`${key}:`)) };
+        else if (kind === 'doc') {
+          const secs = new Set(next.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
+          next = { ...next, docs: next.docs.filter((d) => d.id !== key), links: next.links.filter((l) => !secs.has(l.sectionId)) };
+        } else if (kind === 'gw') next = { ...next, gateways: next.gateways.filter((g) => g.id !== key) };
+        else next = { ...next, sources: next.sources.filter((s) => s.id !== key) };
+      }
+      return { ...next, cardLinks: next.cardLinks.filter((l) => !gone.has(l.from) && !gone.has(l.to)) };
     });
     setSelCards([]);
   };
+  const removeCard = (id: string) => removeCards([id]);
 
   const menuItems = (): MenuItem[] => {
     if (!menu) return [];
@@ -1263,9 +1275,16 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       } else if (ev.code === 'KeyL') switchMode('link');
       else if (ev.code === 'KeyG') switchMode('gateway');
       else if (ev.code === 'KeyV') switchMode('select');
-      else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selLink) {
-        ev.preventDefault();
-        removeCardLink(selLink);
+      else if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        // выделенная связь удаляется первой, иначе все выделенные карточки; поля ввода и окна отсеяны выше
+        const cards = selCards.filter((id) => cardIds.includes(id));
+        if (selLink) {
+          ev.preventDefault();
+          removeCardLink(selLink);
+        } else if (cards.length) {
+          ev.preventDefault();
+          removeCards(cards);
+        }
       }
     };
     const onUp = (ev: KeyboardEvent) => {
