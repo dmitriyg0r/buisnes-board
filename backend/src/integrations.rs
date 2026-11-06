@@ -298,20 +298,9 @@ pub async fn poll_device(State(s): State<AppState>, user: AuthUser) -> AppResult
     Ok(Json(json!({ "state": "connected", "status": status(&s, user.id).await? })))
 }
 
-/// Проверка подключения: принудительно обновляем токен. Если OpenAI отозвал доступ, скажем об этом.
-pub async fn check_codex(State(s): State<AppState>, user: AuthUser) -> AppResult<Json<Value>> {
-    let c = cipher(&s)?;
-    let row: Option<(Vec<u8>, String)> = sqlx::query_as("SELECT secret_enc, kind FROM integrations WHERE user_id = $1 AND provider = $2")
-        .bind(user.id)
-        .bind(CODEX)
-        .fetch_optional(&s.db)
-        .await?;
-    let (enc, kind) = row.ok_or(AppError::NotFound)?;
-    if kind != KIND_CHATGPT {
-        return Err(AppError::BadRequest("старое подключение по ключу не проверяется: подключите ChatGPT".into()));
-    }
-    let old: Tokens = serde_json::from_str(&decrypt(&c, user.id, &enc)?).map_err(|_| AppError::Internal)?;
-    let t = token_request(&s, &[("grant_type", "refresh_token"), ("refresh_token", &old.refresh_token), ("client_id", CLIENT_ID)]).await?;
+/// Обновляет токены по refresh_token и сохраняет результат.
+async fn refresh_tokens(s: &AppState, c: &Aes256Gcm, user: Uuid, old: Tokens) -> AppResult<Tokens> {
+    let t = token_request(s, &[("grant_type", "refresh_token"), ("refresh_token", &old.refresh_token), ("client_id", CLIENT_ID)]).await?;
     let account = account_id(&t.access_token).or(old.account_id);
     let tokens = Tokens {
         refresh_token: t.refresh_token.unwrap_or(old.refresh_token),
@@ -319,7 +308,42 @@ pub async fn check_codex(State(s): State<AppState>, user: AuthUser) -> AppResult
         access_token: t.access_token,
         account_id: account,
     };
-    save(&s, &c, user.id, &tokens, None).await?;
+    save(s, c, user, &tokens, None).await?;
+    Ok(tokens)
+}
+
+async fn load_tokens(s: &AppState, c: &Aes256Gcm, user: Uuid) -> AppResult<Tokens> {
+    let row: Option<(Vec<u8>, String)> = sqlx::query_as("SELECT secret_enc, kind FROM integrations WHERE user_id = $1 AND provider = $2")
+        .bind(user)
+        .bind(CODEX)
+        .fetch_optional(&s.db)
+        .await?;
+    let Some((enc, kind)) = row else {
+        return Err(AppError::BadRequest("ChatGPT не подключён: подключите его в настройках, раздел «Интеграции»".into()));
+    };
+    if kind != KIND_CHATGPT {
+        return Err(AppError::BadRequest("старое подключение по ключу не работает: подключите ChatGPT заново в настройках".into()));
+    }
+    serde_json::from_str(&decrypt(c, user, &enc)?).map_err(|_| AppError::Internal)
+}
+
+/// Действующий access_token и идентификатор аккаунта ChatGPT для запросов к модели.
+/// `force` обновляет токен, даже если срок ещё не вышел (после отказа 401).
+pub async fn access_token(s: &AppState, user: Uuid, force: bool) -> AppResult<(String, String)> {
+    let c = cipher(s)?;
+    let mut t = load_tokens(s, &c, user).await?;
+    if force || t.expires_at - now_secs() < 120 {
+        t = refresh_tokens(s, &c, user, t).await?;
+    }
+    let account = t.account_id.clone().or_else(|| account_id(&t.access_token)).ok_or_else(|| AppError::BadRequest("не удалось определить аккаунт ChatGPT: подключите его заново".into()))?;
+    Ok((t.access_token, account))
+}
+
+/// Проверка подключения: принудительно обновляем токен. Если OpenAI отозвал доступ, скажем об этом.
+pub async fn check_codex(State(s): State<AppState>, user: AuthUser) -> AppResult<Json<Value>> {
+    let c = cipher(&s)?;
+    let old = load_tokens(&s, &c, user.id).await?;
+    refresh_tokens(&s, &c, user.id, old).await?;
     Ok(Json(json!({ "ok": true })))
 }
 

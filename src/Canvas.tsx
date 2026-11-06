@@ -3,6 +3,8 @@ import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Doc, type Issue, type Source } from './data';
 import { splitMarkdown } from './markdown';
 import { aiModels, type AiModel, type Settings } from './settings';
+import { applyGenerated, buildContext, generateProcess } from './ai';
+import { HttpError } from './api';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
 
@@ -833,6 +835,24 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   pausedRef.current = paused;
 
   const [aiText, setAiText] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiMsg, setAiMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const askAi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const text = aiText.trim();
+    if (!text || aiBusy) return;
+    setAiBusy(true);
+    setAiMsg(null);
+    try {
+      const r = await generateProcess(text, settings.aiModel, buildContext(api.model));
+      api.apply((m) => applyGenerated(m, r));
+      setAiText('');
+      setAiMsg({ ok: true, text: `Добавлены процесс «${r.process.title}» и документ «${r.document.title}». Ctrl+Z отменит.` });
+    } catch (err) {
+      setAiMsg({ ok: false, text: err instanceof HttpError && err.detail ? err.detail : 'Нет связи с сервером' });
+    }
+    setAiBusy(false);
+  };
 
   const menuAt = useRef<Pos>({ x: 0, y: 0 });
   const openMenu: ContextOpener = (target, ev) => {
@@ -996,23 +1016,33 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       }}
     >
       <div className="ai-bar" onContextMenu={(e) => e.stopPropagation()}>
-        <form className="ai-field" onSubmit={(e) => e.preventDefault()}>
+        <form className="ai-field" onSubmit={(e) => void askAi(e)}>
           <Icon name="sparkle" size={16} />
-          <input value={aiText} onChange={(e) => setAiText(e.target.value)} placeholder="Спросите ИИ про выбранные материалы" aria-label="Запрос к ИИ" />
+          <input
+            value={aiText}
+            onChange={(e) => setAiText(e.target.value)}
+            placeholder="Опишите процесс: ИИ построит схему и регламент"
+            aria-label="Запрос к ИИ"
+            disabled={aiBusy}
+            maxLength={4000}
+          />
           <select
             className="ai-model"
             value={settings.aiModel}
             onChange={(e) => onModel(e.target.value as AiModel)}
             aria-label="Модель ИИ"
+            disabled={aiBusy}
           >
             {aiModels.map((m) => (
               <option key={m.id} value={m.id}>{m.label}</option>
             ))}
           </select>
-          <button type="submit" className="ai-send" disabled title="ИИ ещё не подключён" aria-label="Отправить">
+          <button type="submit" className="ai-send" disabled={aiBusy || !aiText.trim()} title={aiBusy ? 'Строим процесс…' : 'Построить'} aria-label="Отправить">
             <Icon name="arrowUp" size={16} />
           </button>
         </form>
+        {aiBusy && <div className="ai-note" role="status">Строим процесс и пишем регламент, это занимает до минуты…</div>}
+        {aiMsg && <div className={`ai-note ${aiMsg.ok ? 'ok' : 'err'}`} role={aiMsg.ok ? 'status' : 'alert'}>{aiMsg.text}</div>}
       </div>
       {cardIds.length === 0 && (
         <div className="canvas-empty">
