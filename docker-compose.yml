@@ -1,0 +1,13 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: bb
+      POSTGRES_PASSWORD: bb
+      POSTGRES_DB: buisnes_board
+    ports:
+      - "5432:5432"
+    volumes:
+      - bb-pgdata:/var/lib/postgresql/data
+volumes:
+  bb-pgdata:

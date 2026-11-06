@@ -1,0 +1,1267 @@
+import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { isLinkable, projectNodes, splitRef } from './bpmn';
+import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Doc, type Issue, type Source } from './data';
+import { splitMarkdown } from './markdown';
+import type { Settings } from './settings';
+import { Icon } from './Icon';
+import { ProcessCard } from './ProcessCard';
+
+const MarkdownView = lazy(() => import('./MarkdownView'));
+import { ContextMenu, type ContextOpener, type MenuItem, type MenuTarget } from './ContextMenu';
+import { PropertiesDialog, type PropTarget } from './PropertiesDialog';
+import type { ModelApi } from './useModel';
+import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
+import { loadView, saveView, type CardSizes } from './viewState';
+
+interface Pos {
+  x: number;
+  y: number;
+}
+
+interface Props {
+  issues: Issue[];
+  issue: Issue;
+  onSelect: (id: string) => void;
+  api: ModelApi;
+  settings: Settings;
+  projectId: string;
+  onAddMaterial: () => void;
+  /** открыть редактор BPMN-модели */
+  onEditProcess: (id: string) => void;
+  /** открыть редактор документа */
+  onEditDoc: (id: string) => void;
+  /** редактор или другой диалог открыт: горячие клавиши полотна не работают */
+  paused: boolean;
+}
+
+/* ---------- перетаскиваемая карточка ---------- */
+
+function DragCard({
+  id,
+  pos,
+  onMove,
+  onGrab,
+  onContext,
+  selected,
+  linking,
+  onLinkPick,
+  linkSource,
+  className,
+  style,
+  onResizeStart,
+  children,
+}: {
+  id: string;
+  pos: Pos;
+  onMove: (id: string, p: Pos) => void;
+  onGrab: (id: string, shift: boolean) => void;
+  onContext: ContextOpener;
+  selected: boolean;
+  /** режим «Связь»: клик по карточке выбирает её как начало или конец связи */
+  linking: boolean;
+  onLinkPick: (id: string) => void;
+  linkSource: boolean;
+  className: string;
+  style?: React.CSSProperties;
+  /** есть — в углу карточки появляется ручка изменения размера */
+  onResizeStart?: (id: string, e: React.PointerEvent<HTMLElement>) => void;
+  children: React.ReactNode;
+}) {
+  const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
+  const moved = useRef(false);
+  const k = useContext(ZoomCtx);
+
+  return (
+    <div
+      data-card={id}
+      className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}`}
+      style={{ left: pos.x, top: pos.y, ...style }}
+      onContextMenu={(e) => onContext({ type: 'card', id }, e)}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-nodrag]')) return;
+        drag.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y };
+        moved.current = false;
+        onGrab(id, e.shiftKey);
+      }}
+      onPointerMove={(e) => {
+        const d = drag.current;
+        if (!d) return;
+        const dx = (e.clientX - d.sx) / k;
+        const dy = (e.clientY - d.sy) / k;
+        if (!moved.current && Math.abs(dx) + Math.abs(dy) > 3 / k) {
+          moved.current = true;
+          e.currentTarget.setPointerCapture(e.pointerId);
+        }
+        if (moved.current) onMove(id, { x: d.ox + dx, y: d.oy + dy });
+      }}
+      onPointerUp={(e) => {
+        if (moved.current && e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        drag.current = null;
+      }}
+      onClickCapture={(e) => {
+        if (moved.current) {
+          e.stopPropagation();
+          moved.current = false;
+        } else if (linking) {
+          e.stopPropagation();
+          onLinkPick(id);
+        }
+      }}
+    >
+      <span className="pin" />
+      {children}
+      {onResizeStart && <span className="resize-grip" data-nodrag title="Потяните, чтобы изменить размер" onPointerDown={(e) => onResizeStart(id, e)} />}
+    </div>
+  );
+}
+
+/* ---------- карточка файла ---------- */
+
+function FileCard({ source: s, active }: { source: Source; active: boolean }) {
+  const isPdf = s.ext === 'PDF';
+  return (
+    <div className="file-inner">
+      <div className="thumb">
+        <div className={`page${isPdf ? '' : ' wide'}`}>
+          <i className="ln dark w44" />
+          <i className="ln" />
+          <i className={`ln${active ? ' hit' : ''}`} />
+          <i className="ln w52" />
+          <i className="ln gap" />
+          <i className="ln" />
+          <i className="ln w40" />
+        </div>
+      </div>
+      <div className="file-name">{s.name}</div>
+      <div className="file-meta">
+        <span className={`ext ${isPdf ? 'ext-pdf' : 'ext-docx'}`}>{s.ext}</span>
+        <span>{s.pages} стр.</span>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- карточка документа ---------- */
+
+function DocCard({
+  doc,
+  issue,
+  issues,
+  onSelect,
+  onContext,
+  onEdit,
+  meta,
+}: {
+  doc: Doc;
+  issue: Issue;
+  issues: Issue[];
+  onSelect: (id: string) => void;
+  onContext: ContextOpener;
+  onEdit: () => void;
+  meta: Record<string, Record<string, string>>;
+}) {
+  const m = meta[`card:doc:${doc.id}`];
+  const chunks = splitMarkdown(doc.markdown);
+  // n-й раздел текста соответствует n-му пункту из doc.sections
+  let n = -1;
+  return (
+    <>
+      <div className="doc-head">
+        <Icon name="file" size={17} />
+        <b>{doc.title}</b>
+        <span className="tag">Markdown</span>
+        <div className="grow" />
+        <button type="button" className="icon-btn edit-btn" aria-label="Редактировать документ" title="Редактировать документ" onClick={onEdit}>
+          <Icon name="pencil" size={17} />
+        </button>
+      </div>
+      <div className="doc-meta">
+        <span className="chip chip-neutral"><Icon name="pencil" size={12} stroke={2.4} />{m?.status ?? 'Черновик'}</span>
+        {m?.version && <span>версия {m.version}</span>}
+      </div>
+      <div className="doc-well">
+        <div className="doc-page">
+          {!doc.markdown.trim() && <p className="doc-empty">Документ пуст. Нажмите на карандаш, чтобы написать текст.</p>}
+          <Suspense fallback={<p className="doc-empty">Загрузка…</p>}>
+            {chunks.map((ch, i) => {
+              if (ch.kind !== 'section') return <MarkdownView key={i} markdown={ch.text} />;
+              n += 1;
+              const sec = doc.sections[n];
+              const owner = sec && issues.find((x) => x.doc?.sectionId === sec.id);
+              const on = !!sec && sec.id === issue.doc?.sectionId;
+              return (
+                <div
+                  key={i}
+                  data-anchor={sec ? `section:${sec.id}` : undefined}
+                  className={`sec${on ? ' on' : ''}${owner ? ' has-issue' : ''}`}
+                  onClick={() => owner && onSelect(owner.id)}
+                  onContextMenu={(e) => sec && onContext({ type: 'section', id: sec.id }, e)}
+                >
+                  <MarkdownView markdown={ch.text} />
+                  {on && <span className="sec-pin">!</span>}
+                </div>
+              );
+            })}
+          </Suspense>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/* ---------- масштаб и миникарта ---------- */
+
+function ZoomControls({ k, onIn, onOut, onReset, onFit }: { k: number; onIn: () => void; onOut: () => void; onReset: () => void; onFit: () => void }) {
+  return (
+    <div className="zoom-ui" role="group" aria-label="Масштаб">
+      <button type="button" className="tool-btn" aria-label="Уменьшить" title="Уменьшить (−)" onClick={onOut}>
+        <Icon name="minus" size={15} stroke={2.2} />
+      </button>
+      <button type="button" className="zoom-val" title="Масштаб 100% (1)" onClick={onReset}>
+        {Math.round(k * 100)}%
+      </button>
+      <button type="button" className="tool-btn" aria-label="Увеличить" title="Увеличить (+)" onClick={onIn}>
+        <Icon name="plus" size={15} stroke={2.2} />
+      </button>
+      <span className="tools-sep" />
+      <button type="button" className="tool-text" title="Показать всё (0)" onClick={onFit}>Вписать</button>
+    </div>
+  );
+}
+
+function Minimap({
+  pos,
+  sizes,
+  cam,
+  size,
+  onJump,
+}: {
+  pos: Record<string, Pos>;
+  sizes: Record<string, { w: number; h: number }>;
+  cam: { x: number; y: number; k: number };
+  size: { w: number; h: number };
+  onJump: (x: number, y: number) => void;
+}) {
+  const W = 132;
+  const H = 84;
+  const view = { x: -cam.x / cam.k, y: -cam.y / cam.k, w: size.w / cam.k, h: size.h / cam.k };
+  const ids = Object.keys(pos);
+  const minx = Math.min(view.x, ...ids.map((i) => pos[i].x)) - 40;
+  const miny = Math.min(view.y, ...ids.map((i) => pos[i].y)) - 40;
+  const maxx = Math.max(view.x + view.w, ...ids.map((i) => pos[i].x + sizes[i].w)) + 40;
+  const maxy = Math.max(view.y + view.h, ...ids.map((i) => pos[i].y + sizes[i].h)) + 40;
+  const s = Math.min(W / (maxx - minx), H / (maxy - miny));
+  const ox = (W - (maxx - minx) * s) / 2;
+  const oy = (H - (maxy - miny) * s) / 2;
+  const box = (x: number, y: number, w: number, h: number): React.CSSProperties => ({
+    left: ox + (x - minx) * s,
+    top: oy + (y - miny) * s,
+    width: w * s,
+    height: h * s,
+  });
+  const jump = (e: React.PointerEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onJump(minx + (e.clientX - r.left - ox) / s, miny + (e.clientY - r.top - oy) / s);
+  };
+
+  return (
+    <div
+      className="minimap"
+      aria-label="Миникарта"
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        jump(e);
+      }}
+      onPointerMove={(e) => e.buttons === 1 && jump(e)}
+    >
+      {ids.map((i) => (
+        <i key={i} className={`mm-card${i.startsWith('proc:') ? ' model' : ''}`} style={box(pos[i].x, pos[i].y, sizes[i].w, sizes[i].h)} />
+      ))}
+      <i className="mm-view" style={box(view.x, view.y, view.w, view.h)} />
+    </div>
+  );
+}
+
+/* ---------- связи между карточками ---------- */
+
+type Box = Pos & { w: number; h: number };
+
+const cardIdsOf = (m: { processes: { id: string }[]; docs: { id: string }[]; sources: { id: string }[]; gateways: { id: string }[] }) => [
+  ...m.processes.map((p) => `proc:${p.id}`),
+  ...m.docs.map((d) => `doc:${d.id}`),
+  ...m.sources.map((s) => `src:${s.id}`),
+  ...m.gateways.map((g) => `gw:${g.id}`),
+];
+
+/** Ортогональная стрелка от края одной карточки к краю другой. */
+function routeCards(a: Box, b: Box): Pos[] {
+  const ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
+  const bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
+  const dx = bc.x - ac.x;
+  const dy = bc.y - ac.y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    const sx = dx >= 0 ? a.x + a.w : a.x;
+    const tx = dx >= 0 ? b.x : b.x + b.w;
+    if (Math.abs(dy) < 2) return [{ x: sx, y: ac.y }, { x: tx, y: ac.y }];
+    const mx = (sx + tx) / 2;
+    return [{ x: sx, y: ac.y }, { x: mx, y: ac.y }, { x: mx, y: bc.y }, { x: tx, y: bc.y }];
+  }
+  const sy = dy >= 0 ? a.y + a.h : a.y;
+  const ty = dy >= 0 ? b.y : b.y + b.h;
+  if (Math.abs(dx) < 2) return [{ x: ac.x, y: sy }, { x: ac.x, y: ty }];
+  const my = (sy + ty) / 2;
+  return [{ x: ac.x, y: sy }, { x: ac.x, y: my }, { x: bc.x, y: my }, { x: bc.x, y: ty }];
+}
+
+/** Место для подписи: середина самого длинного отрезка. */
+function labelSpot(pts: Pos[]): Pos {
+  let best = 0;
+  let at: Pos = pts[0];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const len = Math.abs(pts[i + 1].x - pts[i].x) + Math.abs(pts[i + 1].y - pts[i].y);
+    if (len > best) {
+      best = len;
+      at = { x: (pts[i].x + pts[i + 1].x) / 2, y: (pts[i].y + pts[i + 1].y) / 2 };
+    }
+  }
+  return at;
+}
+
+/* ---------- полотно ---------- */
+
+export function Canvas({ issues, issue, onSelect, api, settings, projectId, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
+  const saved = useRef(loadView(projectId)).current;
+  const { sources, docs, processes, gateways } = api.model;
+  const pnodes = projectNodes(processes);
+
+  /** положение по умолчанию: источники столбцом слева, модели в центре, документы справа */
+  const defaultPos = (id: string): Pos => {
+    const [kind, ...rest] = id.split(':');
+    const key = rest.join(':');
+    if (kind === 'proc') {
+      const i = Math.max(0, processes.findIndex((p) => p.id === key));
+      return { x: 232, y: 60 + i * (MODEL_SIZE.h + 48) };
+    }
+    if (kind === 'doc') {
+      const i = Math.max(0, docs.findIndex((d) => d.id === key));
+      return { x: 232 + MODEL_SIZE.w + 48, y: 120 + i * (DOC_SIZE.h + 48) };
+    }
+    if (kind === 'gw') {
+      const i = Math.max(0, gateways.findIndex((g) => g.id === key));
+      return { x: 232 + (i % 4) * (GATEWAY_SIZE.w + 24), y: 20 };
+    }
+    const i = Math.max(0, sources.findIndex((s) => s.id === key));
+    return { x: 16 + (i % 2) * 12, y: 120 + i * (SOURCE_SIZE.h + 74) };
+  };
+  const [pos, setPos] = useState<Record<string, Pos>>(() => saved?.pos ?? {});
+  const posOf = (id: string): Pos => pos[id] ?? defaultPos(id);
+  const cardIds = cardIdsOf(api.model);
+  const [sizes, setSizes] = useState<CardSizes>(() => saved?.sizes ?? {});
+  const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
+  const MIN_CARD = (id: string) => (id.startsWith('proc:') ? { w: 320, h: 240 } : id.startsWith('gw:') ? { w: 96, h: 96 } : { w: 240, h: 200 });
+  const MAX_CARD = 2400;
+  // положение и размеры карточек входят в общую историю «назад / вперёд» вместе с моделью
+  const layoutRef = useRef({ pos, sizes });
+  layoutRef.current = { pos, sizes };
+  api.bindExtra(
+    () => layoutRef.current,
+    (v) => {
+      const l = v as { pos: Record<string, Pos>; sizes: CardSizes };
+      setPos(l.pos);
+      setSizes(l.sizes);
+    },
+  );
+  /** точка отмены ставится один раз на жест: перетаскивание или растягивание */
+  const gestureCk = useRef(false);
+  const checkpointOnce = () => {
+    if (gestureCk.current) return;
+    gestureCk.current = true;
+    api.checkpoint();
+  };
+  const [selCards, setSelCards] = useState<string[]>([]);
+  /** карточки не должны заходить друг на друга: между ними остаётся зазор CARD_GAP */
+  const CARD_GAP = 12;
+  const clash = (a: Box, b: Box) =>
+    a.x < b.x + b.w + CARD_GAP && a.x + a.w + CARD_GAP > b.x && a.y < b.y + b.h + CARD_GAP && a.y + a.h + CARD_GAP > b.y;
+  const boxOf = (s: Record<string, Pos>, i: string): Box => ({ ...(s[i] ?? defaultPos(i)), ...cardSize(i) });
+
+  type Guide = { v: boolean; at: number; from: number; to: number };
+  const SNAP_PX = 6;
+  const guideRef = useRef<Guide[]>([]);
+  const [, bump] = useState(0);
+  useEffect(() => {
+    // карточку отпустили — направляющие исчезают
+    const up = () => {
+      gestureCk.current = false;
+      if (guideRef.current.length) {
+        guideRef.current = [];
+        bump((n) => n + 1);
+      }
+    };
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    return () => {
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+    };
+  }, []);
+
+  const move = (id: string, p: Pos) => {
+    checkpointOnce();
+    setPos((s) => {
+      const cur = (i: string) => s[i] ?? defaultPos(i);
+      const dx = p.x - cur(id).x;
+      const dy = p.y - cur(id).y;
+      const ids = selCards.includes(id) ? selCards : [id];
+      const others = cardIds.filter((i) => !ids.includes(i));
+      const free = (ox: number, oy: number) =>
+        !ids.some((i) => {
+          const b = boxOf(s, i);
+          return others.some((o) => clash({ ...b, x: b.x + ox, y: b.y + oy }, boxOf(s, o)));
+        });
+      let mx = dx;
+      let my = dy;
+      // уже пересекаются (старое состояние) — не мешаем двигать; иначе ведём карточку до касания соседа
+      if (free(0, 0) && !free(dx, dy)) {
+        const reach = (axisX: boolean, d: number, baseX: number, baseY: number) => {
+          let lo = 0;
+          let hi = 1;
+          for (let n = 0; n < 10; n++) {
+            const mid = (lo + hi) / 2;
+            if (free(axisX ? baseX + d * mid : baseX, axisX ? baseY : baseY + d * mid)) lo = mid;
+            else hi = mid;
+          }
+          return d * lo;
+        };
+        mx = reach(true, dx, 0, 0);
+        my = reach(false, dy, mx, 0);
+      }
+      // прилипание к краям и центрам соседних карточек, как направляющие в Figma
+      const lines: Guide[] = [];
+      if (free(0, 0) || free(mx, my)) {
+        const gb = ids.map((i) => boxOf(s, i));
+        const g0 = { x: Math.min(...gb.map((b) => b.x)) + mx, y: Math.min(...gb.map((b) => b.y)) + my };
+        const g1 = { x: Math.max(...gb.map((b) => b.x + b.w)) + mx, y: Math.max(...gb.map((b) => b.y + b.h)) + my };
+        const ob = others.map((o) => boxOf(s, o));
+        const T = SNAP_PX / camRef.current.k;
+        const snapAxis = (axisX: boolean) => {
+          const mine = axisX ? [g0.x, (g0.x + g1.x) / 2, g1.x] : [g0.y, (g0.y + g1.y) / 2, g1.y];
+          let best: number | null = null;
+          for (const o of ob) {
+            const theirs = axisX ? [o.x, o.x + o.w / 2, o.x + o.w] : [o.y, o.y + o.h / 2, o.y + o.h];
+            for (const a of mine) for (const b of theirs) if (Math.abs(b - a) <= T && (best === null || Math.abs(b - a) < Math.abs(best))) best = b - a;
+          }
+          if (best !== null && best !== 0) {
+            const nx = axisX ? mx + best : mx;
+            const ny = axisX ? my : my + best;
+            if (free(nx, ny) || !free(mx, my)) {
+              if (axisX) {
+                mx = nx;
+                g0.x += best;
+                g1.x += best;
+              } else {
+                my = ny;
+                g0.y += best;
+                g1.y += best;
+              }
+            }
+          }
+        };
+        snapAxis(true);
+        snapAxis(false);
+        const eq = (a: number, b: number) => Math.abs(a - b) < 0.5;
+        const mineX = [g0.x, (g0.x + g1.x) / 2, g1.x];
+        const mineY = [g0.y, (g0.y + g1.y) / 2, g1.y];
+        for (const a of mineX) {
+          const hit = ob.filter((o) => [o.x, o.x + o.w / 2, o.x + o.w].some((b) => eq(a, b)));
+          if (hit.length) lines.push({ v: true, at: a, from: Math.min(g0.y, ...hit.map((o) => o.y)), to: Math.max(g1.y, ...hit.map((o) => o.y + o.h)) });
+        }
+        for (const a of mineY) {
+          const hit = ob.filter((o) => [o.y, o.y + o.h / 2, o.y + o.h].some((b) => eq(a, b)));
+          if (hit.length) lines.push({ v: false, at: a, from: Math.min(g0.x, ...hit.map((o) => o.x)), to: Math.max(g1.x, ...hit.map((o) => o.x + o.w)) });
+        }
+      }
+      guideRef.current = lines;
+      const next = { ...s };
+      for (const i of ids) next[i] = { x: cur(i).x + mx, y: cur(i).y + my };
+      return next;
+    });
+  };
+
+  /** раздвигает уже пересекающиеся карточки (старые сохранения, новые карточки) */
+  const settle = (s: Record<string, Pos>, last: string[] = []) => {
+    const out = { ...s };
+    const placed: Box[] = [];
+    let changed = false;
+    // новые карточки ставятся последними: двигаются они, а не уже лежащие на полотне
+    for (const id of [...cardIds.filter((i) => !last.includes(i)), ...cardIds.filter((i) => last.includes(i))]) {
+      const start = boxOf(out, id);
+      let b = start;
+      for (let n = 0; n < 60; n++) {
+        const hit = placed.find((o) => clash(b, o));
+        if (!hit) break;
+        const opts = [
+          { ...b, x: hit.x + hit.w + CARD_GAP },
+          { ...b, x: hit.x - b.w - CARD_GAP },
+          { ...b, y: hit.y + hit.h + CARD_GAP },
+          { ...b, y: hit.y - b.h - CARD_GAP },
+        ];
+        b = opts.reduce((best, o) => (Math.abs(o.x - start.x) + Math.abs(o.y - start.y) < Math.abs(best.x - start.x) + Math.abs(best.y - start.y) ? o : best));
+      }
+      if (b.x !== start.x || b.y !== start.y) {
+        out[id] = { x: b.x, y: b.y };
+        changed = true;
+      }
+      placed.push(b);
+    }
+    return changed ? out : s;
+  };
+  /** ручка в углу: тянем размер, упираясь в соседей и в минимальный размер */
+  const startResize = (id: string, e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const grip = e.currentTarget;
+    grip.setPointerCapture(e.pointerId);
+    const start = { ...cardSize(id) };
+    const at = { x: e.clientX, y: e.clientY };
+    const min = MIN_CARD(id);
+    const p = posOf(id);
+    const others = cardIds.filter((i) => i !== id).map((i) => boxOf(pos, i));
+    const free = (w: number, h: number) => !others.some((o) => clash({ ...p, w, h }, o));
+    const k = camRef.current.k;
+    const onMoveEv = (ev: PointerEvent) => {
+      checkpointOnce();
+      let w = Math.min(MAX_CARD, Math.max(min.w, start.w + (ev.clientX - at.x) / k));
+      let h = Math.min(MAX_CARD, Math.max(min.h, start.h + (ev.clientY - at.y) / k));
+      // прилипание правого и нижнего края к краям и центрам соседей
+      const T = SNAP_PX / k;
+      const snap = (edge: number, lines: number[]) => lines.reduce<number | null>((best, l) => (Math.abs(l - edge) <= T && (best === null || Math.abs(l - edge) < Math.abs(best - edge)) ? l : best), null);
+      const sx = snap(p.x + w, others.flatMap((o) => [o.x, o.x + o.w / 2, o.x + o.w]));
+      const sy = snap(p.y + h, others.flatMap((o) => [o.y, o.y + o.h / 2, o.y + o.h]));
+      if (sx !== null && sx - p.x >= min.w) w = sx - p.x;
+      if (sy !== null && sy - p.y >= min.h) h = sy - p.y;
+      if (free(start.w, start.h)) {
+        const reach = (from: number, to: number, ok: (v: number) => boolean) => {
+          if (ok(to)) return to;
+          let lo = from;
+          let hi = to;
+          for (let n = 0; n < 12; n++) {
+            const mid = (lo + hi) / 2;
+            if (ok(mid)) lo = mid;
+            else hi = mid;
+          }
+          return lo;
+        };
+        w = reach(start.w, w, (v) => free(v, start.h));
+        h = reach(start.h, h, (v) => free(w, v));
+      }
+      // направляющие там, где край совпал с краем или центром соседа
+      const lines: Guide[] = [];
+      const eq = (a: number, b: number) => Math.abs(a - b) < 0.5;
+      const right = p.x + w;
+      const bottom = p.y + h;
+      const hx = others.filter((o) => [o.x, o.x + o.w / 2, o.x + o.w].some((l) => eq(l, right)));
+      if (hx.length) lines.push({ v: true, at: right, from: Math.min(p.y, ...hx.map((o) => o.y)), to: Math.max(bottom, ...hx.map((o) => o.y + o.h)) });
+      const hy = others.filter((o) => [o.y, o.y + o.h / 2, o.y + o.h].some((l) => eq(l, bottom)));
+      if (hy.length) lines.push({ v: false, at: bottom, from: Math.min(p.x, ...hy.map((o) => o.x)), to: Math.max(right, ...hy.map((o) => o.x + o.w)) });
+      guideRef.current = lines;
+      setSizes((s) => ({ ...s, [id]: { w: Math.round(w), h: Math.round(h) } }));
+    };
+    const onUpEv = () => {
+      grip.removeEventListener('pointermove', onMoveEv);
+      grip.removeEventListener('pointerup', onUpEv);
+      grip.removeEventListener('pointercancel', onUpEv);
+    };
+    grip.addEventListener('pointermove', onMoveEv);
+    grip.addEventListener('pointerup', onUpEv);
+    grip.addEventListener('pointercancel', onUpEv);
+  };
+
+  const grab = (id: string, shift: boolean) =>
+    setSelCards((c) => (shift ? (c.includes(id) ? c.filter((x) => x !== id) : [...c, id]) : c.includes(id) ? c : [id]));
+
+  const root = useRef<HTMLDivElement>(null);
+  const world = useRef<HTMLDivElement>(null);
+  const [cam, setCam] = useState(() => saved?.cam ?? { x: 0, y: 0, k: 1 });
+  const camRef = useRef(cam);
+  camRef.current = cam;
+  const wheelZoomRef = useRef(settings.wheelZoom);
+  wheelZoomRef.current = settings.wheelZoom;
+
+  useEffect(() => {
+    const t = setTimeout(() => saveView(projectId, { cam, pos, sizes }), 250);
+    return () => clearTimeout(t);
+  }, [cam, pos, sizes]);
+  const [size, setSize] = useState({ w: 1000, h: 800 });
+  const [panning, setPanning] = useState(false);
+  const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [space, setSpace] = useState(false);
+  /** счётчик перерисовок: после отрисовки диаграммы нужно заново найти шаги в DOM */
+  const [anchors, setAnchors] = useState(0);
+
+  /* ----- связи между карточками ----- */
+  const [mode, setMode] = useState<'select' | 'link' | 'gateway'>('select');
+  const [linkFrom, setLinkFrom] = useState<string | null>(null);
+  const [selLink, setSelLink] = useState<string | null>(null);
+  const [editLink, setEditLink] = useState<string | null>(null);
+  const cardLinks = api.model.cardLinks.filter((l) => cardIdsOf(api.model).includes(l.from) && cardIdsOf(api.model).includes(l.to));
+
+  const pickForLink = (id: string) => {
+    if (!linkFrom) {
+      setLinkFrom(id);
+      return;
+    }
+    if (linkFrom === id) {
+      setLinkFrom(null);
+      return;
+    }
+    if (!api.model.cardLinks.some((l) => l.from === linkFrom && l.to === id)) {
+      const lid = 'c' + Math.random().toString(36).slice(2, 7);
+      api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from: linkFrom, to: id, label: '' }] }));
+      setSelLink(lid);
+    }
+    setLinkFrom(null);
+  };
+  const removeCardLink = (id: string) => {
+    api.apply((m) => ({ ...m, cardLinks: m.cardLinks.filter((l) => l.id !== id) }));
+    setSelLink(null);
+    setEditLink(null);
+  };
+  const setLinkLabel = (id: string, label: string) =>
+    api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((l) => (l.id === id ? { ...l, label } : l)) }));
+  const linkProps = (id: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id });
+  const switchMode = (m: 'select' | 'link' | 'gateway') => {
+    setMode(m);
+    setLinkFrom(null);
+  };
+
+  const clampK = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
+  const zoomAt = (factor: number, px: number, py: number) => {
+    const c = camRef.current;
+    const k = clampK(c.k * factor);
+    const next = { k, x: px - ((px - c.x) * k) / c.k, y: py - ((py - c.y) * k) / c.k };
+    // камера обновляется сразу: несколько тиков колёсика за один кадр не должны терять шаги
+    camRef.current = next;
+    setCam(next);
+  };
+  const zoomCenter = (factor: number) => zoomAt(factor, size.w / 2, size.h / 2);
+  const setZoom = (k: number) => zoomAt(k / camRef.current.k, size.w / 2, size.h / 2);
+
+  const fit = () => {
+    const el = root.current;
+    if (!el) return;
+    const w = el.clientWidth;
+    const h = el.clientHeight;
+    const ids = cardIds;
+    if (!ids.length) return;
+    const minx = Math.min(...ids.map((i) => posOf(i).x));
+    const miny = Math.min(...ids.map((i) => posOf(i).y));
+    const maxx = Math.max(...ids.map((i) => posOf(i).x + cardSize(i).w));
+    const maxy = Math.max(...ids.map((i) => posOf(i).y + cardSize(i).h));
+    const top = 40;
+    const bottom = 40;
+    const k = clampK(Math.min((w - 80) / (maxx - minx), (h - top - bottom) / (maxy - miny), 1));
+    setCam({
+      k,
+      x: (w - (maxx - minx) * k) / 2 - minx * k,
+      y: top + (h - top - bottom - (maxy - miny) * k) / 2 - miny * k,
+    });
+  };
+
+  const cardsKey = cardIds.join('|');
+  /** куда класть новую карточку: точка правого клика по полотну; без неё — центр видимой области */
+  const spawnAt = useRef<Pos | null>(null);
+  const prevIds = useRef(cardIds);
+  useEffect(() => {
+    const added = cardIds.filter((i) => !prevIds.current.includes(i) && !pos[i]);
+    prevIds.current = cardIds;
+    // пачка карточек разом — это загрузка проекта, а не действие пользователя: их места не трогаем
+    const fresh = added.length === 1 ? added : [];
+    const el = root.current;
+    const c = camRef.current;
+    const at = spawnAt.current ?? (el ? { x: (el.clientWidth / 2 - c.x) / c.k, y: (el.clientHeight / 2 - c.y) / c.k } : { x: 0, y: 0 });
+    const left = el ? -c.x / c.k + 16 : 0;
+    const top = el ? -c.y / c.k + 16 : 0;
+    spawnAt.current = null;
+    setPos((s) => {
+      let n = s;
+      if (fresh.length) {
+        n = { ...s };
+        for (const i of fresh) {
+          const { w, h } = cardSize(i);
+          n[i] = { x: Math.max(left, at.x - w / 2), y: Math.max(top, at.y - h / 2) };
+        }
+      }
+      return settle(n, fresh);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardsKey]);
+  // диалог закрыт без добавления — точка правого клика больше не нужна
+  useEffect(() => {
+    if (!paused) spawnAt.current = null;
+  }, [paused]);
+
+  useLayoutEffect(() => {
+    const el = root.current;
+    if (!el) return;
+    const measure = () => setSize({ w: el.clientWidth, h: el.clientHeight });
+    measure();
+    if (!saved) fit();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const el = root.current!;
+    const onWheel = (e: WheelEvent) => {
+      if ((e.target as HTMLElement).closest('.zoom-ui,.minimap')) return;
+      e.preventDefault();
+      const lines = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+      const zoomKey = e.ctrlKey || e.metaKey;
+      // Ctrl или ⌘ + колёсико и щипок на тачпаде (он приходит с Ctrl) меняют масштаб вокруг курсора;
+      // обычное колёсико делает то же только по настройке «Колёсико мыши масштабирует доску»
+      if (zoomKey || (wheelZoomRef.current && !e.shiftKey)) {
+        const r = el.getBoundingClientRect();
+        zoomAt(Math.exp(-e.deltaY * lines * (zoomKey ? 0.01 : 0.0015)), e.clientX - r.left, e.clientY - r.top);
+        return;
+      }
+      // иначе доска прокручивается: колёсико и два пальца на тачпаде, Shift — по горизонтали
+      const c = camRef.current;
+      setCam({
+        ...c,
+        x: c.x - (e.shiftKey ? e.deltaY || e.deltaX : e.deltaX) * lines,
+        y: c.y - (e.shiftKey ? 0 : e.deltaY) * lines,
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  type Gesture =
+    | { type: 'pan'; sx: number; sy: number; x: number; y: number; moved: boolean }
+    | { type: 'marquee'; wx: number; wy: number; sx: number; sy: number; moved: boolean; base: string[] };
+  const gest = useRef<Gesture | null>(null);
+
+  const worldPt = (e: React.PointerEvent) => {
+    const r = root.current!.getBoundingClientRect();
+    const c = camRef.current;
+    return { x: (e.clientX - r.left - c.x) / c.k, y: (e.clientY - r.top - c.y) / c.k };
+  };
+  // пока тянем рамку или полотно, браузер не должен выделять текст на странице
+  const lockSelection = () => document.body.classList.add('gesturing');
+  const startPan = (e: React.PointerEvent<HTMLElement>) => {
+    e.preventDefault();
+    lockSelection();
+    gest.current = { type: 'pan', sx: e.clientX, sy: e.clientY, x: camRef.current.x, y: camRef.current.y, moved: false };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const startMarquee = (e: React.PointerEvent<HTMLElement>) => {
+    e.preventDefault();
+    lockSelection();
+    window.getSelection()?.removeAllRanges();
+    const w = worldPt(e);
+    gest.current = { type: 'marquee', wx: w.x, wy: w.y, sx: e.clientX, sy: e.clientY, moved: false, base: e.shiftKey ? selCards : [] };
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  // пробел или средняя кнопка двигают полотно, даже если курсор над карточкой
+  const rootDownCapture = (e: React.PointerEvent<HTMLElement>) => {
+    const t = e.target as HTMLElement;
+    if (t !== root.current && !t.closest('.world')) return;
+    if (e.button === 1 || (e.button === 0 && space)) {
+      e.stopPropagation();
+      startPan(e);
+    }
+  };
+  const rootDown = (e: React.PointerEvent<HTMLElement>) => {
+    const t = e.target as HTMLElement;
+    if (e.button !== 0 || (t !== root.current && t !== world.current)) return;
+    if (mode === 'gateway') {
+      // инструмент «Шлюз»: клик по пустому месту ставит шлюз, затем возвращается выбор
+      addGateway(worldPt(e));
+      switchMode('select');
+      return;
+    }
+    startMarquee(e);
+  };
+
+  const rootMove = (e: React.PointerEvent<HTMLElement>) => {
+    const g = gest.current;
+    if (!g) return;
+    const dx = e.clientX - g.sx;
+    const dy = e.clientY - g.sy;
+    if (!g.moved && Math.abs(dx) + Math.abs(dy) > 3) {
+      g.moved = true;
+      if (g.type === 'pan') setPanning(true);
+    }
+    if (!g.moved) return;
+    if (g.type === 'pan') {
+      setCam({ ...camRef.current, x: g.x + dx, y: g.y + dy });
+      return;
+    }
+    const p = worldPt(e);
+    const r = { x: Math.min(g.wx, p.x), y: Math.min(g.wy, p.y), w: Math.abs(p.x - g.wx), h: Math.abs(p.y - g.wy) };
+    setMarquee(r);
+    const hit = (x: number, y: number, w: number, h: number) => x < r.x + r.w && x + w > r.x && y < r.y + r.h && y + h > r.y;
+    const hits = cardIds.filter((i) => hit(posOf(i).x, posOf(i).y, cardSize(i).w, cardSize(i).h));
+    setSelCards([...new Set([...g.base, ...hits])]);
+  };
+  const rootUp = (e: React.PointerEvent<HTMLElement>) => {
+    const g = gest.current;
+    if (!g) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    if (g.type === 'marquee' && !g.moved && !e.shiftKey) {
+      setSelCards([]);
+      setSelLink(null);
+    }
+    gest.current = null;
+    document.body.classList.remove('gesturing');
+    setPanning(false);
+    setMarquee(null);
+  };
+
+  const [menu, setMenu] = useState<{ x: number; y: number; target: MenuTarget } | null>(null);
+  const [props, setProps] = useState<PropTarget | null>(null);
+  const propsOpen = useRef(false);
+  propsOpen.current = props !== null;
+  const pausedRef = useRef(paused);
+  pausedRef.current = paused;
+
+  const [aiText, setAiText] = useState('');
+
+  const menuAt = useRef<Pos>({ x: 0, y: 0 });
+  const openMenu: ContextOpener = (target, ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const r = root.current!.getBoundingClientRect();
+    setMenu({ x: Math.min(ev.clientX - r.left, r.width - 210), y: Math.min(ev.clientY - r.top, r.height - 150), target });
+    if (target.type === 'card') setSelCards([target.id]);
+  };
+
+  /** Новый шлюз: в точке клика или в центре видимой области (положение выбирает эффект новых карточек) */
+  const addGateway = (at?: Pos) => {
+    spawnAt.current = at ?? null;
+    const id = 'g' + Math.random().toString(36).slice(2, 8);
+    api.apply((m) => ({ ...m, gateways: [...m.gateways, { id, label: '' }] }));
+    setSelCards([`gw:${id}`]);
+  };
+
+  /** Модель, документ или источник убираются из проекта; связи с ними удаляются вместе с ними. */
+  const removeCard = (id: string) => {
+    const [kind, ...rest] = id.split(':');
+    const key = rest.join(':');
+    api.apply((m) => {
+      let next = m;
+      if (kind === 'proc') next = { ...m, processes: m.processes.filter((p) => p.id !== key), links: m.links.filter((l) => !l.nodeId.startsWith(`${key}:`)) };
+      else if (kind === 'doc') {
+        const secs = new Set(m.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
+        next = { ...m, docs: m.docs.filter((d) => d.id !== key), links: m.links.filter((l) => !secs.has(l.sectionId)) };
+      } else if (kind === 'gw') next = { ...m, gateways: m.gateways.filter((g) => g.id !== key) };
+      else next = { ...m, sources: m.sources.filter((s) => s.id !== key) };
+      return { ...next, cardLinks: next.cardLinks.filter((l) => l.from !== id && l.to !== id) };
+    });
+    setSelCards([]);
+  };
+
+  const menuItems = (): MenuItem[] => {
+    if (!menu) return [];
+    const t = menu.target;
+    if (t.type === 'canvas')
+      return [
+        { label: 'Добавить шлюз', icon: 'plus', onClick: () => addGateway(menuAt.current) },
+        {
+          label: 'Создать модель…',
+          icon: 'plus',
+          onClick: () => {
+            spawnAt.current = menuAt.current;
+            onAddMaterial();
+          },
+        },
+      ];
+    if (t.type === 'card' && t.id.startsWith('gw:')) return [{ label: 'Удалить с полотна', icon: 'trash', danger: true, onClick: () => removeCard(t.id) }];
+    const items: MenuItem[] = [{ label: 'Свойства…', icon: 'sliders', onClick: () => setProps({ type: t.type as PropTarget['type'], id: t.id }) }];
+    if (t.type === 'card' && t.id.startsWith('proc:')) items.push({ label: 'Редактировать модель', icon: 'pencil', onClick: () => onEditProcess(t.id.slice(5)) });
+    if (t.type === 'card' && t.id.startsWith('doc:')) items.push({ label: 'Редактировать документ', icon: 'pencil', onClick: () => onEditDoc(t.id.slice(4)) });
+    if (t.type === 'card') items.push({ sep: true }, { label: 'Удалить с полотна', icon: 'trash', danger: true, onClick: () => removeCard(t.id) });
+    return items;
+  };
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      const el = ev.target as HTMLElement;
+      if (pausedRef.current || propsOpen.current || el.closest('input,textarea,select,.dlg-backdrop,.bpmn-editor')) return;
+      if (ev.code === 'Space' && !el.closest('button')) {
+        ev.preventDefault();
+        setSpace(true);
+        return;
+      }
+      if ((ev.metaKey || ev.ctrlKey) && (ev.code === 'KeyZ' || ev.code === 'KeyY')) {
+        ev.preventDefault();
+        if (ev.code === 'KeyY' || ev.shiftKey) api.redo();
+        else api.undo();
+        return;
+      }
+      if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+      if (ev.code === 'Equal' || ev.code === 'NumpadAdd') return zoomCenter(1.25);
+      if (ev.code === 'Minus' || ev.code === 'NumpadSubtract') return zoomCenter(0.8);
+      if (ev.code === 'Digit0') return fit();
+      if (ev.code === 'Digit1') return setZoom(1);
+      if (ev.key === 'Escape') {
+        setSelCards([]);
+        setSelLink(null);
+        switchMode('select');
+      } else if (ev.code === 'KeyL') switchMode('link');
+      else if (ev.code === 'KeyG') switchMode('gateway');
+      else if (ev.code === 'KeyV') switchMode('select');
+      else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selLink) {
+        ev.preventDefault();
+        removeCardLink(selLink);
+      }
+    };
+    const onUp = (ev: KeyboardEvent) => {
+      if (ev.code === 'Space') setSpace(false);
+    };
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('keyup', onUp);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onUp);
+    };
+  });
+
+  type Layer = { d: string; p1: Pos; p2: Pos; mid: Pos } | null;
+  const [layer, setLayer] = useState<Layer>(null);
+  const lastKey = useRef('');
+
+  useLayoutEffect(() => {
+    const el = world.current;
+    if (!el) return;
+    const wr = el.getBoundingClientRect();
+    const k = camRef.current.k;
+    const q = (v: number) => Math.round(v * 10) / 10;
+    const rectOf = (node: Element) => {
+      const r = node.getBoundingClientRect();
+      return { left: q((r.left - wr.left) / k), right: q((r.right - wr.left) / k), top: q((r.top - wr.top) / k), height: q(r.height / k) };
+    };
+    let next: Layer = null;
+    if (issue.model && issue.doc) {
+      const { pid, elId } = splitRef(issue.model.nodeId);
+      const nodeEl = el.querySelector(`[data-card="proc:${CSS.escape(pid)}"] [data-bpmn-id="${CSS.escape(elId)}"]`);
+      const secEl = el.querySelector(`[data-anchor="section:${CSS.escape(issue.doc.sectionId)}"]`);
+      const mc = nodeEl?.closest('[data-card]') ? rectOf(nodeEl.closest('[data-card]')!) : undefined;
+      const dc = secEl?.closest('[data-card]') ? rectOf(secEl.closest('[data-card]')!) : undefined;
+      const a = nodeEl ? rectOf(nodeEl) : undefined;
+      const b = secEl ? rectOf(secEl) : undefined;
+      if (a && b && mc && dc) {
+        const p1 = { x: a.right, y: q(a.top + a.height / 2) };
+        const p2 = { x: b.left, y: q(b.top + b.height / 2) };
+        const gap = (mc.right + dc.left) / 2;
+        const xm = gap > p1.x && gap < p2.x ? gap : (p1.x + p2.x) / 2;
+        next = { d: `M${p1.x} ${p1.y} H${xm} V${p2.y} H${p2.x}`, p1, p2, mid: { x: p1.x + 10, y: p1.y - 30 } };
+      }
+    }
+    const key = JSON.stringify(next);
+    if (key !== lastKey.current) {
+      lastKey.current = key;
+      setLayer(next);
+    }
+  });
+
+  const number = issues.findIndex((i) => i.id === issue.id) + 1;
+  const issueNodeIds = issues.flatMap((i) => (i.model ? [i.model.nodeId] : []));
+
+  return (
+    <main
+      className={`canvas${panning ? ' panning' : ''}${space ? ' hand' : ''}${mode === 'link' ? ' linking' : ''}${mode === 'gateway' ? ' placing' : ''}`}
+      ref={root}
+      style={{
+        backgroundSize: `${(cam.k < 0.5 ? 44 : 22) * cam.k}px ${(cam.k < 0.5 ? 44 : 22) * cam.k}px`,
+        backgroundPosition: `${cam.x}px ${cam.y}px`,
+        backgroundImage: settings.grid ? undefined : 'none',
+      }}
+      onPointerDownCapture={rootDownCapture}
+      onPointerDown={rootDown}
+      onPointerMove={rootMove}
+      onPointerUp={rootUp}
+      onContextMenu={(e) => {
+        if (e.target !== root.current && e.target !== world.current) return e.preventDefault();
+        const w = worldPt(e as unknown as React.PointerEvent);
+        openMenu({ type: 'canvas', id: '' }, e);
+        menuAt.current = w;
+      }}
+    >
+      <div className="ai-bar" onContextMenu={(e) => e.stopPropagation()}>
+        <form className="ai-field" onSubmit={(e) => e.preventDefault()}>
+          <Icon name="sparkle" size={16} />
+          <input value={aiText} onChange={(e) => setAiText(e.target.value)} placeholder="Спросите ИИ про выбранные материалы" aria-label="Запрос к ИИ" />
+          <button type="submit" className="ai-send" disabled title="ИИ ещё не подключён" aria-label="Отправить">
+            <Icon name="arrowUp" size={16} />
+          </button>
+        </form>
+      </div>
+      {cardIds.length === 0 && (
+        <div className="canvas-empty">
+          <b>Проект пуст</b>
+          <span>Добавьте модель процесса, документ или источник — они появятся на доске.</span>
+          <button type="button" className="btn btn-dark" onClick={onAddMaterial}>Добавить материал</button>
+        </div>
+      )}
+      <ZoomCtx.Provider value={cam.k}>
+        <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
+          {sources.map((s, i) => (
+            <DragCard
+              key={s.id}
+              id={`src:${s.id}`}
+              pos={posOf(`src:${s.id}`)}
+              onMove={move}
+              onGrab={grab}
+              onContext={openMenu}
+              selected={selCards.includes(`src:${s.id}`)} {...linkProps(`src:${s.id}`)}
+              className="file-card"
+              style={{ transform: `rotate(${i % 2 ? 1.2 : -1.4}deg)` }}
+            >
+              <FileCard source={s} active={issue.basis?.sourceId === s.id} />
+            </DragCard>
+          ))}
+
+          {processes.map((p) => {
+            const id = `proc:${p.id}`;
+            const own = (ref: string) => (ref.startsWith(`${p.id}:`) ? ref.slice(p.id.length + 1) : undefined);
+            return (
+              <DragCard
+                key={p.id}
+                id={id}
+                pos={posOf(id)}
+                onMove={move}
+                onGrab={grab}
+                onContext={openMenu}
+                selected={selCards.includes(id)}
+                {...linkProps(id)}
+                className="model-card"
+                style={{ width: cardSize(id).w, height: cardSize(id).h }}
+                onResizeStart={startResize}
+              >
+                <ProcessCard
+                  title={p.title}
+                  xml={p.xml}
+                  activeNodeId={issue.model ? own(issue.model.nodeId) : undefined}
+                  issueNodeIds={issueNodeIds.flatMap((r) => own(r) ?? [])}
+                  hasSteps={pnodes.some((n) => n.pid === p.id && isLinkable(n))}
+                  onNode={(elId) => {
+                    const owner = issues.find((i) => i.model?.nodeId === `${p.id}:${elId}`);
+                    if (owner) onSelect(owner.id);
+                  }}
+                  onNodeContext={(elId, ev) => {
+                    if (pnodes.some((n) => n.id === `${p.id}:${elId}`)) openMenu({ type: 'node', id: `${p.id}:${elId}` }, ev);
+                  }}
+                  onEdit={() => onEditProcess(p.id)}
+                  onRendered={() => setAnchors((n) => n + 1)}
+                />
+              </DragCard>
+            );
+          })}
+
+          {docs.map((d) => {
+            const id = `doc:${d.id}`;
+            return (
+              <DragCard
+                key={d.id}
+                id={id}
+                pos={posOf(id)}
+                onMove={move}
+                onGrab={grab}
+                onContext={openMenu}
+                selected={selCards.includes(id)}
+                {...linkProps(id)}
+                className="doc-card"
+                style={{ width: cardSize(id).w, height: cardSize(id).h }}
+                onResizeStart={startResize}
+              >
+                <DocCard doc={d} issue={issue} issues={issues} onSelect={onSelect} onContext={openMenu} onEdit={() => onEditDoc(d.id)} meta={api.model.meta} />
+              </DragCard>
+            );
+          })}
+
+          {gateways.map((g) => {
+            const id = `gw:${g.id}`;
+            return (
+              <DragCard
+                key={g.id}
+                id={id}
+                pos={posOf(id)}
+                onMove={move}
+                onGrab={grab}
+                onContext={openMenu}
+                selected={selCards.includes(id)}
+                {...linkProps(id)}
+                className="gateway-card"
+                style={{ width: cardSize(id).w, height: cardSize(id).h }}
+                onResizeStart={startResize}
+              >
+                <svg className="gw-shape" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+                  <polygon points="50,2 98,50 50,98 2,50" vectorEffect="non-scaling-stroke" />
+                </svg>
+                <input
+                  className="gw-label"
+                  data-nodrag
+                  value={g.label}
+                  placeholder="Шлюз"
+                  aria-label="Название шлюза"
+                  onFocus={() => api.checkpoint()}
+                  onChange={(e) => api.applyLive((m) => ({ ...m, gateways: m.gateways.map((x) => (x.id === g.id ? { ...x, label: e.target.value } : x)) }))}
+                />
+              </DragCard>
+            );
+          })}
+
+          {guideRef.current.map((g, i) => (
+            <i
+              key={i}
+              className="snap-guide"
+              style={g.v ? { left: g.at, top: g.from, width: 1 / cam.k, height: g.to - g.from } : { left: g.from, top: g.at, height: 1 / cam.k, width: g.to - g.from }}
+            />
+          ))}
+
+          {cardLinks.length > 0 && (
+            <svg className="card-link-layer">
+              <defs>
+                {[['cl-grey', '#7b8090'], ['cl-blue', '#2563eb']].map(([id, color]) => (
+                  <marker key={id} id={id} viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" orient="auto">
+                    <path d="M0 0 L8 4 L0 8z" fill={color} />
+                  </marker>
+                ))}
+              </defs>
+              {cardLinks.map((l) => {
+                const pts = routeCards({ ...posOf(l.from), ...cardSize(l.from) }, { ...posOf(l.to), ...cardSize(l.to) });
+                const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ');
+                const on = selLink === l.id;
+                return (
+                  <g key={l.id}>
+                    <path d={d} className={`clink${on ? ' on' : ''}`} markerEnd={`url(#${on ? 'cl-blue' : 'cl-grey'})`} />
+                    <path
+                      d={d}
+                      className="clink-hit"
+                      onPointerDown={(e) => {
+                        if (e.button !== 0) return;
+                        e.stopPropagation();
+                        setSelLink(l.id);
+                        setSelCards([]);
+                      }}
+                      onDoubleClick={() => setEditLink(l.id)}
+                    />
+                  </g>
+                );
+              })}
+            </svg>
+          )}
+          {cardLinks.map((l) => {
+            const pts = routeCards({ ...posOf(l.from), ...cardSize(l.from) }, { ...posOf(l.to), ...cardSize(l.to) });
+            const m = labelSpot(pts);
+            if (editLink === l.id)
+              return (
+                <input
+                  key={l.id}
+                  autoFocus
+                  className="clink-input"
+                  style={{ left: m.x - 70, top: m.y - 16 }}
+                  defaultValue={l.label}
+                  aria-label="Подпись связи"
+                  placeholder="Подпись"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onFocus={(e) => e.currentTarget.select()}
+                  onBlur={(e) => {
+                    setLinkLabel(l.id, e.currentTarget.value.trim());
+                    setEditLink(null);
+                  }}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    if (e.key === 'Enter') e.currentTarget.blur();
+                    if (e.key === 'Escape') setEditLink(null);
+                  }}
+                />
+              );
+            return l.label ? (
+              <span key={l.id} className={`clink-label${selLink === l.id ? ' on' : ''}`} style={{ left: m.x, top: m.y }} onDoubleClick={() => setEditLink(l.id)}>
+                {l.label}
+              </span>
+            ) : null;
+          })}
+
+          {layer && (
+            <svg className="link-layer" aria-hidden="true">
+              <path d={layer.d} className="link" />
+              <circle cx={layer.p1.x} cy={layer.p1.y} r="5" className="link-dot" />
+              <circle cx={layer.p2.x} cy={layer.p2.y} r="6" className="link-dot" />
+            </svg>
+          )}
+          {layer && (
+            <div className="link-pill" style={{ left: layer.mid.x, top: layer.mid.y }}>
+              Замечание № {number}
+            </div>
+          )}
+
+          {marquee && (
+            <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h, borderWidth: 1 / cam.k }} />
+          )}
+        </div>
+      </ZoomCtx.Provider>
+
+      {settings.minimap && (
+        <Minimap
+          pos={Object.fromEntries(cardIds.map((i) => [i, posOf(i)]))}
+          sizes={Object.fromEntries(cardIds.map((i) => [i, cardSize(i)]))}
+          cam={cam}
+          size={size}
+          onJump={(x, y) => setCam({ ...cam, x: size.w / 2 - x * cam.k, y: size.h / 2 - y * cam.k })}
+        />
+      )}
+      <ZoomControls k={cam.k} onIn={() => zoomCenter(1.25)} onOut={() => zoomCenter(0.8)} onReset={() => setZoom(1)} onFit={fit} />
+
+      {(
+        <div className="tools" role="toolbar" aria-label="Режим доски">
+          {cardIds.length > 1 && (
+            <>
+          <button type="button" className={`tool-btn${mode === 'select' ? ' on' : ''}`} aria-label="Выбор" aria-pressed={mode === 'select'} title="Выбор (V)" onClick={() => switchMode('select')}>
+            <Icon name="cursor" size={17} stroke={1.9} />
+          </button>
+          <button type="button" className={`tool-btn${mode === 'link' ? ' on' : ''}`} aria-label="Связь между карточками" aria-pressed={mode === 'link'} title="Связь между карточками (L)" onClick={() => switchMode('link')}>
+            <Icon name="connect" size={17} stroke={1.9} />
+          </button>
+            </>
+          )}
+          {cardIds.length > 1 && <span className="tools-sep" />}
+          <button type="button" className={`tool-btn${mode === 'gateway' ? ' on' : ''}`} aria-label="Шлюз" aria-pressed={mode === 'gateway'} title="Шлюз (G): нажмите, затем кликните по полотну" onClick={() => switchMode(mode === 'gateway' ? 'select' : 'gateway')}>
+            <Icon name="gateway" size={17} stroke={1.9} />
+          </button>
+          <button type="button" className="tool-btn" aria-label="Шаг назад" title="Шаг назад (Ctrl+Z)" disabled={!api.canUndo} onClick={api.undo}>
+            <Icon name="undo" size={17} stroke={1.9} />
+          </button>
+          <button type="button" className="tool-btn" aria-label="Шаг вперёд" title="Шаг вперёд (Ctrl+Shift+Z)" disabled={!api.canRedo} onClick={api.redo}>
+            <Icon name="redo" size={17} stroke={1.9} />
+          </button>
+          {mode === 'gateway' && <span className="tools-hint">Кликните по полотну, куда поставить шлюз</span>}
+          {mode === 'link' && (
+            <span className="tools-hint">{linkFrom ? 'Выберите карточку, куда ведёт связь' : 'Выберите карточку, откуда идёт связь'}</span>
+          )}
+          {selLink && mode === 'select' && (
+            <>
+              <span className="tools-sep" />
+              <button type="button" className="tool-text" onClick={() => setEditLink(selLink)}>Подпись</button>
+              <button type="button" className="tool-btn" aria-label="Удалить связь" title="Удалить (Del)" onClick={() => removeCardLink(selLink)}>
+                <Icon name="trash" size={17} stroke={1.9} />
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {menu && <ContextMenu x={menu.x} y={menu.y} items={menuItems()} onClose={() => setMenu(null)} />}
+      {props && <PropertiesDialog target={props} api={api} issues={issues} onClose={() => setProps(null)} onSelectIssue={onSelect} />}
+      <span hidden data-anchors={anchors} />
+    </main>
+  );
+}
