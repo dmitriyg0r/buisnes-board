@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from 'react';
+import { Icon } from './Icon';
 
 type Point = { x: number; y: number };
 export type GridItem = { key: string; label: string; visual: ReactNode; target?: { workspaceId: string; folderId: string | null } };
@@ -6,6 +7,9 @@ interface Props {
   items: GridItem[];
   selected: string | null;
   storageKey: string;
+  toolbar: ReactNode;
+  toolbarEnd: ReactNode;
+  notice?: ReactNode;
   onSelect: (key: string) => void;
   onOpen: (key: string) => void;
   onContextMenu: (key: string, x: number, y: number) => void;
@@ -30,7 +34,7 @@ function loadLayout(key: string): Layout {
 }
 
 /** Положение значков сохраняется отдельно для каждой папки и пользователя в этом браузере. */
-export function WorkspaceGrid({ items, selected, storageKey, onSelect, onOpen, onContextMenu, onMove }: Props) {
+export function WorkspaceGrid({ items, selected, storageKey, toolbar, toolbarEnd, notice, onSelect, onOpen, onContextMenu, onMove }: Props) {
   const [layout, setLayout] = useState<Layout>(() => loadLayout(storageKey));
   const [width, setWidth] = useState(600);
   const canvas = useRef<HTMLUListElement>(null);
@@ -70,7 +74,7 @@ export function WorkspaceGrid({ items, selected, storageKey, onSelect, onOpen, o
     const observer = new ResizeObserver(update);
     observer.observe(element);
     return () => observer.disconnect();
-  }, []);
+  }, [items.length === 0]);
 
   const columns = Math.max(1, Math.floor(width / STEP_X));
   const occupied = items.flatMap((item) => {
@@ -150,15 +154,18 @@ export function WorkspaceGrid({ items, selected, storageKey, onSelect, onOpen, o
   };
 
   return <>
-    <div className="ws-view-controls" aria-label="Расположение значков">
-      <span>Расположение</span>
-      <div className="ws-view-switch">
-        <button type="button" aria-pressed={layout.mode === 'grid'} onClick={() => setLayout((old) => ({ ...old, mode: 'grid' }))}>По сетке</button>
-        <button type="button" aria-pressed={layout.mode === 'free'} onClick={() => setLayout((old) => ({ ...old, mode: 'free' }))}>Свободно</button>
+    <div className="ws-toolbar">
+      {toolbar}
+      <div className="ws-toolbar-end">
+        <div className="ws-view-switch" role="group" aria-label="Расположение значков">
+          <button type="button" title="По сетке" aria-label="По сетке" aria-pressed={layout.mode === 'grid'} onClick={() => setLayout((old) => ({ ...old, mode: 'grid' }))}><Icon name="gridLayout" size={16}/></button>
+          <button type="button" title="Свободно" aria-label="Свободно" aria-pressed={layout.mode === 'free'} onClick={() => setLayout((old) => ({ ...old, mode: 'free' }))}><Icon name="freeLayout" size={16}/></button>
+        </div>
+        {toolbarEnd}
       </div>
-      {layout.mode === 'free' && <span className="ws-view-note">Перетаскивайте значки или перемещайте стрелками</span>}
     </div>
-    <ul ref={canvas} className={`ws-icons ${layout.mode === 'free' ? 'ws-icons-free' : ''}`} aria-label="Элементы папки" style={layout.mode === 'free' ? { height } : undefined}>
+    {notice}
+    {items.length === 0 ? <div className="ws-empty"><b>Здесь пока пусто</b><span>Создайте папку или проект, либо загрузите файл.</span></div> : <ul ref={canvas} className={`ws-icons ${layout.mode === 'free' ? 'ws-icons-free' : ''}`} aria-label="Элементы папки" style={layout.mode === 'free' ? { height } : undefined}>
       {items.map((item, index) => <li key={item.key} style={{ ...(layout.mode === 'free' ? { left: position(item, index).x, top: position(item, index).y } : {}), ...(preview?.key === item.key ? { transform: `translate(${preview.dx}px, ${preview.dy}px)`, zIndex: 10 } : {}) }}>
         <button type="button" className={`ws-icon-item ${selected === item.key ? 'selected' : ''}`} aria-label={item.label} aria-pressed={selected === item.key} title={item.label} style={{ touchAction: 'none' }}
           {...(item.target ? { 'data-workspace-drop': '', 'data-workspace-id': item.target.workspaceId, 'data-folder-id': item.target.folderId ?? '' } : {})}
@@ -179,6 +186,6 @@ export function WorkspaceGrid({ items, selected, storageKey, onSelect, onOpen, o
           <span className="ws-icon-visual">{item.visual}</span><span className="ws-icon-label">{item.label}</span>
         </button>
       </li>)}
-    </ul>
+    </ul>}
   </>;
 }
