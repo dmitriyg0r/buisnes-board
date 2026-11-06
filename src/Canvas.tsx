@@ -28,6 +28,9 @@ interface Props {
   settings: Settings;
   onModel: (m: AiModel) => void;
   projectId: string;
+  /** выделенные карточки (proc:…, doc:…, src:…, gw:…): состояние живёт выше, его показывает и дерево слева */
+  selCards: string[];
+  onSelCards: React.Dispatch<React.SetStateAction<string[]>>;
   onAddMaterial: () => void;
   /** открыть редактор BPMN-модели */
   onEditProcess: (id: string) => void;
@@ -332,7 +335,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways } = api.model;
   const pnodes = projectNodes(processes);
@@ -383,7 +386,6 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     gestureCk.current = true;
     api.checkpoint();
   };
-  const [selCards, setSelCards] = useState<string[]>([]);
   /** карточки не должны заходить друг на друга: между ними остаётся зазор CARD_GAP */
   const CARD_GAP = 12;
   const clash = (a: Box, b: Box) =>

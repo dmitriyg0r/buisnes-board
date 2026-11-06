@@ -134,6 +134,8 @@ function Workspace({
     if (Object.keys(rest).length) patch(rest);
   };
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  /** выделенные на полотне карточки: подсвечиваются и в дереве слева */
+  const [selCards, setSelCards] = useState<string[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
   const [editing, setEditing] = useState<{ type: 'process' | 'doc'; id: string } | null>(null);
@@ -230,11 +232,14 @@ function Workspace({
           sources={api.model.sources}
           docs={api.model.docs}
           processes={api.model.processes}
+          selectedCards={selCards}
           onAddMaterial={() => setAddOpen(true)}
           collapsed={!layout.tree}
           onToggle={() => toggleSide('tree')}
         />
         <Canvas issues={issues} issue={selected} onSelect={setSelectedId} api={api} settings={settings} onModel={(aiModel) => patchSettings({ aiModel })} projectId={project.id}
+          selCards={selCards}
+          onSelCards={setSelCards}
           onAddMaterial={() => setAddOpen(true)}
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
