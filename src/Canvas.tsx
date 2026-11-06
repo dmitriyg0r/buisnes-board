@@ -877,22 +877,30 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     setSelCards([`gw:${id}`]);
   };
 
-  /** Модель, документ или источник убираются из проекта; связи с ними удаляются вместе с ними. */
-  const removeCard = (id: string) => {
-    const [kind, ...rest] = id.split(':');
-    const key = rest.join(':');
+  /**
+   * Модели, документы, шлюзы и источники убираются с доски; связи с ними удаляются вместе с ними.
+   * Несколько карточек удаляются одним изменением: Ctrl+Z возвращает их все сразу.
+   */
+  const removeCards = (ids: string[]) => {
+    if (!ids.length) return;
+    const gone = new Set(ids);
     api.apply((m) => {
       let next = m;
-      if (kind === 'proc') next = { ...m, processes: m.processes.filter((p) => p.id !== key), links: m.links.filter((l) => !l.nodeId.startsWith(`${key}:`)) };
-      else if (kind === 'doc') {
-        const secs = new Set(m.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
-        next = { ...m, docs: m.docs.filter((d) => d.id !== key), links: m.links.filter((l) => !secs.has(l.sectionId)) };
-      } else if (kind === 'gw') next = { ...m, gateways: m.gateways.filter((g) => g.id !== key) };
-      else next = { ...m, sources: m.sources.filter((s) => s.id !== key) };
-      return { ...next, cardLinks: next.cardLinks.filter((l) => l.from !== id && l.to !== id) };
+      for (const id of ids) {
+        const [kind, ...rest] = id.split(':');
+        const key = rest.join(':');
+        if (kind === 'proc') next = { ...next, processes: next.processes.filter((p) => p.id !== key), links: next.links.filter((l) => !l.nodeId.startsWith(`${key}:`)) };
+        else if (kind === 'doc') {
+          const secs = new Set(next.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
+          next = { ...next, docs: next.docs.filter((d) => d.id !== key), links: next.links.filter((l) => !secs.has(l.sectionId)) };
+        } else if (kind === 'gw') next = { ...next, gateways: next.gateways.filter((g) => g.id !== key) };
+        else next = { ...next, sources: next.sources.filter((s) => s.id !== key) };
+      }
+      return { ...next, cardLinks: next.cardLinks.filter((l) => !gone.has(l.from) && !gone.has(l.to)) };
     });
     setSelCards([]);
   };
+  const removeCard = (id: string) => removeCards([id]);
 
   const menuItems = (): MenuItem[] => {
     if (!menu) return [];
@@ -944,9 +952,16 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       } else if (ev.code === 'KeyL') switchMode('link');
       else if (ev.code === 'KeyG') switchMode('gateway');
       else if (ev.code === 'KeyV') switchMode('select');
-      else if ((ev.key === 'Delete' || ev.key === 'Backspace') && selLink) {
-        ev.preventDefault();
-        removeCardLink(selLink);
+      else if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        // выделенная связь удаляется первой, иначе все выделенные карточки; поля ввода и окна отсеяны выше
+        const cards = selCards.filter((id) => cardIds.includes(id));
+        if (selLink) {
+          ev.preventDefault();
+          removeCardLink(selLink);
+        } else if (cards.length) {
+          ev.preventDefault();
+          removeCards(cards);
+        }
       }
     };
     const onUp = (ev: KeyboardEvent) => {
