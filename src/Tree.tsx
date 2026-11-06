@@ -12,6 +12,8 @@ interface Props {
   sources: Source[];
   docs: Doc[];
   processes: Process[];
+  /** карточки, выделенные на полотне: их строки подсвечиваются */
+  selectedCards: string[];
   onAddMaterial: () => void;
   collapsed: boolean;
   onToggle: () => void;
@@ -29,7 +31,8 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
   );
 }
 
-export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sources, docs, processes, onAddMaterial, collapsed, onToggle }: Props) {
+export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sources, docs, processes, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
+  const isSel = (id: string) => selectedCards.includes(id);
   const [open, setOpen] = useState({ src: true, mod: true, doc: true, iss: true });
   const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
@@ -56,7 +59,7 @@ export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sour
       <Group title="Источники" open={open.src} onToggle={() => toggle('src')}>
         {sources.length === 0 && <div className="tree-empty">Нет источников</div>}
         {sources.map((s) => (
-          <div key={s.id} className="tree-row">
+          <div key={s.id} className={`tree-row${isSel(`src:${s.id}`) ? ' sel' : ''}`}>
             <span className={`ext ext-${s.ext.toLowerCase()}`}>{s.ext === 'PDF' ? 'PDF' : 'DOC'}</span>
             <span className="grow">{s.name}</span>
             {s.id === activeSourceId && <span className="dot-amber" title="Основание выбранного замечания" />}
@@ -67,7 +70,7 @@ export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sour
       <Group title="Модели" open={open.mod} onToggle={() => toggle('mod')}>
         {processes.length === 0 && <div className="tree-empty">Нет моделей</div>}
         {processes.map((p) => (
-          <div key={p.id} className="tree-row linked">
+          <div key={p.id} className={`tree-row${isSel(`proc:${p.id}`) ? ' sel' : ''}`}>
             <Icon name="model" />
             <span>{p.title}</span>
           </div>
@@ -77,7 +80,7 @@ export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sour
       <Group title="Документы" open={open.doc} onToggle={() => toggle('doc')}>
         {docs.length === 0 && <div className="tree-empty">Нет документов</div>}
         {docs.map((d) => (
-          <div key={d.id} className="tree-row linked">
+          <div key={d.id} className={`tree-row${isSel(`doc:${d.id}`) ? ' sel' : ''}`}>
             <Icon name="file" />
             <span className="doc-name">
               <span>{d.title}</span>

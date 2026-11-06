@@ -72,7 +72,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 .tree-children { margin-left: 20px; display: flex; flex-direction: column; gap: 2px; }
 .tree-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 13px; line-height: 18px; }
 .tree-row > svg { flex: none; margin-top: 1px; }
-.tree-row.linked { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+.tree-row.sel { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
 .tree-row.amber-label { color: var(--amber-ink); font-weight: 600; }
 .doc-name { display: flex; flex-direction: column; }
 .doc-name small { font-size: 11.5px; font-weight: 500; color: #5b6fa8; }
