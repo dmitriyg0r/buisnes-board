@@ -33,37 +33,43 @@ const MAX_ANSWER: usize = 400_000;
 /// Генерация длинная: общий лимит клиента (10 с) здесь не подходит.
 const CALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-const INSTRUCTIONS: &str = r#"Ты бизнес-аналитик и ведёшь диалог с пользователем в чате на доске бизнес-процессов. Ты можешь отвечать на вопросы о процессах и материалах на доске, строить модель бизнес-процесса и писать к ней регламент. Всё на русском языке.
+const INSTRUCTIONS: &str = r#"Ты бизнес-аналитик и помощник на доске бизнес-процессов: ведёшь диалог в чате и выполняешь действия на доске. Всё на русском языке.
 
-Верни ТОЛЬКО один JSON-объект, без пояснений и без markdown-обёртки. Ключи строго в таком порядке:
+Верни ТОЛЬКО один JSON-объект, без пояснений и без markdown-обёртки. Ключи строго в таком порядке, добавляй только те, что нужны:
 {
   "reply": "ответ пользователю: 1-4 предложения",
-  "process": {
-    "title": "название процесса",
-    "nodes": [ { "id": "n1", "type": "start|task|gateway|end", "name": "текст" } ],
-    "flows": [ { "from": "n1", "to": "n2", "label": "необязательная подпись ветки" } ]
-  },
-  "document": {
-    "title": "название регламента",
-    "sections": [ { "title": "§ 1. Название пункта", "markdown": "текст пункта в Markdown", "steps": ["n2"] } ]
-  }
+  "processes": [
+    { "key": "p1", "title": "название процесса",
+      "nodes": [ { "id": "n1", "type": "start|task|gateway|end", "name": "текст" } ],
+      "flows": [ { "from": "n1", "to": "n2", "label": "необязательная подпись ветки" } ] }
+  ],
+  "documents": [
+    { "title": "название документа", "process": "p1", "markdown": "свободный текст документа",
+      "sections": [ { "title": "§ 1. Название пункта", "markdown": "текст пункта", "steps": ["n2"] } ] }
+  ],
+  "updates": [ { "id": "id с доски", "title": "новое название", "append": "текст, который дописать в конец документа" } ]
 }
 
+Что ты умеешь:
+- Создавать процессы (до 5) и документы (до 20) в любом количестве и с любым содержимым, в том числе пустые документы или документы с названием из одного номера. Просьбу создать документы выполняй буквально: столько, сколько просили, и с теми названиями, какие просили. Не добавляй им текст и пункты, если об этом не просили (тогда в документе только title).
+- Создавать регламент к процессу: в документе укажи "process" (key процесса из этого же ответа) и пункты в "sections", а в "steps" пунктов перечисли id узлов этого процесса. Для обычного документа без привязки к процессу используй только "markdown" или вообще ничего.
+- Переименовывать существующие процессы и документы и дописывать текст в конец существующего документа: через "updates"; id бери из описания доски в квадратных скобках «[id: ...]». Пользователь может отменить любое твоё действие, поэтому не переспрашивай по пустякам.
+- Отвечать на вопросы без действий: тогда только "reply".
+- Ты не умеешь: заменять текст существующего документа целиком, менять схему существующего процесса, двигать карточки, удалять, читать содержимое PDF и DOCX (видны только названия). Скажи об этом в "reply". Если просят доработать существующий процесс, построй новую версию как новый процесс с названием вроде «Название (версия 2)» и скажи об этом.
+
 Правила диалога:
-- reply есть всегда: это то, что пользователь прочитает в чате. Если построил процесс, скажи, что получилось (ключевые шаги, развилки) и что стоит уточнить. Если это вопрос или уточнение, ответь по делу.
-- process и document добавляй, только когда пользователь просит построить процесс или описывает процесс для моделирования. На вопросы, благодарности и уточнения отвечай одним reply, без process и document.
-- document добавляй только вместе с process.
-- Если данных не хватает для хорошего процесса, не строй его: в reply задай 1-3 конкретных вопроса.
-- Существующие процессы и документы на доске менять ты не умеешь. Если просят доработать существующий, построй новую версию как новый процесс с названием вроде «Название (версия 2)» и скажи об этом в reply.
+- "reply" есть всегда: это то, что пользователь прочитает в чате. Коротко скажи, что сделал.
+- Действия добавляй, только когда о них просят. На вопросы, благодарности и уточнения отвечай одним "reply".
+- Для моделирования процесса данных должно хватать: если не хватает, не строй его, а в "reply" задай 1-3 конкретных вопроса. Простые просьбы (создать документы, переименовать) выполняй сразу.
 - Не повторяй уже построенное, если об этом не просили.
 
 Правила модели процесса:
-- id узлов: латиница, цифры, «_» и «-», уникальные (n1, n2, ...).
+- id узлов: латиница, цифры, «_» и «-», уникальные внутри процесса (n1, n2, ...). key процессов: p1, p2, ...
 - Ровно один узел типа start и хотя бы один end. Каждый узел достижим от start, из каждого узла (кроме end) есть выход.
 - task называй глаголом действия («Проверить заявку»). gateway: развилка или слияние; у каждой исходящей ветки gateway задай label («Да», «Нет», условие).
-- Не больше 40 узлов; не делай лишней детализации.
+- Не больше 40 узлов в процессе; не делай лишней детализации.
 
-Правила документа:
+Правила регламента:
 - Заголовки пунктов нумеруй: «§ 1. Цель», «§ 2. Участники», «§ 3. Порядок выполнения» и т. д. Подпункты: «§ 3.1. ...».
 - Пункт про шаги процесса описывает их по порядку; в steps перечисли id узлов (task или gateway), которые этот пункт описывает. Остальные пункты оставь с пустым steps.
 - В markdown не повторяй заголовок пункта и не используй заголовки уровня выше третьего.
@@ -333,18 +339,12 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 40 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// Проверяет и чистит ответ модели: клиент получает только то, что точно сможет показать и нарисовать.
-/// Реплика есть всегда; процесс и документ необязательны (на вопрос модель отвечает одной репликой).
-fn normalize(v: &Value) -> Result<Value, String> {
-    let reply = clip(&v["reply"], 2000);
-    if v["process"].is_null() {
-        if reply.is_empty() {
-            return Err("пустой ответ".into());
-        }
-        return Ok(json!({ "reply": reply }));
-    }
+const MAX_PROCESSES: usize = 5;
+const MAX_DOCS: usize = 20;
+const MAX_UPDATES: usize = 20;
 
-    let p = &v["process"];
+/// Проверяет один процесс. Возвращает его очищенный вид и множество id шагов (для привязки пунктов документов).
+fn normalize_process(p: &Value) -> Result<(Value, HashSet<String>), String> {
     let nodes_in = p["nodes"].as_array().ok_or("нет списка шагов")?;
     let flows_in = p["flows"].as_array().ok_or("нет списка переходов")?;
     if nodes_in.is_empty() || nodes_in.len() > MAX_NODES {
@@ -390,34 +390,122 @@ fn normalize(v: &Value) -> Result<Value, String> {
         }
         flows.push(Value::Object(o));
     }
-    let ptitle = clip(&p["title"], 200);
-    let mut out = Map::new();
-    out.insert("reply".into(), reply.into());
-    out.insert("process".into(), json!({ "title": if ptitle.is_empty() { "Процесс".to_owned() } else { ptitle }, "nodes": nodes, "flows": flows }));
+    let title = clip(&p["title"], 200);
+    Ok((json!({ "title": if title.is_empty() { "Процесс".to_owned() } else { title }, "nodes": nodes, "flows": flows }), ids))
+}
 
-    // документ необязателен: без него остаётся одна схема
-    let doc = &v["document"];
-    if !doc.is_null() {
-        let secs_in = doc["sections"].as_array().ok_or("нет пунктов документа")?;
-        if secs_in.is_empty() || secs_in.len() > MAX_SECTIONS {
-            return Err(format!("пунктов должно быть от 1 до {MAX_SECTIONS}"));
+/// Проверяет и чистит ответ модели: клиент получает только то, что точно сможет показать и применить.
+/// Реплика есть всегда; процессы, документы и правки необязательны (на вопрос модель отвечает одной репликой).
+/// Старый формат с одним `process` и одним `document` тоже понимаем.
+fn normalize(v: &Value) -> Result<Value, String> {
+    let reply = clip(&v["reply"], 2000);
+
+    let procs_in: Vec<Value> = match v["processes"].as_array() {
+        Some(a) => a.clone(),
+        None if !v["process"].is_null() => vec![v["process"].clone()],
+        None => vec![],
+    };
+    let docs_in: Vec<Value> = match v["documents"].as_array() {
+        Some(a) => a.clone(),
+        None if !v["document"].is_null() => {
+            let mut d = v["document"].clone();
+            if d["process"].is_null() && !procs_in.is_empty() {
+                d["process"] = Value::from("p1");
+            }
+            vec![d]
         }
+        None => vec![],
+    };
+    if procs_in.len() > MAX_PROCESSES {
+        return Err(format!("процессов не больше {MAX_PROCESSES}"));
+    }
+    if docs_in.len() > MAX_DOCS {
+        return Err(format!("документов не больше {MAX_DOCS}"));
+    }
+
+    let mut processes = Vec::new();
+    let mut by_key: std::collections::HashMap<String, HashSet<String>> = std::collections::HashMap::new();
+    for (i, p) in procs_in.iter().enumerate() {
+        let (mut clean, ids) = normalize_process(p)?;
+        let mut key = clip(&p["key"], 40);
+        if !valid_id(&key) || by_key.contains_key(&key) {
+            key = format!("p{}", i + 1);
+        }
+        clean["key"] = Value::from(key.clone());
+        by_key.insert(key, ids);
+        processes.push(clean);
+    }
+
+    let mut documents = Vec::new();
+    for d in &docs_in {
+        let title = clip(&d["title"], 200);
+        // привязка к процессу только по ключу из этого же ответа
+        let key = clip(&d["process"], 40);
+        let ids = by_key.get(&key);
         let mut sections = Vec::new();
+        let secs_in: &[Value] = d["sections"].as_array().map_or(&[], |a| a.as_slice());
+        if secs_in.len() > MAX_SECTIONS {
+            return Err(format!("пунктов не больше {MAX_SECTIONS}"));
+        }
         for sec in secs_in {
-            let title = clip(&sec["title"], 200);
-            if title.is_empty() {
+            let st = clip(&sec["title"], 200);
+            if st.is_empty() {
                 return Err("у пункта нет заголовка".into());
             }
             let markdown: String = sec["markdown"].as_str().unwrap_or("").trim().chars().take(8000).collect();
             // ссылки на несуществующие шаги молча отбрасываем
-            let steps: Vec<Value> = sec["steps"]
-                .as_array()
-                .map(|a| a.iter().filter_map(|x| x.as_str()).filter(|x| ids.contains(*x)).map(Value::from).collect())
-                .unwrap_or_default();
-            sections.push(json!({ "title": title, "markdown": markdown, "steps": steps }));
+            let steps: Vec<Value> = match ids {
+                Some(ids) => sec["steps"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).filter(|x| ids.contains(*x)).map(Value::from).collect()).unwrap_or_default(),
+                None => vec![],
+            };
+            sections.push(json!({ "title": st, "markdown": markdown, "steps": steps }));
         }
-        let dtitle = clip(&doc["title"], 200);
-        out.insert("document".into(), json!({ "title": if dtitle.is_empty() { "Регламент".to_owned() } else { dtitle }, "sections": sections }));
+        let mut o = Map::new();
+        o.insert("title".into(), if title.is_empty() { "Документ".to_owned() } else { title }.into());
+        if ids.is_some() {
+            o.insert("process".into(), key.into());
+        }
+        let body: String = d["markdown"].as_str().unwrap_or("").trim().chars().take(8000).collect();
+        if !body.is_empty() {
+            o.insert("markdown".into(), body.into());
+        }
+        o.insert("sections".into(), Value::Array(sections));
+        documents.push(Value::Object(o));
+    }
+
+    // правки существующих объектов: переименование и дописывание; существование id проверяет клиент
+    let mut updates = Vec::new();
+    for u in v["updates"].as_array().map_or(&[][..], |a| a.as_slice()).iter().take(MAX_UPDATES) {
+        let id = clip(&u["id"], 40);
+        let title = clip(&u["title"], 200);
+        let append: String = u["append"].as_str().unwrap_or("").trim().chars().take(8000).collect();
+        if !valid_id(&id) || (title.is_empty() && append.is_empty()) {
+            continue;
+        }
+        let mut o = Map::new();
+        o.insert("id".into(), id.into());
+        if !title.is_empty() {
+            o.insert("title".into(), title.into());
+        }
+        if !append.is_empty() {
+            o.insert("append".into(), append.into());
+        }
+        updates.push(Value::Object(o));
+    }
+
+    if processes.is_empty() && documents.is_empty() && updates.is_empty() && reply.is_empty() {
+        return Err("пустой ответ".into());
+    }
+    let mut out = Map::new();
+    out.insert("reply".into(), reply.into());
+    if !processes.is_empty() {
+        out.insert("processes".into(), Value::Array(processes));
+    }
+    if !documents.is_empty() {
+        out.insert("documents".into(), Value::Array(documents));
+    }
+    if !updates.is_empty() {
+        out.insert("updates".into(), Value::Array(updates));
     }
     Ok(Value::Object(out))
 }
@@ -449,8 +537,8 @@ mod tests {
     #[test]
     fn normalizes_and_drops_unknown_steps() {
         let n = normalize(&good()).unwrap();
-        assert_eq!(n["document"]["sections"][1]["steps"], json!(["n2"]));
-        assert_eq!(n["process"]["flows"][1]["label"], "Да");
+        assert_eq!(n["documents"][0]["sections"][1]["steps"], json!(["n2"]));
+        assert_eq!(n["processes"][0]["flows"][1]["label"], "Да");
     }
 
     #[test]
@@ -500,7 +588,7 @@ mod tests {
     fn reply_only_answer_is_valid() {
         let n = normalize(&json!({ "reply": "Пока не хватает данных: кто согласует?" })).unwrap();
         assert_eq!(n["reply"], "Пока не хватает данных: кто согласует?");
-        assert!(n.get("process").is_none() && n.get("document").is_none());
+        assert!(n.get("processes").is_none() && n.get("documents").is_none() && n.get("updates").is_none());
         assert!(normalize(&json!({})).is_err(), "ни реплики, ни процесса");
         assert!(normalize(&json!({ "reply": "  " })).is_err());
     }
@@ -512,8 +600,8 @@ mod tests {
         v.as_object_mut().unwrap().remove("document");
         let n = normalize(&v).unwrap();
         assert_eq!(n["reply"], "Построил схему");
-        assert!(n.get("document").is_none());
-        assert_eq!(n["process"]["nodes"].as_array().unwrap().len(), 3);
+        assert!(n.get("documents").is_none());
+        assert_eq!(n["processes"][0]["nodes"].as_array().unwrap().len(), 3);
     }
 
     #[test]
@@ -538,6 +626,58 @@ mod tests {
         let s = build_input("x", "", &h);
         assert!(s.contains("реплика 29") && s.contains("реплика 18"));
         assert!(!s.contains("реплика 17"));
+    }
+
+    #[test]
+    fn standalone_documents_need_no_process_or_sections() {
+        let docs: Vec<Value> = (1..=10).map(|i| json!({ "title": i.to_string() })).collect();
+        let n = normalize(&json!({ "reply": "Создал 10 документов", "documents": docs })).unwrap();
+        let d = n["documents"].as_array().unwrap();
+        assert_eq!(d.len(), 10);
+        assert_eq!(d[9]["title"], "10");
+        assert_eq!(d[0]["sections"], json!([]));
+        assert!(d[0].get("process").is_none() && d[0].get("markdown").is_none());
+        assert!(n.get("processes").is_none());
+    }
+
+    #[test]
+    fn too_many_documents_rejected() {
+        let docs: Vec<Value> = (0..21).map(|i| json!({ "title": format!("д{i}") })).collect();
+        assert!(normalize(&json!({ "documents": docs })).is_err());
+    }
+
+    #[test]
+    fn several_processes_and_steps_bind_to_their_own_process() {
+        let p = |t: &str, id: &str| json!({ "title": t, "nodes": [
+            { "id": "s", "type": "start", "name": "" }, { "id": id, "type": "task", "name": "Шаг" }, { "id": "e", "type": "end", "name": "" } ],
+            "flows": [ { "from": "s", "to": id }, { "from": id, "to": "e" } ] });
+        let mut p1 = p("Первый", "a1");
+        p1["key"] = "p1".into();
+        let mut p2 = p("Второй", "b1");
+        p2["key"] = "p2".into();
+        let v = json!({ "reply": "ok", "processes": [p1, p2], "documents": [
+            { "title": "Рег 2", "process": "p2", "sections": [ { "title": "§ 1", "markdown": "x", "steps": ["b1", "a1"] } ] },
+            { "title": "Без процесса", "process": "нет-такого", "sections": [ { "title": "§ 1", "markdown": "x", "steps": ["b1"] } ] } ] });
+        let n = normalize(&v).unwrap();
+        assert_eq!(n["processes"].as_array().unwrap().len(), 2);
+        assert_eq!(n["documents"][0]["process"], "p2");
+        // шаг чужого процесса отброшен
+        assert_eq!(n["documents"][0]["sections"][0]["steps"], json!(["b1"]));
+        // неизвестный процесс: привязки нет, шаги не сохраняются
+        assert!(n["documents"][1].get("process").is_none());
+        assert_eq!(n["documents"][1]["sections"][0]["steps"], json!([]));
+    }
+
+    #[test]
+    fn updates_are_cleaned() {
+        let v = json!({ "reply": "ok", "updates": [
+            { "id": "d1", "title": "  Новое  " }, { "id": "d2", "append": "дописать" },
+            { "id": "bad id!", "title": "x" }, { "id": "d3" }, { "title": "без id" } ] });
+        let n = normalize(&v).unwrap();
+        let u = n["updates"].as_array().unwrap();
+        assert_eq!(u.len(), 2);
+        assert_eq!(u[0], json!({ "id": "d1", "title": "Новое" }));
+        assert_eq!(u[1], json!({ "id": "d2", "append": "дописать" }));
     }
 
     #[test]
