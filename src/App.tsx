@@ -234,7 +234,7 @@ function Workspace({
           collapsed={!layout.tree}
           onToggle={() => toggleSide('tree')}
         />
-        <Canvas issues={issues} issue={selected} onSelect={setSelectedId} api={api} settings={settings} projectId={project.id}
+        <Canvas issues={issues} issue={selected} onSelect={setSelectedId} api={api} settings={settings} onModel={(aiModel) => patchSettings({ aiModel })} projectId={project.id}
           onAddMaterial={() => setAddOpen(true)}
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
