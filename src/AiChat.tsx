@@ -210,9 +210,6 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
                   <Icon name="trash" size={15} />
                 </button>
               )}
-              <button type="button" className="ai-ic" title="Свернуть" aria-label="Свернуть чат" onClick={() => setOpen(false)}>
-                <Icon name="chevronDown" size={16} />
-              </button>
             </span>
           </div>
           <div className="ai-log" ref={log} role="log" aria-label="История чата с ИИ" aria-live="polite">
