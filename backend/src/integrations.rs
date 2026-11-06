@@ -197,6 +197,11 @@ pub async fn start_device(State(s): State<AppState>, user: AuthUser) -> AppResul
         .map_err(|_| upstream_down())?;
     match res.status().as_u16() {
         200..=299 => {}
+        403 => {
+            return Err(AppError::Upstream(
+                "OpenAI недоступен из региона сервера: нужен прокси (переменная OPENAI_PROXY)".into(),
+            ))
+        }
         404 => {
             return Err(AppError::BadRequest(
                 "вход по коду выключен: включите его в настройках безопасности ChatGPT (или в разрешениях рабочего пространства)".into(),
