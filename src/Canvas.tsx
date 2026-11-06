@@ -3,7 +3,8 @@ import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Doc, type Issue, type Source } from './data';
 import { splitMarkdown } from './markdown';
 import { aiModels, type AiModel, type Settings } from './settings';
-import { applyGenerated, buildContext, generateProcess } from './ai';
+import { applyGenerated, buildContext, GenError, streamGenerate } from './ai';
+import { AiDraftLayer, AiProgress, beginDraft, ghostRect } from './AiDraft';
 import { HttpError } from './api';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
@@ -836,21 +837,42 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   const [aiText, setAiText] = useState('');
   const [aiBusy, setAiBusy] = useState(false);
-  const [aiMsg, setAiMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [aiMsg, setAiMsg] = useState<{ ok: boolean | null; text: string } | null>(null);
+  const aiAbort = useRef<AbortController | null>(null);
+  useEffect(() => () => aiAbort.current?.abort(), []);
+  /** где появятся новые карточки: как и положение по умолчанию, по порядку в своём столбце */
+  const procPos = { x: 232, y: 60 + processes.length * (MODEL_SIZE.h + 48) };
+  const docPos = { x: 232 + MODEL_SIZE.w + 48, y: 120 + docs.length * (DOC_SIZE.h + 48) };
+  /** если будущие карточки за краем экрана, сдвигаем доску к ним */
+  const revealDraft = () => {
+    const r = ghostRect(procPos, docPos);
+    const c = camRef.current;
+    const vis = { l: -c.x / c.k, t: -c.y / c.k, r: (size.w - c.x) / c.k, b: (size.h - c.y) / c.k };
+    if (r.left >= vis.l && r.right <= vis.r && r.top >= vis.t && r.bottom <= vis.b) return;
+    const k = Math.min(c.k, (size.w - 120) / (r.right - r.left), (size.h - 220) / (r.bottom - r.top));
+    setCam({ k, x: size.w / 2 - ((r.left + r.right) / 2) * k, y: (size.h - 120) / 2 - ((r.top + r.bottom) / 2) * k });
+  };
   const askAi = async (e: React.FormEvent) => {
     e.preventDefault();
     const text = aiText.trim();
     if (!text || aiBusy) return;
+    const ctl = new AbortController();
+    aiAbort.current = ctl;
     setAiBusy(true);
     setAiMsg(null);
+    const draft = beginDraft(aiModels.find((m) => m.id === settings.aiModel)?.label ?? 'ИИ');
+    revealDraft();
     try {
-      const r = await generateProcess(text, settings.aiModel, buildContext(api.model));
+      const r = await streamGenerate(text, settings.aiModel, buildContext(api.model), (ev) => ev.type === 'delta' && draft.push(ev.text), ctl.signal);
       api.apply((m) => applyGenerated(m, r));
       setAiText('');
       setAiMsg({ ok: true, text: `Добавлены процесс «${r.process.title}» и документ «${r.document.title}». Ctrl+Z отменит.` });
     } catch (err) {
-      setAiMsg({ ok: false, text: err instanceof HttpError && err.detail ? err.detail : 'Нет связи с сервером' });
+      if (ctl.signal.aborted) setAiMsg({ ok: null, text: 'Генерация отменена.' });
+      else setAiMsg({ ok: false, text: err instanceof HttpError || err instanceof GenError ? (err.message.startsWith('HTTP ') ? 'Нет связи с сервером' : err.message) : 'Нет связи с сервером' });
     }
+    draft.end();
+    aiAbort.current = null;
     setAiBusy(false);
   };
 
@@ -1041,10 +1063,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             <Icon name="arrowUp" size={16} />
           </button>
         </form>
-        {aiBusy && <div className="ai-note" role="status">Строим процесс и пишем регламент, это занимает до минуты…</div>}
-        {aiMsg && <div className={`ai-note ${aiMsg.ok ? 'ok' : 'err'}`} role={aiMsg.ok ? 'status' : 'alert'}>{aiMsg.text}</div>}
+        {aiBusy && <AiProgress onCancel={() => aiAbort.current?.abort()} />}
+        {aiMsg && <div className={`ai-note ${aiMsg.ok === null ? '' : aiMsg.ok ? 'ok' : 'err'}`} role={aiMsg.ok === false ? 'alert' : 'status'}>{aiMsg.text}</div>}
       </div>
-      {cardIds.length === 0 && (
+      {cardIds.length === 0 && !aiBusy && (
         <div className="canvas-empty">
           <b>Проект пуст</b>
           <span>Добавьте модель процесса, документ или источник — они появятся на доске.</span>
@@ -1053,6 +1075,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       )}
       <ZoomCtx.Provider value={cam.k}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
+          <AiDraftLayer procPos={procPos} docPos={docPos} />
           {sources.map((s, i) => (
             <DragCard
               key={s.id}

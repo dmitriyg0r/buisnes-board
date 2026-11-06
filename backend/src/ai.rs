@@ -2,11 +2,19 @@
 //! Вызов идёт на недокументированный адрес `chatgpt.com/backend-api/codex/responses`:
 //! формат может измениться без предупреждения.
 
-use axum::{extract::State, Json};
+use axum::{
+    body::{Body, Bytes},
+    extract::State,
+    http::{header, HeaderValue},
+    response::{IntoResponse, Response},
+    Json,
+};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::collections::HashSet;
+use std::convert::Infallible;
 use std::time::Duration;
+use tokio::sync::mpsc::Sender;
 use uuid::Uuid;
 
 use crate::auth::AuthUser;
@@ -20,6 +28,8 @@ const MAX_CONTEXT: usize = 60_000;
 const MAX_NODES: usize = 60;
 const MAX_FLOWS: usize = 120;
 const MAX_SECTIONS: usize = 30;
+/// Защита от бесконечного ответа: столько текста модель написать не должна.
+const MAX_ANSWER: usize = 400_000;
 /// Генерация длинная: общий лимит клиента (10 с) здесь не подходит.
 const CALL_TIMEOUT: Duration = Duration::from_secs(180);
 
@@ -66,7 +76,26 @@ pub struct GenerateReq {
     context: Option<String>,
 }
 
-pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<GenerateReq>) -> AppResult<Json<Value>> {
+type Tx = Sender<Result<Bytes, Infallible>>;
+
+/// Одно событие потока: JSON в одной строке. false, если клиент ушёл (закрыл вкладку или нажал «Отмена»).
+async fn emit(tx: &Tx, v: Value) -> bool {
+    let mut line = v.to_string();
+    line.push('\n');
+    tx.send(Ok(Bytes::from(line))).await.is_ok()
+}
+
+/// Текст ошибки для события потока.
+fn message(e: AppError) -> String {
+    match e {
+        AppError::Upstream(m) | AppError::BadRequest(m) | AppError::Unavailable(m) | AppError::Forbidden(m) => m,
+        _ => "внутренняя ошибка".into(),
+    }
+}
+
+/// Ответ идёт потоком (NDJSON): `start`, затем `delta` с кусочками текста модели по мере их появления,
+/// в конце `result` с проверенным процессом и документом или `error`. Клиент рисует черновик на доске по ходу дела.
+pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<GenerateReq>) -> AppResult<Response> {
     let prompt = b.prompt.trim();
     if prompt.is_empty() || prompt.chars().count() > MAX_PROMPT {
         return Err(AppError::BadRequest(format!("запрос должен быть от 1 до {MAX_PROMPT} символов")));
@@ -79,6 +108,8 @@ pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<G
     let Some(model) = model_id(&b.model) else {
         return Err(AppError::BadRequest("неизвестная модель".into()));
     };
+    // не подключён ChatGPT и подобное: обычная ошибка до начала потока
+    access_token(&s, user.id, false).await?;
 
     // одна генерация на человека: токен и лимиты ChatGPT общие
     if !s.ai_busy.lock().map_err(|_| AppError::Internal)?.insert(user.id) {
@@ -89,23 +120,46 @@ pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<G
     } else {
         format!("Задача пользователя:\n{prompt}\n\nЧто уже есть на доске:\n{context}")
     };
-    let res = run(&s, user.id, model, &input).await;
-    if let Ok(mut busy) = s.ai_busy.lock() {
-        busy.remove(&user.id);
-    }
-    Ok(Json(res?))
+
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    let uid = user.id;
+    tokio::spawn(async move {
+        emit(&tx, json!({ "type": "start" })).await;
+        let done = match stream_codex(&s, uid, model, &input, &tx).await {
+            Ok(text) => finish(&text),
+            Err(m) => Err(m),
+        };
+        match done {
+            Ok(data) => emit(&tx, json!({ "type": "result", "data": data })).await,
+            Err(m) => emit(&tx, json!({ "type": "error", "message": m })).await,
+        };
+        if let Ok(mut busy) = s.ai_busy.lock() {
+            busy.remove(&uid);
+        }
+    });
+
+    Ok((
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static("application/x-ndjson")),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            // nginx не должен копить поток: клиент должен получать куски сразу
+            (header::HeaderName::from_static("x-accel-buffering"), HeaderValue::from_static("no")),
+        ],
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+    )
+        .into_response())
 }
 
-async fn run(s: &AppState, user: Uuid, model: &str, input: &str) -> AppResult<Value> {
-    let text = call_codex(s, user, model, input).await?;
-    let v = extract_json(&text).ok_or_else(|| AppError::Upstream("модель вернула ответ не в том формате, попробуйте ещё раз".into()))?;
+fn finish(text: &str) -> Result<Value, String> {
+    let v = extract_json(text).ok_or_else(|| "модель вернула ответ не в том формате, попробуйте ещё раз".to_string())?;
     normalize(&v).map_err(|why| {
         tracing::warn!("ответ модели отклонён: {why}");
-        AppError::Upstream(format!("модель построила некорректный процесс ({why}), попробуйте ещё раз"))
+        format!("модель построила некорректный процесс ({why}), попробуйте ещё раз")
     })
 }
 
-async fn call_codex(s: &AppState, user: Uuid, model: &str, input: &str) -> AppResult<String> {
+/// Читает поток событий Responses API и пересылает клиенту кусочки текста. Возвращает весь текст ответа.
+async fn stream_codex(s: &AppState, user: Uuid, model: &str, input: &str, tx: &Tx) -> Result<String, String> {
     let body = json!({
         "model": model,
         "store": false,
@@ -115,8 +169,8 @@ async fn call_codex(s: &AppState, user: Uuid, model: &str, input: &str) -> AppRe
     });
     // два захода: при отказе 401 один раз принудительно обновляем токен
     for attempt in 0..2 {
-        let (token, account) = access_token(s, user, attempt == 1).await?;
-        let res = s
+        let (token, account) = access_token(s, user, attempt == 1).await.map_err(message)?;
+        let mut res = s
             .http
             .post(CODEX_URL)
             .timeout(CALL_TIMEOUT)
@@ -130,64 +184,88 @@ async fn call_codex(s: &AppState, user: Uuid, model: &str, input: &str) -> AppRe
             .await
             .map_err(|e| {
                 tracing::warn!("запрос к модели не удался: {}", if e.is_timeout() { "таймаут" } else { "сеть" });
-                AppError::Upstream("не удалось связаться с OpenAI, попробуйте позже".into())
+                "не удалось связаться с OpenAI, попробуйте позже".to_string()
             })?;
         let status = res.status().as_u16();
         match status {
             200..=299 => {
-                let raw = res.text().await.map_err(|_| AppError::Upstream("ответ модели оборвался, попробуйте ещё раз".into()))?;
-                return parse_sse(&raw).map_err(AppError::Upstream);
+                let mut sse = Sse::default();
+                // байты копим до конца строки: многобайтовая буква может прийти разорванной между кусками
+                let mut buf: Vec<u8> = Vec::new();
+                loop {
+                    match res.chunk().await {
+                        Ok(Some(c)) => buf.extend_from_slice(&c),
+                        Ok(None) => break,
+                        Err(_) => return Err("ответ модели оборвался, попробуйте ещё раз".into()),
+                    }
+                    while let Some(nl) = buf.iter().position(|b| *b == b'\n') {
+                        let line: Vec<u8> = buf.drain(..=nl).collect();
+                        if let Some(d) = sse.feed(&String::from_utf8_lossy(&line)) {
+                            if sse.text.len() > MAX_ANSWER {
+                                return Err("модель написала слишком длинный ответ".into());
+                            }
+                            // клиент ушёл (отмена): закрываем соединение с моделью и не тратим лимит
+                            if !emit(tx, json!({ "type": "delta", "text": d })).await {
+                                return Err("отменено".into());
+                            }
+                        }
+                    }
+                }
+                if !buf.is_empty() {
+                    sse.feed(&String::from_utf8_lossy(&buf));
+                }
+                return sse.finish();
             }
             401 if attempt == 0 => continue,
-            401 => return Err(AppError::Upstream("ChatGPT отклонил доступ: подключите его заново в настройках".into())),
-            403 => return Err(AppError::Upstream("OpenAI недоступен из региона сервера или доступ запрещён".into())),
-            429 => return Err(AppError::Upstream("лимит ChatGPT исчерпан, попробуйте позже".into())),
+            401 => return Err("ChatGPT отклонил доступ: подключите его заново в настройках".into()),
+            403 => return Err("OpenAI недоступен из региона сервера или доступ запрещён".into()),
+            429 => return Err("лимит ChatGPT исчерпан, попробуйте позже".into()),
             _ => {
                 tracing::warn!("модель ответила HTTP {status}");
-                return Err(AppError::Upstream("OpenAI ответил ошибкой, попробуйте позже".into()));
+                return Err("OpenAI ответил ошибкой, попробуйте позже".into());
             }
         }
     }
-    Err(AppError::Internal)
+    Err("внутренняя ошибка".into())
 }
 
-/// Собирает текст ответа из потока событий Responses API.
-fn parse_sse(raw: &str) -> Result<String, String> {
-    let mut text = String::new();
-    let mut done_text: Option<String> = None;
-    let mut failure: Option<String> = None;
-    for line in raw.lines() {
-        let Some(data) = line.strip_prefix("data:") else { continue };
-        let data = data.trim();
+/// Разбор потока событий Responses API построчно.
+#[derive(Default)]
+struct Sse {
+    text: String,
+    done_text: Option<String>,
+    failure: Option<String>,
+}
+
+impl Sse {
+    /// Принимает одну строку потока; для события с куском текста возвращает этот кусок.
+    fn feed(&mut self, line: &str) -> Option<String> {
+        let data = line.trim().strip_prefix("data:")?.trim();
         if data.is_empty() || data == "[DONE]" {
-            continue;
+            return None;
         }
-        let Ok(ev) = serde_json::from_str::<Value>(data) else { continue };
+        let ev: Value = serde_json::from_str(data).ok()?;
         match ev["type"].as_str().unwrap_or("") {
             "response.output_text.delta" => {
-                if let Some(d) = ev["delta"].as_str() {
-                    text.push_str(d);
-                }
+                let d = ev["delta"].as_str()?;
+                self.text.push_str(d);
+                return Some(d.to_owned());
             }
-            "response.output_text.done" => {
-                if let Some(t) = ev["text"].as_str() {
-                    done_text = Some(t.to_owned());
-                }
-            }
-            "response.failed" => {
-                failure = ev["response"]["error"]["message"].as_str().map(str::to_owned).or(Some("модель не смогла ответить".into()));
-            }
-            "error" => failure = ev["message"].as_str().map(str::to_owned).or(Some("модель не смогла ответить".into())),
+            "response.output_text.done" => self.done_text = ev["text"].as_str().map(str::to_owned),
+            "response.failed" => self.failure = ev["response"]["error"]["message"].as_str().map(str::to_owned).or(Some("модель не смогла ответить".into())),
+            "error" => self.failure = ev["message"].as_str().map(str::to_owned).or(Some("модель не смогла ответить".into())),
             _ => {}
         }
+        None
     }
-    if text.trim().is_empty() {
-        text = done_text.unwrap_or_default();
+
+    fn finish(self) -> Result<String, String> {
+        let text = if self.text.trim().is_empty() { self.done_text.unwrap_or_default() } else { self.text };
+        if text.trim().is_empty() {
+            return Err(self.failure.map_or_else(|| "модель вернула пустой ответ, попробуйте ещё раз".into(), |m| format!("модель не смогла ответить: {m}")));
+        }
+        Ok(text)
     }
-    if text.trim().is_empty() {
-        return Err(failure.map_or_else(|| "модель вернула пустой ответ, попробуйте ещё раз".into(), |m| format!("модель не смогла ответить: {m}")));
-    }
-    Ok(text)
 }
 
 /// Достаёт JSON-объект из ответа, даже если модель обернула его в ```json или добавила пояснение.
@@ -334,13 +412,28 @@ mod tests {
         assert!(normalize(&v).is_err(), "неизвестный тип");
     }
 
+    fn run_sse(raw: &str) -> (Vec<String>, Result<String, String>) {
+        let mut sse = Sse::default();
+        let deltas = raw.lines().filter_map(|l| sse.feed(l)).collect();
+        (deltas, sse.finish())
+    }
+
     #[test]
-    fn parses_sse_stream() {
+    fn parses_sse_stream_and_yields_deltas() {
         let raw = "event: x\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"{\\\"a\\\"\"}\n\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\":1}\"}\n\ndata: {\"type\":\"response.completed\"}\n\ndata: [DONE]\n";
-        assert_eq!(parse_sse(raw).unwrap(), "{\"a\":1}");
-        let failed = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"плохо\"}}}\n";
-        assert!(parse_sse(failed).unwrap_err().contains("плохо"));
-        assert!(parse_sse("").is_err());
+        let (deltas, res) = run_sse(raw);
+        assert_eq!(deltas, vec!["{\"a\"", ":1}"]);
+        assert_eq!(res.unwrap(), "{\"a\":1}");
+        let (_, failed) = run_sse("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"плохо\"}}}\n");
+        assert!(failed.unwrap_err().contains("плохо"));
+        assert!(run_sse("").1.is_err());
+    }
+
+    #[test]
+    fn falls_back_to_done_text() {
+        let (deltas, res) = run_sse("data: {\"type\":\"response.output_text.done\",\"text\":\"готово\"}\n");
+        assert!(deltas.is_empty());
+        assert_eq!(res.unwrap(), "готово");
     }
 
     #[test]

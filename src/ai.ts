@@ -1,4 +1,4 @@
-import { http } from './api';
+import { HttpError } from './api';
 import { nodeRef, parseProcess } from './bpmn';
 import type { Model } from './data';
 import { reconcileSections, sectionTitles } from './markdown';
@@ -20,8 +20,158 @@ export interface GenResult {
   document: { title: string; sections: { title: string; markdown: string; steps: string[] }[] };
 }
 
-export const generateProcess = (prompt: string, model: AiModel, context: string) =>
-  http<GenResult>('POST', '/ai/generate', { prompt, model, context });
+/** Ошибка генерации с текстом для пользователя. */
+export class GenError extends Error {}
+
+export type StreamEvent = { type: 'start' } | { type: 'delta'; text: string };
+
+/**
+ * Запрашивает генерацию и читает ответ потоком: onEvent получает кусочки текста модели, пока она пишет.
+ * Возвращает проверенный сервером результат. Отмена через signal закрывает соединение, и сервер
+ * перестаёт читать ответ модели.
+ */
+export async function streamGenerate(prompt: string, model: AiModel, context: string, onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<GenResult> {
+  const res = await fetch('/api/ai/generate', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt, model, context }),
+    signal,
+  });
+  if (!res.ok || !res.body) {
+    let detail: string | undefined;
+    try {
+      detail = ((await res.json()) as { error?: string }).error;
+    } catch {
+      /* тела нет */
+    }
+    if (res.status === 401) window.dispatchEvent(new Event('bb:unauthorized'));
+    throw new HttpError(res.status, detail);
+  }
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  let result: GenResult | null = null;
+  let failure: string | null = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    for (let nl = buf.indexOf('\n'); nl >= 0; nl = buf.indexOf('\n')) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let ev: { type: string; text?: string; data?: GenResult; message?: string };
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (ev.type === 'result' && ev.data) result = ev.data;
+      else if (ev.type === 'error') failure = ev.message ?? 'Ошибка генерации';
+      else if (ev.type === 'delta' && typeof ev.text === 'string') onEvent({ type: 'delta', text: ev.text });
+      else if (ev.type === 'start') onEvent({ type: 'start' });
+    }
+  }
+  if (failure) throw new GenError(failure);
+  if (!result) throw new GenError('Соединение оборвалось до конца генерации. Попробуйте ещё раз.');
+  return result;
+}
+
+/* ---------- разбор недописанного ответа: черновик на доске ---------- */
+
+export interface Plan {
+  processTitle: string;
+  nodes: GenNode[];
+  flows: GenFlow[];
+  docTitle: string;
+  sections: { title: string; markdown: string; steps: string[] }[];
+  /** модель уже перешла к документу */
+  inDoc: boolean;
+}
+
+/** Полностью написанные объекты массива с ключом key; последний недописанный объект пропускается. */
+function completeObjects(text: string, key: string, from = 0): unknown[] {
+  const k = text.indexOf(`"${key}"`, from);
+  if (k < 0) return [];
+  const open = text.indexOf('[', k);
+  if (open < 0) return [];
+  const out: unknown[] = [];
+  let depth = 0;
+  let start = -1;
+  let inStr = false;
+  let esc = false;
+  for (let i = open + 1; i < text.length; i++) {
+    const ch = text[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try {
+          out.push(JSON.parse(text.slice(start, i + 1)));
+        } catch {
+          /* пропускаем */
+        }
+        start = -1;
+      }
+    } else if (ch === ']' && depth === 0) break;
+  }
+  return out;
+}
+
+function stringAfter(text: string, from: number, key: string): string {
+  const m = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(text.slice(from));
+  if (!m) return '';
+  try {
+    return JSON.parse(`"${m[1]}"`) as string;
+  } catch {
+    return m[1];
+  }
+}
+
+const str = (v: unknown) => (typeof v === 'string' ? v : '');
+const KINDS = ['start', 'task', 'gateway', 'end'];
+
+/** Что модель успела написать к этому моменту. Безопасно для недописанного JSON. */
+export function partialPlan(text: string): Plan {
+  const docAt = text.indexOf('"document"');
+  const head = docAt >= 0 ? text.slice(0, docAt) : text;
+  const seen = new Set<string>();
+  const nodes = completeObjects(head, 'nodes').flatMap((o) => {
+    const n = o as Record<string, unknown>;
+    const id = str(n.id);
+    if (!id || seen.has(id) || !KINDS.includes(str(n.type))) return [];
+    seen.add(id);
+    return [{ id, type: str(n.type) as GenNode['type'], name: str(n.name) }];
+  });
+  const flows = completeObjects(head, 'flows').flatMap((o) => {
+    const f = o as Record<string, unknown>;
+    return seen.has(str(f.from)) && seen.has(str(f.to)) && f.from !== f.to ? [{ from: str(f.from), to: str(f.to), label: str(f.label) || undefined }] : [];
+  });
+  const sections =
+    docAt >= 0
+      ? completeObjects(text, 'sections', docAt).flatMap((o) => {
+          const x = o as Record<string, unknown>;
+          return str(x.title) ? [{ title: str(x.title), markdown: str(x.markdown), steps: Array.isArray(x.steps) ? x.steps.filter((t): t is string => typeof t === 'string') : [] }] : [];
+        })
+      : [];
+  return {
+    processTitle: stringAfter(text, 0, 'title'),
+    nodes,
+    flows,
+    docTitle: docAt >= 0 ? stringAfter(text, docAt, 'title') : '',
+    sections,
+    inDoc: docAt >= 0,
+  };
+}
 
 /* ---------- что модель видит на доске ---------- */
 
@@ -100,21 +250,27 @@ function layers(nodes: GenNode[], flows: GenFlow[]): { layer: Map<string, number
   return { layer, back };
 }
 
-export interface BuiltProcess {
-  xml: string;
-  /** id шага из ответа модели → id элемента в BPMN */
-  elementId: Record<string, string>;
+export interface Placed {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
 }
 
-/** Строит BPMN 2.0 XML с координатами: слева направо, ветки выстраиваются по слоям. */
-export function buildBpmnXml(title: string, nodes: GenNode[], flows: GenFlow[]): BuiltProcess {
-  const { layer, back } = layers(nodes, flows);
-  const elementId: Record<string, string> = {};
-  nodes.forEach((n) => (elementId[n.id] = `${TAG[n.type].prefix}_${n.id}`));
+export interface Layout {
+  place: Map<string, Placed>;
+  back: Set<number>;
+  /** линия, по которой идут возвраты назад под схемой */
+  bottom: number;
+}
 
-  // вертикальное положение: ближе к среднему положению предшественников, без наложений в слое
+/** Раскладка слева направо: слой по самому длинному пути, по вертикали ближе к среднему положению предшественников. */
+export function layout(nodes: GenNode[], flows: GenFlow[]): Layout {
+  const { layer, back } = layers(nodes, flows);
   const cy = new Map<string, number>();
-  const maxLayer = Math.max(...layer.values());
+  const maxLayer = Math.max(0, ...layer.values());
   for (let l = 0; l <= maxLayer; l++) {
     const inLayer = nodes.filter((n) => layer.get(n.id) === l);
     const want = (id: string) => {
@@ -129,20 +285,42 @@ export function buildBpmnXml(title: string, nodes: GenNode[], flows: GenFlow[]):
       prev = at;
     }
   }
-  const bounds = (n: GenNode) => {
+  const place = new Map<string, Placed>();
+  for (const n of nodes) {
     const { w, h } = TAG[n.type];
     const cx = X0 + (layer.get(n.id) ?? 0) * COL;
     const y = cy.get(n.id) ?? Y0;
-    return { x: cx - w / 2, y: y - h / 2, w, h, cx, cy: y };
-  };
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const bottom = Math.max(...nodes.map((n) => bounds(n).y + bounds(n).h)) + 60;
+    place.set(n.id, { x: cx - w / 2, y: y - h / 2, w, h, cx, cy: y });
+  }
+  const bottom = Math.max(...[...place.values()].map((p) => p.y + p.h)) + 60;
+  return { place, back, bottom };
+}
+
+/** Ломаная линия перехода: вперёд по прямой или с изломом, назад под схемой. */
+export function edgePoints(a: Placed, z: Placed, isBack: boolean, bottom: number): [number, number][] {
+  if (isBack || z.cx <= a.cx) return [[a.cx, a.y + a.h], [a.cx, bottom], [z.cx, bottom], [z.cx, z.y + z.h]];
+  if (a.cy === z.cy) return [[a.x + a.w, a.cy], [z.x, z.cy]];
+  const xm = (a.x + a.w + z.x) / 2;
+  return [[a.x + a.w, a.cy], [xm, a.cy], [xm, z.cy], [z.x, z.cy]];
+}
+
+export interface BuiltProcess {
+  xml: string;
+  /** id шага из ответа модели → id элемента в BPMN */
+  elementId: Record<string, string>;
+}
+
+/** Строит BPMN 2.0 XML с координатами по общей раскладке. */
+export function buildBpmnXml(title: string, nodes: GenNode[], flows: GenFlow[]): BuiltProcess {
+  const { place, back, bottom } = layout(nodes, flows);
+  const elementId: Record<string, string> = {};
+  nodes.forEach((n) => (elementId[n.id] = `${TAG[n.type].prefix}_${n.id}`));
 
   const shapes: string[] = [];
   const elements: string[] = [];
   for (const n of nodes) {
     const el = elementId[n.id];
-    const b = bounds(n);
+    const b = place.get(n.id)!;
     elements.push(`    <bpmn:${TAG[n.type].tag} id="${el}"${n.name ? ` name="${esc(n.name)}"` : ''} />`);
     shapes.push(
       `      <bpmndi:BPMNShape id="${el}_di" bpmnElement="${el}"${n.type === 'gateway' ? ' isMarkerVisible="true"' : ''}>\n        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />\n      </bpmndi:BPMNShape>`,
@@ -151,19 +329,8 @@ export function buildBpmnXml(title: string, nodes: GenNode[], flows: GenFlow[]):
   const edges: string[] = [];
   flows.forEach((f, i) => {
     const id = `Flow_${i + 1}`;
-    const a = bounds(byId.get(f.from)!);
-    const z = bounds(byId.get(f.to)!);
     elements.push(`    <bpmn:sequenceFlow id="${id}"${f.label ? ` name="${esc(f.label)}"` : ''} sourceRef="${elementId[f.from]}" targetRef="${elementId[f.to]}" />`);
-    let pts: [number, number][];
-    if (back.has(i) || z.cx <= a.cx) {
-      // назад: снизу под всеми узлами и вверх к цели
-      pts = [[a.cx, a.y + a.h], [a.cx, bottom], [z.cx, bottom], [z.cx, z.y + z.h]];
-    } else if (a.cy === z.cy) {
-      pts = [[a.x + a.w, a.cy], [z.x, z.cy]];
-    } else {
-      const xm = (a.x + a.w + z.x) / 2;
-      pts = [[a.x + a.w, a.cy], [xm, a.cy], [xm, z.cy], [z.x, z.cy]];
-    }
+    const pts = edgePoints(place.get(f.from)!, place.get(f.to)!, back.has(i), bottom);
     edges.push(
       `      <bpmndi:BPMNEdge id="${id}_di" bpmnElement="${id}">\n${pts.map(([x, y]) => `        <di:waypoint x="${x}" y="${y}" />`).join('\n')}\n      </bpmndi:BPMNEdge>`,
     );
