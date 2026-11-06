@@ -1,9 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { Issue, IssueStatus } from './data';
+import type { Coverage } from './coverage';
 import type { IssueFields } from './useIssues';
 import { Icon } from './Icon';
 
 interface Props {
+  issues: Issue[];
+  cover: Coverage;
+  onSelect: (id: string) => void;
   issue: Issue | null;
   index: number;
   total: number;
@@ -34,7 +38,33 @@ const steps: { id: IssueStatus; label: string }[] = [
 const fmt = (iso: string) =>
   new Date(iso).toLocaleString('ru-RU', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-export function IssuePanel({ issue, index, total, onStep, onTransition, collapsed, onToggle, openCount }: Props) {
+function CoverRow({ label, v }: { label: string; v: { total: number; linked: number } }) {
+  const full = v.linked === v.total;
+  return <div className="cover-row">
+    <span>{label}</span><b className={full ? 'ok' : 'warn'}>{v.linked} из {v.total}</b>
+    <i className="bar"><i style={{ width: `${v.total ? (v.linked / v.total) * 100 : 0}%` }} className={full ? 'ok' : 'warn'} /></i>
+  </div>;
+}
+
+function IssueOverview({ issues, cover, selectedId, onSelect, openCount }: { issues: Issue[]; cover: Coverage; selectedId?: string; onSelect: (id: string) => void; openCount: number }) {
+  return <>
+    {issues.length > 0 && <section className="issue-overview" aria-label="Список замечаний">
+      <div className="issue-overview-head"><span className="label">Все замечания · {issues.length}</span><span>Открытых: {openCount}</span></div>
+      <div className="issue-list">
+        {issues.map((item, index) => <button key={item.id} type="button" className={`issue-list-item${item.id === selectedId ? ' on' : ''}${item.status === 'fixed' || item.status === 'closed' ? ' done' : ''}`} aria-pressed={item.id === selectedId} onClick={() => onSelect(item.id)}>
+          <span className="num">{index + 1}</span><span className="issue-list-title">{item.title}</span>{item.auto && <em className="auto-tag">авто</em>}
+        </button>)}
+      </div>
+    </section>}
+    <section className="cover" aria-label="Согласованность">
+      <div className="label">Согласованность</div>
+      <CoverRow label="Шаги с пунктом" v={cover.steps}/>
+      <CoverRow label="Пункты с шагом" v={cover.sections}/>
+    </section>
+  </>;
+}
+
+export function IssuePanel({ issues, cover, onSelect, issue, index, total, onStep, onTransition, collapsed, onToggle, openCount }: Props) {
   const [note, setNote] = useState('');
   useEffect(() => setNote(''), [issue?.id, issue?.status]);
 
@@ -60,13 +90,16 @@ export function IssuePanel({ issue, index, total, onStep, onTransition, collapse
     return (
       <aside className="panel">
         <div className="panel-head">
-          <strong>Замечание</strong>
+          <strong>Замечания</strong>
           <div className="grow" />
           {collapse}
         </div>
-        <div className="empty-panel">
-          <b>Замечаний нет</b>
-          <span>Они появятся, когда в модели будут шаги без пункта регламента или пункты без шага.</span>
+        <div className="panel-body">
+          <IssueOverview issues={issues} cover={cover} onSelect={onSelect} openCount={openCount}/>
+          <div className="empty-panel">
+            <b>Замечаний нет</b>
+            <span>Они появятся, когда в модели будут шаги без пункта регламента или пункты без шага.</span>
+          </div>
         </div>
       </aside>
     );
@@ -80,7 +113,7 @@ export function IssuePanel({ issue, index, total, onStep, onTransition, collapse
   return (
     <aside className="panel">
       <div className="panel-head">
-        <strong>Замечание</strong>
+        <strong>Замечания</strong>
         <span className="muted small">{index + 1} из {total}</span>
         <div className="grow" />
         <button type="button" className="icon-btn" aria-label="Предыдущее замечание" onClick={() => onStep(-1)}>
@@ -92,7 +125,9 @@ export function IssuePanel({ issue, index, total, onStep, onTransition, collapse
         {collapse}
       </div>
 
-      <div className="panel-body" key={issue.id}>
+      <div className="panel-body">
+        <IssueOverview issues={issues} cover={cover} selectedId={issue.id} onSelect={onSelect} openCount={openCount}/>
+        <div className="issue-detail" key={issue.id}>
         <div className="stack-10">
           <span className={`chip ${done ? 'chip-green' : 'chip-amber'}`}>
             <span className={done ? 'dot-green' : 'dot-amber'} />
@@ -187,6 +222,7 @@ export function IssuePanel({ issue, index, total, onStep, onTransition, collapse
             </ol>
           </section>
         )}
+        </div>
       </div>
 
       {issue.status !== 'open' && <div className="panel-foot">

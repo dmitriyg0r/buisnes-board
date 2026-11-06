@@ -141,9 +141,9 @@ function Workspace({
   const [layout, setLayout] = useState<{ tree: boolean; panel: boolean }>(() => {
     try {
       const v = JSON.parse(localStorage.getItem('bb.layout.v2') ?? '{}') as { tree?: boolean; panel?: boolean };
-      return { tree: v.tree !== false, panel: v.panel === true };
+      return { tree: v.tree !== false, panel: v.panel !== false };
     } catch {
-      return { tree: true, panel: false };
+      return { tree: true, panel: true };
     }
   });
   const toggleSide = (side: 'tree' | 'panel') =>
@@ -181,6 +181,7 @@ function Workspace({
     setSelectedId(issues[next].id);
   };
 
+  const selectCanvasIssue = (id: string) => { setSelectedId(id); if (!layout.panel) toggleSide('panel'); };
   const transition = (id: string, status: IssueStatus, fields?: IssueFields) => {
     const issue = issues.find((i) => i.id === id);
     if (issue) store.update(issue, status, fields);
@@ -222,10 +223,6 @@ function Workspace({
 
       <div className="workspace" style={{ gridTemplateColumns: `${layout.tree ? 232 : 44}px minmax(0, 1fr) ${layout.panel ? 300 : 44}px` }}>
         <Tree
-          issues={issues}
-          selectedId={selected.id}
-          onSelect={setSelectedId}
-          cover={cover}
           activeSourceId={selected.basis?.sourceId}
           sources={api.model.sources}
           docs={api.model.docs}
@@ -234,13 +231,16 @@ function Workspace({
           collapsed={!layout.tree}
           onToggle={() => toggleSide('tree')}
         />
-        <Canvas issues={issues} issue={selected} onSelect={setSelectedId} api={api} settings={settings} onModel={(aiModel) => patchSettings({ aiModel })} projectId={project.id}
+        <Canvas issues={issues} issue={selected} onSelect={selectCanvasIssue} api={api} settings={settings} onModel={(aiModel) => patchSettings({ aiModel })} projectId={project.id}
           onAddMaterial={() => setAddOpen(true)}
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
           paused={editing !== null || addOpen || settingsTab !== null}
         />
         <IssuePanel
+          issues={issues}
+          cover={cover}
+          onSelect={setSelectedId}
           issue={issues.length ? selected : null}
           index={index}
           total={issues.length}

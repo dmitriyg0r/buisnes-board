@@ -9,11 +9,13 @@ import { WorkspaceGrid } from './WorkspaceGrid';
 import { ProjectThumbnail } from './ProjectThumbnail';
 import { WorkspaceContextMenu } from './WorkspaceContextMenu';
 import { WorkspaceSettingsDialog } from './WorkspaceSettingsDialog';
+import { WorkspaceActionDialog } from './WorkspaceActionDialog';
 import { searchTree } from './treeSearch';
 
 interface Props { user: User; onOpen: (p: Project) => void; onLogout: () => void }
 type Item = { kind: 'folder'; data: api.Folder } | { kind: 'project'; data: api.LocatedProject } | { kind: 'file'; data: api.WorkspaceFile };
 type Clipboard = { item: Item; mode: 'copy' | 'cut' };
+type ActionDialog = { kind: 'name'; title: string; label: string; initialValue: string; confirmLabel: string; maxLength: number; save: (name: string) => Promise<boolean> } | { kind: 'remove'; item: Item };
 
 export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
   const [workspaces, setWorkspaces] = useState<api.Workspace[]>([]);
@@ -28,6 +30,7 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
   const [baseMenu, setBaseMenu] = useState<{ workspace: api.Workspace; x: number; y: number } | null>(null);
   const [backgroundMenu, setBackgroundMenu] = useState<{ destination: api.Location; x: number; y: number } | null>(null);
   const [settingsId, setSettingsId] = useState<string | null>(null);
+  const [actionDialog, setActionDialog] = useState<ActionDialog | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(true);
@@ -66,7 +69,7 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
     try { await action(); await refresh(); setRevision((r) => r + 1); return true; } catch (e) { setError(e instanceof HttpError && e.detail ? e.detail : 'Не удалось выполнить действие. Попробуйте ещё раз.'); return false; } finally { setBusy(false); }
   };
   const choose = (workspace_id: string, folder_id: string | null) => { setLocation({ workspace_id, folder_id }); setSelected(null); setMenu(null); };
-  const named = (title: string, initial = '') => window.prompt(title, initial)?.trim() || null;
+  const openNameDialog = (title: string, label: string, initialValue: string, confirmLabel: string, save: (name: string) => Promise<boolean>, maxLength = 200) => { setError(null); setActionDialog({ kind: 'name', title, label, initialValue, confirmLabel, save, maxLength }); };
   const workspace = workspaces.find((w) => w.id === location?.workspace_id);
   const settingsWorkspace = workspaces.find((w) => w.id === settingsId);
   const openBaseSettings = (id: string) => { setError(null); setSettingsId(id); };
@@ -79,19 +82,15 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
   const ancestors: api.Folder[] = [];
   let cursor = currentFolder;
   while (cursor && !ancestors.some((f) => f.id === cursor?.id)) { ancestors.unshift(cursor); cursor = folders.find((f) => f.id === cursor?.parent_id); }
-  const createBase = () => { const name = named('Название базы'); if (name) void run(async () => { const w = await api.createWorkspace(name); choose(w.id, null); }); };
-  const createFolder = (destination: api.Location | null = location) => { if (!destination) return; const name = named('Название папки'); if (name) void run(async () => { await api.createFolder(destination, name); const parentId = destination.folder_id; if (parentId) setCollapsed((old) => { const next = new Set(old); next.delete(parentId); return next; }); }); };
-  const createProject = (destination: api.Location | null = location) => { if (!destination) return; const name = named('Название проекта'); if (name) void run(async () => { onOpen(await api.createWorkspaceProject(destination, name)); }); };
+  const createBase = () => openNameDialog('Создать базу', 'Название базы', '', 'Создать', (name) => run(async () => { const w = await api.createWorkspace(name); choose(w.id, null); }));
+  const createFolder = (destination: api.Location | null = location) => { if (!destination) return; openNameDialog('Создать папку', 'Название папки', '', 'Создать', (name) => run(async () => { await api.createFolder(destination, name); const parentId = destination.folder_id; if (parentId) setCollapsed((old) => { const next = new Set(old); next.delete(parentId); return next; }); })); };
+  const createProject = (destination: api.Location | null = location) => { if (!destination) return; openNameDialog('Создать проект', 'Название проекта', '', 'Создать', (name) => run(async () => { onOpen(await api.createWorkspaceProject(destination, name)); })); };
   const uploadTo = (destination: api.Location | null = location) => { if (!destination) return; uploadTarget.current = destination; upload.current?.click(); };
   const rename = (item: Item) => {
-    const name = named('Новое название', item.data.name); if (!name || name === item.data.name) return;
-    void run(async () => { if (item.kind === 'folder') await api.renameFolder(item.data.id, name); else if (item.kind === 'project') await patchProject(item.data.id, { name }); else await api.renameFile(item.data.id, name); setSelected(null); });
+    openNameDialog('Переименовать', 'Новое название', item.data.name, 'Сохранить', (name) => name === item.data.name ? Promise.resolve(true) : run(async () => { if (item.kind === 'folder') await api.renameFolder(item.data.id, name); else if (item.kind === 'project') await patchProject(item.data.id, { name }); else await api.renameFile(item.data.id, name); setSelected(null); }), item.kind === 'file' ? 255 : 200);
   };
-  const remove = (item: Item) => {
-    const detail = item.kind === 'folder' ? ' Папка и всё её содержимое будут удалены.' : item.kind === 'project' ? ' Все данные проекта будут удалены.' : '';
-    if (!window.confirm(`Удалить «${item.data.name}»?${detail}`)) return;
-    void run(async () => { if (item.kind === 'folder') await api.deleteFolder(item.data.id); else if (item.kind === 'project') { await deleteProject(item.data.id); forgetProject(item.data.id); } else await api.deleteFile(item.data.id); setSelected(null); setClipboard((c) => c?.item.data.id === item.data.id ? null : c); });
-  };
+  const remove = (item: Item) => { setError(null); setActionDialog({ kind: 'remove', item }); };
+  const confirmRemove = (item: Item) => run(async () => { if (item.kind === 'folder') await api.deleteFolder(item.data.id); else if (item.kind === 'project') { await deleteProject(item.data.id); forgetProject(item.data.id); } else await api.deleteFile(item.data.id); setSelected(null); setClipboard((c) => c?.item.data.id === item.data.id ? null : c); });
   const paste = (destination: api.Location | null = location) => {
     if (!clipboard || !destination) return;
     const { item, mode } = clipboard;
@@ -214,5 +213,6 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
     ]} />}
     {backgroundMenu && <WorkspaceContextMenu x={backgroundMenu.x} y={backgroundMenu.y} onClose={() => setBackgroundMenu(null)} actions={creationActions(backgroundMenu.destination)} />}
     {settingsWorkspace && <WorkspaceSettingsDialog key={settingsWorkspace.id} workspace={settingsWorkspace} busy={busy} error={error} onClose={() => { setSettingsId(null); setError(null); }} onRename={(name) => run(async () => { await api.renameWorkspace(settingsWorkspace.id, name); })} onDelete={() => run(async () => { await api.deleteWorkspace(settingsWorkspace.id); })} onExport={() => void run(async () => { await api.exportWorkspace(settingsWorkspace.id); })}/>}
+    {actionDialog && <WorkspaceActionDialog title={actionDialog.kind === 'name' ? actionDialog.title : 'Удалить элемент?'} label={actionDialog.kind === 'name' ? actionDialog.label : undefined} initialValue={actionDialog.kind === 'name' ? actionDialog.initialValue : undefined} maxLength={actionDialog.kind === 'name' ? actionDialog.maxLength : undefined} description={actionDialog.kind === 'remove' ? `Удалить «${actionDialog.item.data.name}»? ${actionDialog.item.kind === 'folder' ? 'Папка и всё её содержимое будут удалены без возможности восстановления.' : actionDialog.item.kind === 'project' ? 'Все данные проекта будут удалены без возможности восстановления.' : 'Файл будет удалён без возможности восстановления.'}` : undefined} confirmLabel={actionDialog.kind === 'name' ? actionDialog.confirmLabel : 'Удалить'} danger={actionDialog.kind === 'remove'} busy={busy} error={error} onClose={() => { setActionDialog(null); setError(null); }} onConfirm={(value) => actionDialog.kind === 'name' ? actionDialog.save(value) : confirmRemove(actionDialog.item)}/>}
   </div>;
 }

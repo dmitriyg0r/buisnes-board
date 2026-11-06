@@ -1,6 +1,6 @@
 import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { isLinkable, projectNodes, splitRef } from './bpmn';
-import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Doc, type Issue, type Source } from './data';
+import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source } from './data';
 import { splitMarkdown } from './markdown';
 import type { AiModel, Settings } from './settings';
 import { AiChat } from './AiChat';
@@ -48,9 +48,17 @@ function DragCard({
   selected,
   linking,
   onLinkPick,
+  onPortDown,
+  onPortMove,
+  onPortUp,
+  onPortCancel,
+  draggingLink,
+  linkTarget,
+  linkLabel,
   linkSource,
   className,
   style,
+  onEdit,
   onResizeStart,
   children,
 }: {
@@ -62,10 +70,18 @@ function DragCard({
   selected: boolean;
   /** режим «Связь»: клик по карточке выбирает её как начало или конец связи */
   linking: boolean;
-  onLinkPick: (id: string) => void;
+  onLinkPick: (id: string, side?: CardSide) => void;
+  onPortDown: (id: string, side: CardSide, e: React.PointerEvent<HTMLButtonElement>) => void;
+  onPortMove: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onPortUp: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  onPortCancel: (e: React.PointerEvent<HTMLButtonElement>) => void;
+  draggingLink: boolean;
+  linkTarget: boolean;
+  linkLabel: string;
   linkSource: boolean;
   className: string;
   style?: React.CSSProperties;
+  onEdit?: () => void;
   /** есть — в углу карточки появляется ручка изменения размера */
   onResizeStart?: (id: string, e: React.PointerEvent<HTMLElement>) => void;
   children: React.ReactNode;
@@ -77,9 +93,19 @@ function DragCard({
   return (
     <div
       data-card={id}
-      className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}`}
+      tabIndex={0}
+      role="group"
+      aria-label={linkLabel}
+      className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}${linkTarget && draggingLink ? ' link-target' : ''}`}
       style={{ left: pos.x, top: pos.y, ...style }}
       onContextMenu={(e) => onContext({ type: 'card', id }, e)}
+      onFocus={(e) => { if (e.target === e.currentTarget) onGrab(id, false); }}
+      onKeyDown={(e) => { if (e.target === e.currentTarget && e.key === 'Enter' && !linking && onEdit) { e.preventDefault(); e.stopPropagation(); onEdit(); } }}
+      onDoubleClick={(e) => {
+        if (linking || (e.target as HTMLElement).closest('button, input, textarea, a, [data-nodrag]')) return;
+        if (onEdit) { e.preventDefault(); e.stopPropagation(); onEdit(); }
+        else if (id.startsWith('gw:')) { e.preventDefault(); e.currentTarget.querySelector<HTMLInputElement>('.gw-label')?.focus(); }
+      }}
       onPointerDown={(e) => {
         if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-nodrag]')) return;
         drag.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y };
@@ -102,6 +128,7 @@ function DragCard({
         drag.current = null;
       }}
       onClickCapture={(e) => {
+        if ((e.target as HTMLElement).closest('[data-link-port]')) return;
         if (moved.current) {
           e.stopPropagation();
           moved.current = false;
@@ -113,6 +140,13 @@ function DragCard({
     >
       <span className="pin" />
       {children}
+      {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).map(([side, label]) => <button
+        key={side} type="button" className={`card-port card-port-${side}`} data-link-port={side} data-nodrag
+        tabIndex={selected ? 0 : -1}
+        aria-label={`Связь от «${linkLabel}», точка ${label}`} title={`Создать связь ${label}`}
+        onPointerDown={(e) => onPortDown(id, side, e)} onPointerMove={onPortMove} onPointerUp={onPortUp} onPointerCancel={onPortCancel} onLostPointerCapture={onPortCancel}
+        onClick={(e) => { e.stopPropagation(); if (e.detail === 0) onLinkPick(id, side); }}
+      />)}
       {onResizeStart && <span className="resize-grip" data-nodrag title="Потяните, чтобы изменить размер" onPointerDown={(e) => onResizeStart(id, e)} />}
     </div>
   );
@@ -314,6 +348,37 @@ function routeCards(a: Box, b: Box): Pos[] {
   if (Math.abs(dx) < 2) return [{ x: ac.x, y: sy }, { x: ac.x, y: ty }];
   const my = (sy + ty) / 2;
   return [{ x: ac.x, y: sy }, { x: ac.x, y: my }, { x: bc.x, y: my }, { x: bc.x, y: ty }];
+}
+
+const validSide = (side: unknown): side is CardSide => side === 'top' || side === 'right' || side === 'bottom' || side === 'left';
+const sideVector: Record<CardSide, Pos> = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
+
+/** Опорная точка с учётом поворота карточек источников. */
+function sidePoint(box: Box, side: CardSide, degrees = 0): Pos {
+  const vector = sideVector[side];
+  const x = vector.x * box.w / 2;
+  const y = vector.y * box.h / 2;
+  const angle = degrees * Math.PI / 180;
+  return { x: box.x + box.w / 2 + x * Math.cos(angle) - y * Math.sin(angle), y: box.y + box.h / 2 + x * Math.sin(angle) + y * Math.cos(angle) };
+}
+
+/** Прокладывает связь через выбранные стороны, не меняя старые автоматические маршруты. */
+function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number): Pos[] {
+  const start = sidePoint(a, aSide, aAngle);
+  const end = sidePoint(b, bSide, bAngle);
+  const av = sideVector[aSide];
+  const bv = sideVector[bSide];
+  const out = { x: start.x + av.x * 24, y: start.y + av.y * 24 };
+  const into = { x: end.x + bv.x * 24, y: end.y + bv.y * 24 };
+  if (av.x && bv.x) {
+    const mx = av.x === bv.x ? (av.x > 0 ? Math.max(out.x, into.x) + 24 : Math.min(out.x, into.x) - 24) : (out.x + into.x) / 2;
+    return [start, out, { x: mx, y: out.y }, { x: mx, y: into.y }, into, end];
+  }
+  if (av.y && bv.y) {
+    const my = av.y === bv.y ? (av.y > 0 ? Math.max(out.y, into.y) + 24 : Math.min(out.y, into.y) - 24) : (out.y + into.y) / 2;
+    return [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
+  }
+  return [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
 }
 
 /** Место для подписи: середина самого длинного отрезка. */
@@ -586,6 +651,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   const root = useRef<HTMLDivElement>(null);
   const world = useRef<HTMLDivElement>(null);
+  const [sourceSizes, setSourceSizes] = useState<CardSizes>({});
   const [cam, setCam] = useState(() => saved?.cam ?? { x: 0, y: 0, k: 1 });
   const camRef = useRef(cam);
   camRef.current = cam;
@@ -606,25 +672,46 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   /* ----- связи между карточками ----- */
   const [mode, setMode] = useState<'select' | 'link' | 'gateway'>('select');
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
+  const [linkFromSide, setLinkFromSide] = useState<CardSide | null>(null);
   const [selLink, setSelLink] = useState<string | null>(null);
   const [editLink, setEditLink] = useState<string | null>(null);
+  type PortDrag = { from: string; fromSide: CardSide; pointer: number; startX: number; startY: number; start: Pos; point: Pos; target: string | null; toSide: CardSide | null; moved: boolean; element: HTMLButtonElement };
+  const [portDrag, setPortDrag] = useState<PortDrag | null>(null);
+  const portDragRef = useRef<PortDrag | null>(null);
   const cardLinks = api.model.cardLinks.filter((l) => cardIdsOf(api.model).includes(l.from) && cardIdsOf(api.model).includes(l.to));
 
-  const pickForLink = (id: string) => {
+  const boxForLink = (id: string): Box => ({ ...posOf(id), ...(id.startsWith('src:') ? sourceSizes[id] ?? cardSize(id) : cardSize(id)) });
+  const angleForLink = (id: string) => { const i = sources.findIndex((s) => `src:${s.id}` === id); return i < 0 ? 0 : i % 2 ? 1.2 : -1.4; };
+  const pointsForLink = (link: CardLink) => validSide(link.fromSide) && validSide(link.toSide)
+    ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to))
+    : routeCards(boxForLink(link.from), boxForLink(link.to));
+  const closestSide = (id: string, point: Pos): CardSide => (['top', 'right', 'bottom', 'left'] as const).reduce((best, side) => {
+    const a = sidePoint(boxForLink(id), side, angleForLink(id));
+    const b = sidePoint(boxForLink(id), best, angleForLink(id));
+    return Math.hypot(a.x - point.x, a.y - point.y) < Math.hypot(b.x - point.x, b.y - point.y) ? side : best;
+  }, 'top' as CardSide);
+  const addCardLink = (from: string, to: string, fromSide?: CardSide, toSide?: CardSide) => {
+    if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return;
+    const lid = 'c' + Math.random().toString(36).slice(2, 7);
+    api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from, to, label: '', ...(fromSide && toSide ? { fromSide, toSide } : {}) }] }));
+    setSelLink(lid);
+  };
+  const pickForLink = (id: string, side?: CardSide) => {
     if (!linkFrom) {
       setLinkFrom(id);
+      setLinkFromSide(side ?? null);
+      setMode('link');
       return;
     }
     if (linkFrom === id) {
       setLinkFrom(null);
+      setLinkFromSide(null);
       return;
     }
-    if (!api.model.cardLinks.some((l) => l.from === linkFrom && l.to === id)) {
-      const lid = 'c' + Math.random().toString(36).slice(2, 7);
-      api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from: linkFrom, to: id, label: '' }] }));
-      setSelLink(lid);
-    }
+    const targetSide = side ?? (linkFromSide ? closestSide(id, sidePoint(boxForLink(linkFrom), linkFromSide, angleForLink(linkFrom))) : undefined);
+    addCardLink(linkFrom, id, linkFromSide ?? undefined, targetSide);
     setLinkFrom(null);
+    setLinkFromSide(null);
   };
   const removeCardLink = (id: string) => {
     api.apply((m) => ({ ...m, cardLinks: m.cardLinks.filter((l) => l.id !== id) }));
@@ -633,10 +720,54 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
   const setLinkLabel = (id: string, label: string) =>
     api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((l) => (l.id === id ? { ...l, label } : l)) }));
-  const linkProps = (id: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id });
+  const pointOnCanvas = (x: number, y: number): Pos => { const r = root.current!.getBoundingClientRect(); const c = camRef.current; return { x: (x - r.left - c.x) / c.k, y: (y - r.top - c.y) / c.k }; };
+  const portTargetAt = (x: number, y: number, from: string) => {
+    const hit = document.elementFromPoint(x, y);
+    const card = hit?.closest<HTMLElement>('[data-card]');
+    const id = card?.dataset.card;
+    if (!card || !id || id === from || !cardIds.includes(id) || !root.current?.contains(card)) return { target: null, toSide: null };
+    const port = hit?.closest<HTMLElement>('[data-link-port]');
+    const side = port?.dataset.linkPort;
+    return { target: id, toSide: validSide(side) ? side : closestSide(id, pointOnCanvas(x, y)) };
+  };
+  const startPortDrag = (from: string, fromSide: CardSide, e: React.PointerEvent<HTMLButtonElement>) => {
+    if (e.button !== 0 || portDragRef.current) return;
+    e.preventDefault(); e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    const start = pointOnCanvas(r.left + r.width / 2, r.top + r.height / 2);
+    const drag: PortDrag = { from, fromSide, pointer: e.pointerId, startX: e.clientX, startY: e.clientY, start, point: start, target: null, toSide: null, moved: false, element: e.currentTarget };
+    portDragRef.current = drag; setPortDrag(drag); setSelCards([from]); setSelLink(null);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const movePortDrag = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = portDragRef.current;
+    if (!drag || drag.pointer !== e.pointerId) return;
+    e.stopPropagation();
+    const moved = drag.moved || Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 4;
+    const target = moved ? portTargetAt(e.clientX, e.clientY, drag.from) : { target: null, toSide: null };
+    const next = { ...drag, moved, point: pointOnCanvas(e.clientX, e.clientY), ...target };
+    portDragRef.current = next; setPortDrag(next);
+  };
+  const finishPortDrag = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const drag = portDragRef.current;
+    if (!drag || drag.pointer !== e.pointerId) return;
+    e.preventDefault(); e.stopPropagation();
+    const moved = drag.moved || Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 4;
+    const target = moved ? portTargetAt(e.clientX, e.clientY, drag.from) : null;
+    portDragRef.current = null; setPortDrag(null);
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    if (!moved) pickForLink(drag.from, drag.fromSide);
+    else { if (target?.target && target.toSide) addCardLink(drag.from, target.target, drag.fromSide, target.toSide); setMode('select'); setLinkFrom(null); setLinkFromSide(null); }
+  };
+  const cancelPortDrag = (e: React.PointerEvent<HTMLButtonElement>) => {
+    if (portDragRef.current?.pointer !== e.pointerId) return;
+    portDragRef.current = null; setPortDrag(null);
+  };
+  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved), linkTarget: portDrag?.target === id, linkLabel });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFrom(null);
+    setLinkFromSide(null);
   };
 
   const clampK = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
@@ -673,6 +804,18 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
 
   const cardsKey = cardIds.join('|');
+  useLayoutEffect(() => {
+    const nodes = Array.from(world.current?.querySelectorAll<HTMLElement>('.file-card[data-card]') ?? []);
+    const measure = () => setSourceSizes((old) => {
+      const next: CardSizes = {};
+      for (const node of nodes) if (node.dataset.card) next[node.dataset.card] = { w: node.offsetWidth, h: node.offsetHeight };
+      return JSON.stringify(old) === JSON.stringify(next) ? old : next;
+    });
+    const observer = new ResizeObserver(measure);
+    nodes.forEach((node) => observer.observe(node));
+    measure();
+    return () => observer.disconnect();
+  }, [cardsKey]);
   /** куда класть новую карточку: точка правого клика по полотну; без неё — центр видимой области */
   const spawnAt = useRef<Pos | null>(null);
   const prevIds = useRef(cardIds);
@@ -936,6 +1079,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       if (ev.code === 'Digit0') return fit();
       if (ev.code === 'Digit1') return setZoom(1);
       if (ev.key === 'Escape') {
+        const drag = portDragRef.current;
+        portDragRef.current = null;
+        setPortDrag(null);
+        if (drag?.element.hasPointerCapture(drag.pointer)) drag.element.releasePointerCapture(drag.pointer);
         setSelCards([]);
         setSelLink(null);
         switchMode('select');
@@ -1038,9 +1185,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
               onMove={move}
               onGrab={grab}
               onContext={openMenu}
-              selected={selCards.includes(`src:${s.id}`)} {...linkProps(`src:${s.id}`)}
+              selected={selCards.includes(`src:${s.id}`)} {...linkProps(`src:${s.id}`, s.name)}
               className="file-card"
               style={{ transform: `rotate(${i % 2 ? 1.2 : -1.4}deg)` }}
+              onEdit={() => setProps({ type: 'card', id: `src:${s.id}` })}
             >
               <FileCard source={s} active={issue.basis?.sourceId === s.id} />
             </DragCard>
@@ -1058,9 +1206,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                 onGrab={grab}
                 onContext={openMenu}
                 selected={selCards.includes(id)}
-                {...linkProps(id)}
+                {...linkProps(id, p.title)}
                 className="model-card"
                 style={{ width: cardSize(id).w, height: cardSize(id).h }}
+                onEdit={() => onEditProcess(p.id)}
                 onResizeStart={startResize}
               >
                 <ProcessCard
@@ -1094,9 +1243,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                 onGrab={grab}
                 onContext={openMenu}
                 selected={selCards.includes(id)}
-                {...linkProps(id)}
+                {...linkProps(id, d.title)}
                 className="doc-card"
                 style={{ width: cardSize(id).w, height: cardSize(id).h }}
+                onEdit={() => onEditDoc(d.id)}
                 onResizeStart={startResize}
               >
                 <DocCard doc={d} issue={issue} issues={issues} onSelect={onSelect} onContext={openMenu} onEdit={() => onEditDoc(d.id)} meta={api.model.meta} />
@@ -1115,7 +1265,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                 onGrab={grab}
                 onContext={openMenu}
                 selected={selCards.includes(id)}
-                {...linkProps(id)}
+                {...linkProps(id, g.label || 'Шлюз')}
                 className="gateway-card"
                 style={{ width: cardSize(id).w, height: cardSize(id).h }}
                 onResizeStart={startResize}
@@ -1136,6 +1286,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             );
           })}
 
+          {portDrag?.moved && <svg className="card-link-preview" aria-hidden="true"><path d={`M${portDrag.start.x} ${portDrag.start.y} L${portDrag.point.x} ${portDrag.point.y}`} /></svg>}
           {guideRef.current.map((g, i) => (
             <i
               key={i}
@@ -1154,7 +1305,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                 ))}
               </defs>
               {cardLinks.map((l) => {
-                const pts = routeCards({ ...posOf(l.from), ...cardSize(l.from) }, { ...posOf(l.to), ...cardSize(l.to) });
+                const pts = pointsForLink(l);
                 const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ');
                 const on = selLink === l.id;
                 return (
@@ -1177,7 +1328,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             </svg>
           )}
           {cardLinks.map((l) => {
-            const pts = routeCards({ ...posOf(l.from), ...cardSize(l.from) }, { ...posOf(l.to), ...cardSize(l.to) });
+            const pts = pointsForLink(l);
             const m = labelSpot(pts);
             if (editLink === l.id)
               return (
