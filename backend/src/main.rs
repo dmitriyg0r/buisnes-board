@@ -58,6 +58,7 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
         .route("/workspaces/:id", patch(routes::workspaces::update).delete(routes::workspaces::delete))
         .route("/workspaces/:id/folders", get(routes::workspaces::list_folders))
         .route("/workspaces/:id/files", get(routes::files::list_workspace))
+        .route("/workspaces/:id/export", get(routes::export::workspace))
         .route("/folders", post(routes::workspaces::create_folder))
         .route("/folders/:id", patch(routes::workspaces::update_folder).delete(routes::workspaces::delete_folder))
         .route("/folders/:id/move", post(routes::workspaces::move_folder))

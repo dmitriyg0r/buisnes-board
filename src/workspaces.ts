@@ -11,6 +11,23 @@ export const listWorkspaces = () => http<Workspace[]>('GET', '/workspaces');
 export const createWorkspace = (name: string) => http<Workspace>('POST', '/workspaces', { name });
 export const renameWorkspace = (id: string, name: string) => http<Workspace>('PATCH', `/workspaces/${id}`, { name });
 export const deleteWorkspace = (id: string) => http<void>('DELETE', `/workspaces/${id}`);
+export async function exportWorkspace(id: string): Promise<void> {
+  const response = await fetch(`/api/workspaces/${encodeURIComponent(id)}/export`);
+  if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event('bb:unauthorized'));
+    let detail: string | undefined;
+    try { detail = ((await response.json()) as { error?: string }).error; } catch { /* нет тела ошибки */ }
+    throw new HttpError(response.status, detail ?? 'Не удалось экспортировать базу. Попробуйте ещё раз.');
+  }
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `workspace-${id}.json`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
 export const listFolders = (workspace: string) => http<Folder[]>('GET', `/workspaces/${workspace}/folders`);
 export const listTreeFiles = (workspace: string) => http<WorkspaceFile[]>('GET', `/workspaces/${workspace}/files`);
 export const createFolder = (location: Location, name: string) => http<Folder>('POST', '/folders', { workspace_id: location.workspace_id, parent_id: location.folder_id, name });
