@@ -27,8 +27,12 @@ export const nodeFields: Record<NodeKind, FieldDef[]> = {
   event: [description],
 };
 
+/** Значение поля «Связь с моделью» для пунктов, которым шаг модели не нужен: цель, участники, определения. */
+export const INFO_SECTION = 'Справочный пункт';
+
 export const sectionFields: FieldDef[] = [
   { key: 'status', label: 'Статус пункта', kind: 'select', options: ['Черновик', 'Согласован', 'Устарел'] },
+  { key: 'coverage', label: 'Связь с моделью', kind: 'select', options: ['Описывает шаги модели', INFO_SECTION] },
 ];
 
 export const fileFields: FieldDef[] = [
