@@ -2,7 +2,7 @@ import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useStat
 import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Doc, type Issue, type Source } from './data';
 import { splitMarkdown } from './markdown';
-import type { Settings } from './settings';
+import { aiModels, type AiModel, type Settings } from './settings';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
 
@@ -24,6 +24,7 @@ interface Props {
   onSelect: (id: string) => void;
   api: ModelApi;
   settings: Settings;
+  onModel: (m: AiModel) => void;
   projectId: string;
   onAddMaterial: () => void;
   /** открыть редактор BPMN-модели */
@@ -329,7 +330,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, projectId, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways } = api.model;
   const pnodes = projectNodes(processes);
@@ -998,6 +999,16 @@ export function Canvas({ issues, issue, onSelect, api, settings, projectId, onAd
         <form className="ai-field" onSubmit={(e) => e.preventDefault()}>
           <Icon name="sparkle" size={16} />
           <input value={aiText} onChange={(e) => setAiText(e.target.value)} placeholder="Спросите ИИ про выбранные материалы" aria-label="Запрос к ИИ" />
+          <select
+            className="ai-model"
+            value={settings.aiModel}
+            onChange={(e) => onModel(e.target.value as AiModel)}
+            aria-label="Модель ИИ"
+          >
+            {aiModels.map((m) => (
+              <option key={m.id} value={m.id}>{m.label}</option>
+            ))}
+          </select>
           <button type="submit" className="ai-send" disabled title="ИИ ещё не подключён" aria-label="Отправить">
             <Icon name="arrowUp" size={16} />
           </button>
