@@ -2,6 +2,7 @@ import { HttpError } from './api';
 import { nodeRef, parseProcess } from './bpmn';
 import type { Model } from './data';
 import { reconcileSections, sectionTitles } from './markdown';
+import { INFO_SECTION, key } from './schema';
 import type { AiModel } from './settings';
 
 /** Ответ сервера: проверенный процесс и документ. */
@@ -207,7 +208,7 @@ const TAG: Record<GenNode['type'], { tag: string; prefix: string; w: number; h: 
   end: { tag: 'endEvent', prefix: 'EndEvent', w: 36, h: 36 },
 };
 
-const COL = 190;
+const COL = 150;
 const ROW = 110;
 const X0 = 100;
 const Y0 = 200;
@@ -322,8 +323,16 @@ export function buildBpmnXml(title: string, nodes: GenNode[], flows: GenFlow[]):
     const el = elementId[n.id];
     const b = place.get(n.id)!;
     elements.push(`    <bpmn:${TAG[n.type].tag} id="${el}"${n.name ? ` name="${esc(n.name)}"` : ''} />`);
+    // у событий и развилок подпись снаружи: задаём ей место явно (событие: под фигурой, развилка: над ней),
+    // иначе подпись длинного названия налезает на сам круг
+    let label = '';
+    if (n.type !== 'task' && n.name) {
+      const lh = Math.min(4, Math.ceil(n.name.length / 13)) * 14;
+      const ly = n.type === 'gateway' ? b.y - 6 - lh : b.y + b.h + 4;
+      label = `\n        <bpmndi:BPMNLabel>\n          <dc:Bounds x="${b.cx - 45}" y="${ly}" width="90" height="${lh}" />\n        </bpmndi:BPMNLabel>`;
+    }
     shapes.push(
-      `      <bpmndi:BPMNShape id="${el}_di" bpmnElement="${el}"${n.type === 'gateway' ? ' isMarkerVisible="true"' : ''}>\n        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />\n      </bpmndi:BPMNShape>`,
+      `      <bpmndi:BPMNShape id="${el}_di" bpmnElement="${el}"${n.type === 'gateway' ? ' isMarkerVisible="true"' : ''}>\n        <dc:Bounds x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" />${label}\n      </bpmndi:BPMNShape>`,
     );
   }
   const edges: string[] = [];
@@ -387,10 +396,16 @@ export function applyGenerated(m: Model, r: GenResult): Model {
         )
       : [];
 
+  // пункты без шагов (цель, участники, определения) помечаем справочными, чтобы проверка покрытия не считала их замечаниями
+  const info = sections.length === r.document.sections.length ? r.document.sections.flatMap((s, i) => (s.steps.some((st) => built.elementId[st]) ? [] : [sections[i].id])) : [];
+  const meta = { ...m.meta };
+  for (const id of info) meta[key.section(id)] = { ...meta[key.section(id)], coverage: INFO_SECTION };
+
   return {
     ...m,
     processes: [...m.processes, { id: pid, title: oneLine(r.process.title), xml: built.xml }],
     docs: [...m.docs, { id: did, title: dtitle, markdown, sections }],
     links: [...m.links, ...links],
+    meta,
   };
 }

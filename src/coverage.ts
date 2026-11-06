@@ -1,12 +1,15 @@
 import { isLinkable, projectNodes } from './bpmn';
 import { sectionRef, type Issue, type Model } from './data';
+import { INFO_SECTION, key } from './schema';
 
 export interface Coverage {
   steps: { total: number; linked: number };
   sections: { total: number; linked: number };
 }
 
-const allSections = (m: Model) => m.docs.flatMap((d) => d.sections.map((s) => ({ ...s, docId: d.id, docTitle: d.title })));
+/** Пункты, которые должны описывать шаги модели. Справочные (цель, участники) в проверке покрытия не участвуют. */
+const allSections = (m: Model) =>
+  m.docs.flatMap((d) => d.sections.filter((s) => m.meta[key.section(s.id)]?.coverage !== INFO_SECTION).map((s) => ({ ...s, docId: d.id, docTitle: d.title })));
 
 export function coverage(model: Model): Coverage {
   const steps = projectNodes(model.processes).filter(isLinkable);
