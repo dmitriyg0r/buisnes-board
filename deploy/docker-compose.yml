@@ -1,0 +1,41 @@
+# Лежит на сервере в ~/testboard/. Образ собирает GitHub Actions, Watchtower подтягивает новый.
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bb
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: buisnes_board
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bb -d buisnes_board"]
+      interval: 5s
+      retries: 10
+
+  app:
+    image: ghcr.io/dmitriyg0r/buisnes-board:latest
+    restart: unless-stopped
+    depends_on:
+      db: { condition: service_healthy }
+    environment:
+      DATABASE_URL: postgres://bb:${DB_PASSWORD}@db:5432/buisnes_board
+      SECRETS_KEY: ${SECRETS_KEY}
+      COOKIE_SECURE: "true"
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      RUST_LOG: bb_backend=info,tower_http=info
+    ports:
+      - "127.0.0.1:18090:8080"
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    command: --label-enable --interval 60 --cleanup
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  pgdata:
