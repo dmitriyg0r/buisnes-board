@@ -20,6 +20,8 @@ interface Pos {
   y: number;
 }
 
+type CardAnchor = { side: CardSide; offset: number };
+
 interface Props {
   issues: Issue[];
   issue: Issue;
@@ -59,6 +61,7 @@ function DragCard({
   linkTarget,
   linkLabel,
   linkSource,
+  portSize,
   className,
   style,
   onEdit,
@@ -73,8 +76,8 @@ function DragCard({
   selected: boolean;
   /** режим «Связь»: клик по карточке выбирает её как начало или конец связи */
   linking: boolean;
-  onLinkPick: (id: string, side?: CardSide) => void;
-  onPortDown: (id: string, side: CardSide, e: React.PointerEvent<HTMLButtonElement>) => void;
+  onLinkPick: (id: string, anchor?: CardAnchor, point?: Pos) => void;
+  onPortDown: (id: string, anchor: CardAnchor, e: React.PointerEvent<HTMLButtonElement>) => void;
   onPortMove: (e: React.PointerEvent<HTMLButtonElement>) => void;
   onPortUp: (e: React.PointerEvent<HTMLButtonElement>) => void;
   onPortCancel: (e: React.PointerEvent<HTMLButtonElement>) => void;
@@ -82,6 +85,7 @@ function DragCard({
   linkTarget: boolean;
   linkLabel: string;
   linkSource: boolean;
+  portSize: { w: number; h: number };
   className: string;
   style?: React.CSSProperties;
   onEdit?: () => void;
@@ -110,7 +114,7 @@ function DragCard({
         else if (id.startsWith('gw:')) { e.preventDefault(); e.currentTarget.querySelector<HTMLInputElement>('.gw-label')?.focus(); }
       }}
       onPointerDown={(e) => {
-        if (e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-nodrag]')) return;
+        if (linking || e.button !== 0 || (e.target as HTMLElement).closest('button,input,[data-nodrag]')) return;
         drag.current = { sx: e.clientX, sy: e.clientY, ox: pos.x, oy: pos.y };
         moved.current = false;
         onGrab(id, e.shiftKey);
@@ -137,19 +141,27 @@ function DragCard({
           moved.current = false;
         } else if (linking) {
           e.stopPropagation();
-          onLinkPick(id);
+          onLinkPick(id, undefined, { x: e.clientX, y: e.clientY });
         }
       }}
     >
       <span className="pin" />
       {children}
-      {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).map(([side, label]) => <button
-        key={side} type="button" className={`card-port card-port-${side}`} data-link-port={side} data-nodrag
-        tabIndex={selected ? 0 : -1}
-        aria-label={`Связь от «${linkLabel}», точка ${label}`} title={`Создать связь ${label}`}
-        onPointerDown={(e) => onPortDown(id, side, e)} onPointerMove={onPortMove} onPointerUp={onPortUp} onPointerCancel={onPortCancel} onLostPointerCapture={onPortCancel}
-        onClick={(e) => { e.stopPropagation(); if (e.detail === 0) onLinkPick(id, side); }}
-      />)}
+      {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
+        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(12, Math.floor((side === 'top' || side === 'bottom' ? portSize.w : portSize.h) / 100)));
+        return Array.from({ length: count }, (_, i) => {
+          const offset = (i + 1) / (count + 1);
+          const anchor = { side, offset };
+          const style = side === 'top' || side === 'bottom' ? { left: `${offset * 100}%` } : { top: `${offset * 100}%` };
+          return <button
+            key={`${side}-${i}`} type="button" className={`card-port card-port-${side}`} style={style} data-link-port={side} data-link-offset={offset} data-nodrag
+            tabIndex={selected || linkTarget ? 0 : -1}
+            aria-label={`Связь от «${linkLabel}», точка ${label} ${i + 1} из ${count}`} title={`Создать связь ${label}`}
+            onPointerDown={(e) => onPortDown(id, anchor, e)} onPointerMove={onPortMove} onPointerUp={onPortUp} onPointerCancel={onPortCancel} onLostPointerCapture={onPortCancel}
+            onClick={(e) => { e.stopPropagation(); if (e.detail === 0) onLinkPick(id, anchor); }}
+          />;
+        });
+      })}
       {onResizeStart && <span className="resize-grip" data-nodrag title="Потяните, чтобы изменить размер" onPointerDown={(e) => onResizeStart(id, e)} />}
     </div>
   );
@@ -357,18 +369,19 @@ const validSide = (side: unknown): side is CardSide => side === 'top' || side ==
 const sideVector: Record<CardSide, Pos> = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
 
 /** Опорная точка с учётом поворота карточек источников. */
-function sidePoint(box: Box, side: CardSide, degrees = 0): Pos {
+function sidePoint(box: Box, side: CardSide, degrees = 0, offset = 0.5): Pos {
   const vector = sideVector[side];
-  const x = vector.x * box.w / 2;
-  const y = vector.y * box.h / 2;
+  const along = Math.max(0, Math.min(1, Number.isFinite(offset) ? offset : 0.5)) - 0.5;
+  const x = vector.x ? vector.x * box.w / 2 : along * box.w;
+  const y = vector.y ? vector.y * box.h / 2 : along * box.h;
   const angle = degrees * Math.PI / 180;
   return { x: box.x + box.w / 2 + x * Math.cos(angle) - y * Math.sin(angle), y: box.y + box.h / 2 + x * Math.sin(angle) + y * Math.cos(angle) };
 }
 
 /** Прокладывает связь через выбранные стороны, не меняя старые автоматические маршруты. */
-function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number): Pos[] {
-  const start = sidePoint(a, aSide, aAngle);
-  const end = sidePoint(b, bSide, bAngle);
+function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number, aOffset = 0.5, bOffset = 0.5): Pos[] {
+  const start = sidePoint(a, aSide, aAngle, aOffset);
+  const end = sidePoint(b, bSide, bAngle, bOffset);
   const av = sideVector[aSide];
   const bv = sideVector[bSide];
   const out = { x: start.x + av.x * 24, y: start.y + av.y * 24 };
@@ -382,6 +395,69 @@ function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: C
     return [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
   }
   return [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
+}
+
+/** Убирает повторяющиеся и лишние точки, сохраняя развороты маршрута. */
+function simplifyRoute(points: Pos[]): Pos[] {
+  const result: Pos[] = [];
+  for (const point of points) {
+    const last = result[result.length - 1];
+    if (last && Math.hypot(last.x - point.x, last.y - point.y) < 0.01) continue;
+    while (result.length > 1) {
+      const a = result[result.length - 2], b = result[result.length - 1];
+      const ax = b.x - a.x, ay = b.y - a.y, bx = point.x - b.x, by = point.y - b.y;
+      if (Math.abs(ax * by - ay * bx) > 0.01 || ax * bx + ay * by < 0) break;
+      result.pop();
+    }
+    result.push(point);
+  }
+  return result;
+}
+
+/** Ручной маршрут сохраняет точки при перемещении карточек, дополняя прямые углы. */
+function routeVia(start: Pos, end: Pos, points: Pos[]): Pos[] {
+  const result: Pos[] = [start];
+  for (const point of [...points, end]) {
+    const prev = result[result.length - 1];
+    if (Math.abs(prev.x - point.x) > 0.01 && Math.abs(prev.y - point.y) > 0.01) result.push({ x: point.x, y: prev.y });
+    if (Math.abs(prev.x - point.x) > 0.01 || Math.abs(prev.y - point.y) > 0.01) result.push(point);
+  }
+  const simplified = simplifyRoute(result);
+  return simplified.length > 1 ? simplified : [start, end];
+}
+
+/** Сдвиг отрезка не перемещает закреплённые на карточках концы. */
+function moveRouteSegment(points: Pos[], index: number, delta: number): Pos[] {
+  const a = points[index];
+  const b = points[index + 1];
+  const horizontal = Math.abs(a.y - b.y) < Math.abs(a.x - b.x);
+  const shift = (p: Pos) => horizontal ? { x: p.x, y: p.y + delta } : { x: p.x + delta, y: p.y };
+  const sign = Math.sign(horizontal ? b.x - a.x : b.y - a.y) || 1;
+  const length = Math.hypot(b.x - a.x, b.y - a.y);
+  const stub = Math.min(24, length / 3) * sign;
+  const first = horizontal ? { x: a.x + stub, y: a.y } : { x: a.x, y: a.y + stub };
+  const last = horizontal ? { x: b.x - stub, y: b.y } : { x: b.x, y: b.y - stub };
+  return [
+    ...points.slice(0, index),
+    ...(index === 0 ? [a, first, shift(first)] : [shift(a)]),
+    ...(index + 1 === points.length - 1 ? [shift(last), last, b] : [shift(b)]),
+    ...points.slice(index + 2),
+  ];
+}
+
+/** Номер ближайшего отрезка для перетаскивания линии целиком. */
+function nearestRouteSegment(points: Pos[], point: Pos): number {
+  let best = 0, distance = Infinity;
+  for (let i = 0; i < points.length - 1; i++) {
+    const a = points[i], b = points[i + 1];
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const length = dx * dx + dy * dy;
+    if (!length) continue;
+    const t = Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / length));
+    const d = Math.hypot(point.x - a.x - t * dx, point.y - a.y - t * dy);
+    if (d < distance) { distance = d; best = i; }
+  }
+  return best;
 }
 
 /** Место для подписи: середина самого длинного отрезка. */
@@ -676,46 +752,67 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   /* ----- связи между карточками ----- */
   const [mode, setMode] = useState<'select' | 'link' | 'gateway'>('select');
   const [linkFrom, setLinkFrom] = useState<string | null>(null);
-  const [linkFromSide, setLinkFromSide] = useState<CardSide | null>(null);
+  const [linkFromAnchor, setLinkFromAnchor] = useState<CardAnchor | null>(null);
+  const [linkPointer, setLinkPointer] = useState<{ point: Pos; target: string | null; toAnchor: CardAnchor | null } | null>(null);
   const [selLink, setSelLink] = useState<string | null>(null);
   const [editLink, setEditLink] = useState<string | null>(null);
-  type PortDrag = { from: string; fromSide: CardSide; pointer: number; startX: number; startY: number; start: Pos; point: Pos; target: string | null; toSide: CardSide | null; moved: boolean; element: HTMLButtonElement };
+  const [showReconnect, setShowReconnect] = useState(false);
+  type LinkGesture = { kind: 'segment' | 'from' | 'to'; link: CardLink; pointer: number; element: SVGElement; start: Pos; startClient: Pos; points: Pos[]; index: number; delta: number; draft: Pos[]; target: string | null; candidate: CardLink | null; moved: boolean };
+  const [linkGesture, setLinkGesture] = useState<LinkGesture | null>(null);
+  const linkGestureRef = useRef<LinkGesture | null>(null);
+  useEffect(() => setShowReconnect(false), [selLink]);
+  type PortDrag = { from: string; fromAnchor: CardAnchor; pointer: number; startX: number; startY: number; start: Pos; point: Pos; target: string | null; toAnchor: CardAnchor | null; moved: boolean; element: HTMLButtonElement };
   const [portDrag, setPortDrag] = useState<PortDrag | null>(null);
   const portDragRef = useRef<PortDrag | null>(null);
   const cardLinks = api.model.cardLinks.filter((l) => cardIdsOf(api.model).includes(l.from) && cardIdsOf(api.model).includes(l.to));
 
   const boxForLink = (id: string): Box => ({ ...posOf(id), ...(id.startsWith('src:') ? sourceSizes[id] ?? cardSize(id) : cardSize(id)) });
   const angleForLink = (id: string) => { const i = sources.findIndex((s) => `src:${s.id}` === id); return i < 0 ? 0 : i % 2 ? 1.2 : -1.4; };
-  const pointsForLink = (link: CardLink) => validSide(link.fromSide) && validSide(link.toSide)
-    ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to))
-    : routeCards(boxForLink(link.from), boxForLink(link.to));
-  const closestSide = (id: string, point: Pos): CardSide => (['top', 'right', 'bottom', 'left'] as const).reduce((best, side) => {
-    const a = sidePoint(boxForLink(id), side, angleForLink(id));
-    const b = sidePoint(boxForLink(id), best, angleForLink(id));
-    return Math.hypot(a.x - point.x, a.y - point.y) < Math.hypot(b.x - point.x, b.y - point.y) ? side : best;
-  }, 'top' as CardSide);
-  const addCardLink = (from: string, to: string, fromSide?: CardSide, toSide?: CardSide) => {
+  const pointsForLink = (link: CardLink) => {
+    const base = validSide(link.fromSide) && validSide(link.toSide)
+      ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset)
+      : routeCards(boxForLink(link.from), boxForLink(link.to));
+    const points = Array.isArray(link.routePoints) ? link.routePoints.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)) : [];
+    const automatic = simplifyRoute(base);
+    return points.length ? routeVia(base[0], base[base.length - 1], points) : automatic.length > 1 ? automatic : base;
+  };
+  const pointOnCanvas = (x: number, y: number): Pos => { const r = root.current!.getBoundingClientRect(); const c = camRef.current; return { x: (x - r.left - c.x) / c.k, y: (y - r.top - c.y) / c.k }; };
+  const anchorAt = (id: string, point: Pos): CardAnchor => {
+    const box = boxForLink(id);
+    const angle = -angleForLink(id) * Math.PI / 180;
+    const dx = point.x - box.x - box.w / 2;
+    const dy = point.y - box.y - box.h / 2;
+    const x = dx * Math.cos(angle) - dy * Math.sin(angle) + box.w / 2;
+    const y = dx * Math.sin(angle) + dy * Math.cos(angle) + box.h / 2;
+    const distances = [Math.abs(y), Math.abs(x - box.w), Math.abs(y - box.h), Math.abs(x)];
+    const side = (['top', 'right', 'bottom', 'left'] as const)[distances.indexOf(Math.min(...distances))];
+    return { side, offset: id.startsWith('gw:') ? 0.5 : Math.max(0, Math.min(1, side === 'top' || side === 'bottom' ? x / box.w : y / box.h)) };
+  };
+  const addCardLink = (from: string, to: string, a: CardAnchor, b: CardAnchor) => {
     if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return;
     const lid = 'c' + Math.random().toString(36).slice(2, 7);
-    api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from, to, label: '', ...(fromSide && toSide ? { fromSide, toSide } : {}) }] }));
+    api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from, to, label: '', fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset }] }));
     setSelLink(lid);
   };
-  const pickForLink = (id: string, side?: CardSide) => {
+  const pickForLink = (id: string, anchor?: CardAnchor, point?: Pos) => {
+    const chosen = anchor ?? (point ? anchorAt(id, pointOnCanvas(point.x, point.y)) : { side: 'right', offset: 0.5 } as CardAnchor);
     if (!linkFrom) {
       setLinkFrom(id);
-      setLinkFromSide(side ?? null);
+      setLinkFromAnchor(chosen);
+      setLinkPointer({ point: sidePoint(boxForLink(id), chosen.side, angleForLink(id), chosen.offset), target: null, toAnchor: null });
       setMode('link');
       return;
     }
     if (linkFrom === id) {
       setLinkFrom(null);
-      setLinkFromSide(null);
+      setLinkFromAnchor(null);
+      setLinkPointer(null);
       return;
     }
-    const targetSide = side ?? (linkFromSide ? closestSide(id, sidePoint(boxForLink(linkFrom), linkFromSide, angleForLink(linkFrom))) : undefined);
-    addCardLink(linkFrom, id, linkFromSide ?? undefined, targetSide);
+    if (linkFromAnchor) addCardLink(linkFrom, id, linkFromAnchor, chosen);
     setLinkFrom(null);
-    setLinkFromSide(null);
+    setLinkFromAnchor(null);
+    setLinkPointer(null);
   };
   const removeCardLink = (id: string) => {
     api.apply((m) => ({ ...m, cardLinks: m.cardLinks.filter((l) => l.id !== id) }));
@@ -724,22 +821,79 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
   const setLinkLabel = (id: string, label: string) =>
     api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((l) => (l.id === id ? { ...l, label } : l)) }));
-  const pointOnCanvas = (x: number, y: number): Pos => { const r = root.current!.getBoundingClientRect(); const c = camRef.current; return { x: (x - r.left - c.x) / c.k, y: (y - r.top - c.y) / c.k }; };
   const portTargetAt = (x: number, y: number, from: string) => {
-    const hit = document.elementFromPoint(x, y);
-    const card = hit?.closest<HTMLElement>('[data-card]');
-    const id = card?.dataset.card;
-    if (!card || !id || id === from || !cardIds.includes(id) || !root.current?.contains(card)) return { target: null, toSide: null };
-    const port = hit?.closest<HTMLElement>('[data-link-port]');
-    const side = port?.dataset.linkPort;
-    return { target: id, toSide: validSide(side) ? side : closestSide(id, pointOnCanvas(x, y)) };
+    const cards = Array.from(world.current?.querySelectorAll<HTMLElement>('[data-card]') ?? []).filter((card) => card.dataset.card !== from && cardIds.includes(card.dataset.card ?? ''));
+    const candidates = cards.map((card) => {
+      const r = card.getBoundingClientRect();
+      return { card, distance: Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom)) };
+    }).filter((item) => item.distance <= 36).sort((a, b) => a.distance - b.distance);
+    const card = candidates[0]?.card;
+    if (!card?.dataset.card) return { target: null, toAnchor: null };
+    const ports = Array.from(card.querySelectorAll<HTMLElement>('[data-link-port]'));
+    const nearest = ports.map((port) => { const r = port.getBoundingClientRect(); return { port, distance: Math.hypot(x - r.left - r.width / 2, y - r.top - r.height / 2) }; }).sort((a, b) => a.distance - b.distance)[0]?.port;
+    const side = nearest?.dataset.linkPort;
+    return { target: card.dataset.card, toAnchor: validSide(side) ? { side, offset: Number(nearest?.dataset.linkOffset) } : null };
   };
-  const startPortDrag = (from: string, fromSide: CardSide, e: React.PointerEvent<HTMLButtonElement>) => {
+  const reconnectLink = (link: CardLink, end: 'from' | 'to', id: string, anchor: CardAnchor): CardLink | null => {
+    const from = end === 'from' ? id : link.from;
+    const to = end === 'to' ? id : link.to;
+    if (from === to || !cardIds.includes(id) || api.model.cardLinks.some((item) => item.id !== link.id && item.from === from && item.to === to)) return null;
+    const old = pointsForLink(link);
+    const fixedFrom = validSide(link.fromSide) ? { side: link.fromSide, offset: link.fromOffset ?? 0.5 } : anchorAt(link.from, old[0]);
+    const fixedTo = validSide(link.toSide) ? { side: link.toSide, offset: link.toOffset ?? 0.5 } : anchorAt(link.to, old[old.length - 1]);
+    const a = end === 'from' ? anchor : fixedFrom;
+    const b = end === 'to' ? anchor : fixedTo;
+    return { ...link, from, to, fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset };
+  };
+  const commitLink = (next: CardLink) => api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((item) => item.id === next.id ? next : item) }));
+  const beginLinkGesture = (link: CardLink, kind: LinkGesture['kind'], index: number, e: React.PointerEvent<SVGElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault(); e.stopPropagation();
+    const points = pointsForLink(link);
+    const gesture: LinkGesture = { kind, link, pointer: e.pointerId, element: e.currentTarget, start: pointOnCanvas(e.clientX, e.clientY), startClient: { x: e.clientX, y: e.clientY }, points, index, delta: 0, draft: points, target: null, candidate: null, moved: false };
+    linkGestureRef.current = gesture; setLinkGesture(gesture);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+  const moveLinkGesture = (e: React.PointerEvent<SVGElement>) => {
+    const gesture = linkGestureRef.current;
+    if (!gesture || gesture.pointer !== e.pointerId) return;
+    e.stopPropagation();
+    const point = pointOnCanvas(e.clientX, e.clientY);
+    const moved = gesture.moved || Math.hypot(e.clientX - gesture.startClient.x, e.clientY - gesture.startClient.y) > 4;
+    let draft = gesture.points;
+    let delta = 0;
+    let target: string | null = null;
+    let candidate: CardLink | null = null;
+    if (moved && gesture.kind === 'segment') {
+      const a = gesture.points[gesture.index], b = gesture.points[gesture.index + 1];
+      const horizontal = Math.abs(a.y - b.y) < Math.abs(a.x - b.x);
+      delta = horizontal ? point.y - gesture.start.y : point.x - gesture.start.x;
+      draft = moveRouteSegment(gesture.points, gesture.index, delta);
+    } else if (moved && gesture.kind !== 'segment') {
+      const hit = portTargetAt(e.clientX, e.clientY, gesture.kind === 'from' ? gesture.link.to : gesture.link.from);
+      if (hit.target && hit.toAnchor) candidate = reconnectLink(gesture.link, gesture.kind, hit.target, hit.toAnchor);
+      target = candidate ? hit.target : null;
+      draft = candidate ? pointsForLink(candidate) : routeVia(gesture.kind === 'from' ? point : gesture.points[0], gesture.kind === 'to' ? point : gesture.points[gesture.points.length - 1], gesture.link.routePoints ?? []);
+    }
+    const next = { ...gesture, moved, delta, draft, target, candidate };
+    linkGestureRef.current = next; setLinkGesture(next);
+  };
+  const endLinkGesture = (e: React.PointerEvent<SVGElement>, cancelled = false) => {
+    const gesture = linkGestureRef.current;
+    if (!gesture || gesture.pointer !== e.pointerId) return;
+    e.stopPropagation();
+    linkGestureRef.current = null; setLinkGesture(null);
+    if (gesture.element.hasPointerCapture(gesture.pointer)) gesture.element.releasePointerCapture(gesture.pointer);
+    if (cancelled || !gesture.moved) return;
+    if (gesture.kind === 'segment') commitLink({ ...gesture.link, routePoints: simplifyRoute(gesture.draft).slice(1, -1) });
+    else if (gesture.candidate) commitLink(gesture.candidate);
+  };
+  const startPortDrag = (from: string, fromAnchor: CardAnchor, e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0 || portDragRef.current) return;
     e.preventDefault(); e.stopPropagation();
     const r = e.currentTarget.getBoundingClientRect();
     const start = pointOnCanvas(r.left + r.width / 2, r.top + r.height / 2);
-    const drag: PortDrag = { from, fromSide, pointer: e.pointerId, startX: e.clientX, startY: e.clientY, start, point: start, target: null, toSide: null, moved: false, element: e.currentTarget };
+    const drag: PortDrag = { from, fromAnchor, pointer: e.pointerId, startX: e.clientX, startY: e.clientY, start, point: start, target: null, toAnchor: null, moved: false, element: e.currentTarget };
     portDragRef.current = drag; setPortDrag(drag); setSelCards([from]); setSelLink(null);
     e.currentTarget.setPointerCapture(e.pointerId);
   };
@@ -748,7 +902,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (!drag || drag.pointer !== e.pointerId) return;
     e.stopPropagation();
     const moved = drag.moved || Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) > 4;
-    const target = moved ? portTargetAt(e.clientX, e.clientY, drag.from) : { target: null, toSide: null };
+    const target = moved ? portTargetAt(e.clientX, e.clientY, drag.from) : { target: null, toAnchor: null };
     const next = { ...drag, moved, point: pointOnCanvas(e.clientX, e.clientY), ...target };
     portDragRef.current = next; setPortDrag(next);
   };
@@ -760,18 +914,19 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const target = moved ? portTargetAt(e.clientX, e.clientY, drag.from) : null;
     portDragRef.current = null; setPortDrag(null);
     if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
-    if (!moved) pickForLink(drag.from, drag.fromSide);
-    else { if (target?.target && target.toSide) addCardLink(drag.from, target.target, drag.fromSide, target.toSide); setMode('select'); setLinkFrom(null); setLinkFromSide(null); }
+    if (!moved) pickForLink(drag.from, drag.fromAnchor);
+    else { if (target?.target && target.toAnchor) addCardLink(drag.from, target.target, drag.fromAnchor, target.toAnchor); setMode('select'); setLinkFrom(null); setLinkFromAnchor(null); setLinkPointer(null); }
   };
   const cancelPortDrag = (e: React.PointerEvent<HTMLButtonElement>) => {
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved), linkTarget: portDrag?.target === id, linkLabel });
+  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, linkLabel, portSize: boxForLink(id) });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFrom(null);
-    setLinkFromSide(null);
+    setLinkFromAnchor(null);
+    setLinkPointer(null);
   };
 
   const clampK = (k: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
@@ -940,6 +1095,18 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
 
   const rootMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (mode === 'link' && linkFrom && !portDragRef.current) {
+      const target = portTargetAt(e.clientX, e.clientY, linkFrom);
+      const point = pointOnCanvas(e.clientX, e.clientY);
+      const hit = document.elementFromPoint(e.clientX, e.clientY);
+      const card = hit?.closest<HTMLElement>('[data-card]');
+      const port = hit?.closest<HTMLElement>('[data-link-port]');
+      const side = port?.dataset.linkPort;
+      const toAnchor = card?.dataset.card === target.target
+        ? validSide(side) ? { side, offset: Number(port?.dataset.linkOffset) } : anchorAt(target.target!, point)
+        : null;
+      setLinkPointer({ point, target: target.target, toAnchor });
+    }
     const g = gest.current;
     if (!g) return;
     const dx = e.clientX - g.sx;
@@ -1054,7 +1221,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       return [
         { label: 'Добавить шлюз', icon: 'plus', onClick: () => addGateway(menuAt.current) },
         {
-          label: 'Создать модель…',
+          label: 'Добавить объект…',
           icon: 'plus',
           onClick: () => {
             spawnAt.current = menuAt.current;
@@ -1081,6 +1248,9 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       }
       if ((ev.metaKey || ev.ctrlKey) && (ev.code === 'KeyZ' || ev.code === 'KeyY')) {
         ev.preventDefault();
+        const active = linkGestureRef.current;
+        linkGestureRef.current = null; setLinkGesture(null);
+        if (active?.element.hasPointerCapture(active.pointer)) active.element.releasePointerCapture(active.pointer);
         if (ev.code === 'KeyY' || ev.shiftKey) api.redo();
         else api.undo();
         return;
@@ -1091,6 +1261,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       if (ev.code === 'Digit0') return fit();
       if (ev.code === 'Digit1') return setZoom(1);
       if (ev.key === 'Escape') {
+        const active = linkGestureRef.current;
+        linkGestureRef.current = null; setLinkGesture(null);
+        if (active?.element.hasPointerCapture(active.pointer)) active.element.releasePointerCapture(active.pointer);
+        setShowReconnect(false);
         const drag = portDragRef.current;
         portDragRef.current = null;
         setPortDrag(null);
@@ -1164,6 +1338,28 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   const number = issues.findIndex((i) => i.id === issue.id) + 1;
   const issueNodeIds = issues.flatMap((i) => (i.model ? [i.model.nodeId] : []));
+  const selectedLink = cardLinks.find((item) => item.id === selLink);
+  const cardLabel = (id: string) => {
+    if (id.startsWith('proc:')) return processes.find((item) => `proc:${item.id}` === id)?.title ?? id;
+    if (id.startsWith('doc:')) return docs.find((item) => `doc:${item.id}` === id)?.title ?? id;
+    if (id.startsWith('src:')) return sources.find((item) => `src:${item.id}` === id)?.name ?? id;
+    return gateways.find((item) => `gw:${item.id}` === id)?.label || 'Шлюз';
+  };
+  const preview = portDrag?.moved
+    ? { from: portDrag.from, anchor: portDrag.fromAnchor, point: portDrag.point, target: portDrag.target, toAnchor: portDrag.toAnchor }
+    : !portDrag && linkFrom && linkFromAnchor && linkPointer
+      ? { from: linkFrom, anchor: linkFromAnchor, ...linkPointer }
+      : null;
+  const previewPoints = preview && (() => {
+    const opposite: Record<CardSide, CardSide> = { top: 'bottom', right: 'left', bottom: 'top', left: 'right' };
+    const attached = preview.target && preview.toAnchor;
+    return routeAnchored(
+      boxForLink(preview.from), preview.anchor.side, angleForLink(preview.from),
+      attached ? boxForLink(preview.target!) : { ...preview.point, w: 0, h: 0 },
+      attached ? preview.toAnchor!.side : opposite[preview.anchor.side], attached ? angleForLink(preview.target!) : 0,
+      preview.anchor.offset, attached ? preview.toAnchor!.offset : 0.5,
+    );
+  })();
 
   return (
     <main
@@ -1190,7 +1386,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         <div className="canvas-empty">
           <b>Проект пуст</b>
           <span>Добавьте модель процесса, документ или источник — они появятся на доске.</span>
-          <button type="button" className="btn btn-dark" onClick={onAddMaterial}>Добавить материал</button>
+          <button type="button" className="btn btn-dark" onClick={onAddMaterial}>Добавить объект</button>
         </div>
       )}
       <ZoomCtx.Provider value={cam.k}>
@@ -1305,7 +1501,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             );
           })}
 
-          {portDrag?.moved && <svg className="card-link-preview" aria-hidden="true"><path d={`M${portDrag.start.x} ${portDrag.start.y} L${portDrag.point.x} ${portDrag.point.y}`} /></svg>}
+          {previewPoints && <svg className="card-link-preview" aria-hidden="true">
+            <defs><marker id="cl-preview-arrow" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L8 4 L0 8z" fill="#2563eb" /></marker></defs>
+            <path d={previewPoints.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ')} className="clink on" markerEnd="url(#cl-preview-arrow)" />
+          </svg>}
           {guideRef.current.map((g, i) => (
             <i
               key={i}
@@ -1325,22 +1524,62 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
               </defs>
               {cardLinks.map((l) => {
                 const pts = pointsForLink(l);
-                const d = pts.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ');
+                const visible = linkGesture?.link.id === l.id && linkGesture.moved ? linkGesture.draft : pts;
+                const d = visible.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ');
                 const on = selLink === l.id;
+                const handleEvents = (kind: LinkGesture['kind'], index: number) => ({
+                  onPointerDown: (e: React.PointerEvent<SVGCircleElement>) => beginLinkGesture(l, kind, index, e),
+                  onPointerMove: moveLinkGesture,
+                  onPointerUp: (e: React.PointerEvent<SVGCircleElement>) => endLinkGesture(e),
+                  onPointerCancel: (e: React.PointerEvent<SVGCircleElement>) => endLinkGesture(e, true),
+                  onLostPointerCapture: (e: React.PointerEvent<SVGCircleElement>) => endLinkGesture(e, true),
+                });
                 return (
                   <g key={l.id}>
                     <path d={d} className={`clink${on ? ' on' : ''}`} markerEnd={`url(#${on ? 'cl-blue' : 'cl-grey'})`} />
                     <path
                       d={d}
                       className="clink-hit"
+                      role="button" tabIndex={0} aria-label={`Выбрать связь${l.label ? `: ${l.label}` : ''}`}
                       onPointerDown={(e) => {
                         if (e.button !== 0) return;
                         e.stopPropagation();
                         setSelLink(l.id);
                         setSelCards([]);
+                        beginLinkGesture(l, 'segment', nearestRouteSegment(pts, pointOnCanvas(e.clientX, e.clientY)), e);
                       }}
+                      onPointerMove={moveLinkGesture}
+                      onPointerUp={(e) => endLinkGesture(e)}
+                      onPointerCancel={(e) => endLinkGesture(e, true)}
+                      onLostPointerCapture={(e) => endLinkGesture(e, true)}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setSelLink(l.id); setSelCards([]); } }}
                       onDoubleClick={() => setEditLink(l.id)}
                     />
+                    {on && pts.map((a, i) => {
+                      const b = pts[i + 1];
+                      if (!b || Math.hypot(b.x - a.x, b.y - a.y) < 28 / cam.k) return null;
+                      const horizontal = Math.abs(a.y - b.y) < Math.abs(a.x - b.x);
+                      const active = linkGesture?.link.id === l.id && linkGesture.kind === 'segment' && linkGesture.index === i && linkGesture.moved;
+                      const dx = active && !horizontal ? linkGesture.delta : 0;
+                      const dy = active && horizontal ? linkGesture.delta : 0;
+                      return <circle key={`segment-${i}`} className={`clink-handle segment ${horizontal ? 'horizontal' : 'vertical'}`} cx={(a.x + b.x) / 2 + dx} cy={(a.y + b.y) / 2 + dy} r={5 / cam.k}
+                        role="button" tabIndex={0} aria-label={`Переместить участок связи ${i + 1}`} aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight" {...handleEvents('segment', i)}
+                        onKeyDown={(e) => {
+                          const amount = e.shiftKey ? 20 : 5;
+                          const delta = horizontal ? (e.key === 'ArrowUp' ? -amount : e.key === 'ArrowDown' ? amount : 0) : (e.key === 'ArrowLeft' ? -amount : e.key === 'ArrowRight' ? amount : 0);
+                          if (!delta) return;
+                          e.preventDefault(); e.stopPropagation();
+                          commitLink({ ...l, routePoints: simplifyRoute(moveRouteSegment(pts, i, delta)).slice(1, -1) });
+                        }}><title>Перетащите участок связи</title></circle>;
+                    })}
+                    {on && (['from', 'to'] as const).map((end) => {
+                      const active = linkGesture?.link.id === l.id && linkGesture.kind === end && linkGesture.moved;
+                      const path = active ? linkGesture.draft : pts;
+                      const point = end === 'from' ? path[0] : path[path.length - 1];
+                      return <circle key={end} className="clink-handle endpoint" cx={point.x} cy={point.y} r={7 / cam.k} role="button" tabIndex={0}
+                        aria-label={end === 'from' ? 'Переподключить начало связи' : 'Переподключить конец связи'}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setShowReconnect(true); } }} {...handleEvents(end, 0)}><title>Перетащите для переподключения</title></circle>;
+                    })}
                   </g>
                 );
               })}
@@ -1439,9 +1678,28 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             <>
               <span className="tools-sep" />
               <button type="button" className="tool-text" onClick={() => setEditLink(selLink)}>Подпись</button>
+              <button type="button" className="tool-text" aria-expanded={showReconnect} onClick={() => setShowReconnect((open) => !open)}>Переподключить</button>
+              {selectedLink?.routePoints?.length ? <button type="button" className="tool-text" onClick={() => commitLink({ ...selectedLink, routePoints: undefined })}>Сбросить маршрут</button> : null}
               <button type="button" className="tool-btn" aria-label="Удалить связь" title="Удалить (Del)" onClick={() => removeCardLink(selLink)}>
                 <Icon name="trash" size={17} stroke={1.9} />
               </button>
+              {showReconnect && selectedLink && <div className="clink-reconnect" role="group" aria-label="Переподключение связи">
+                {(['from', 'to'] as const).map((end) => <label key={end}>{end === 'from' ? 'Начало' : 'Конец'}
+                  <select className="pinput" value={selectedLink[end]} onChange={(e) => {
+                    const points = pointsForLink(selectedLink);
+                    const oldPoint = end === 'from' ? points[0] : points[points.length - 1];
+                    const next = reconnectLink(selectedLink, end, e.target.value, anchorAt(e.target.value, oldPoint));
+                    if (next) commitLink(next);
+                  }}>
+                    {cardIds.map((id) => {
+                      const from = end === 'from' ? id : selectedLink.from;
+                      const to = end === 'to' ? id : selectedLink.to;
+                      const unavailable = from === to || cardLinks.some((link) => link.id !== selectedLink.id && link.from === from && link.to === to);
+                      return <option key={id} value={id} disabled={unavailable}>{cardLabel(id)}</option>;
+                    })}
+                  </select>
+                </label>)}
+              </div>}
             </>
           )}
         </div>

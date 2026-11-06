@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Doc, Process, Source } from './data';
 import { Icon } from './Icon';
+import { objectCatalog } from './objectCatalog';
 
 interface Props {
   activeSourceId?: string;
@@ -19,6 +20,7 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
     <div className="tree-group">
       <button type="button" className="tree-head" onClick={onToggle} aria-expanded={open}>
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={14} stroke={2.2} />
+        <Icon name="folder" size={16} />
         <span>{title}</span>
       </button>
       {open && <div className="tree-children">{children}</div>}
@@ -28,7 +30,7 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
 
 export function Tree({ activeSourceId, sources, docs, processes, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
   const isSel = (id: string) => selectedCards.includes(id);
-  const [open, setOpen] = useState({ src: true, mod: true, doc: true });
+  const [open, setOpen] = useState({ src: true, mod: true, proc: true, doc: true });
   const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   if (collapsed) {
@@ -63,13 +65,15 @@ export function Tree({ activeSourceId, sources, docs, processes, selectedCards, 
       </Group>
 
       <Group title="Модели" open={open.mod} onToggle={() => toggle('mod')}>
-        {processes.length === 0 && <div className="tree-empty">Нет моделей</div>}
-        {processes.map((p) => (
-          <div key={p.id} className={`tree-row${isSel(`proc:${p.id}`) ? ' sel' : ''}`}>
-            <Icon name="model" />
-            <span>{p.title}</span>
-          </div>
-        ))}
+        <Group title={objectCatalog.find((item) => item.id === 'processes')!.title} open={open.proc} onToggle={() => toggle('proc')}>
+          {processes.length === 0 && <div className="tree-empty">Нет моделей</div>}
+          {processes.map((p) => (
+            <div key={p.id} className={`tree-row${isSel(`proc:${p.id}`) ? ' sel' : ''}`}>
+              <Icon name="model" />
+              <span>{p.title}</span>
+            </div>
+          ))}
+        </Group>
       </Group>
 
       <Group title="Документы" open={open.doc} onToggle={() => toggle('doc')}>
@@ -87,7 +91,7 @@ export function Tree({ activeSourceId, sources, docs, processes, selectedCards, 
       <div className="grow" />
       <button type="button" className="add-material" onClick={onAddMaterial}>
         <Icon name="plus" size={15} stroke={2.2} />
-        Добавить материал
+        Добавить объект
       </button>
     </aside>
   );
