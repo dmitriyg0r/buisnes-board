@@ -1,14 +1,9 @@
 import { useState } from 'react';
-import type { Doc, Issue, Process, Source } from './data';
-import type { Coverage } from './coverage';
+import type { Doc, Process, Source } from './data';
 import { Icon } from './Icon';
 
 interface Props {
-  issues: Issue[];
-  selectedId: string;
-  onSelect: (id: string) => void;
   activeSourceId?: string;
-  cover: Coverage;
   sources: Source[];
   docs: Doc[];
   processes: Process[];
@@ -31,9 +26,9 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
   );
 }
 
-export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sources, docs, processes, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
+export function Tree({ activeSourceId, sources, docs, processes, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
   const isSel = (id: string) => selectedCards.includes(id);
-  const [open, setOpen] = useState({ src: true, mod: true, doc: true, iss: true });
+  const [open, setOpen] = useState({ src: true, mod: true, doc: true });
   const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   if (collapsed) {
@@ -89,48 +84,11 @@ export function Tree({ issues, selectedId, onSelect, activeSourceId, cover, sour
         ))}
       </Group>
 
-      <Group title="Замечания" open={open.iss} onToggle={() => toggle('iss')}>
-        <div className="tree-row amber-label">
-          <Icon name="flag" />
-          <span>Открытые · {issues.filter((i) => i.status !== 'fixed' && i.status !== 'closed').length}</span>
-        </div>
-        <div className="tree-issues">
-          {issues.map((i, n) => (
-            <button
-              key={i.id}
-              type="button"
-              className={`tree-issue${i.id === selectedId ? ' on' : ''}${i.status === 'fixed' || i.status === 'closed' ? ' done' : ''}`}
-              onClick={() => onSelect(i.id)}
-            >
-              <span className="num">{n + 1}</span>
-              <span>{i.title}</span>
-              {i.auto && <em className="auto-tag">авто</em>}
-            </button>
-          ))}
-        </div>
-      </Group>
-
       <div className="grow" />
-      <div className="cover">
-        <div className="label">Согласованность</div>
-        <CoverRow label="Шаги с пунктом" v={cover.steps} />
-        <CoverRow label="Пункты с шагом" v={cover.sections} />
-      </div>
       <button type="button" className="add-material" onClick={onAddMaterial}>
         <Icon name="plus" size={15} stroke={2.2} />
         Добавить материал
       </button>
     </aside>
-  );
-}
-
-function CoverRow({ label, v }: { label: string; v: { total: number; linked: number } }) {
-  const full = v.linked === v.total;
-  return (
-    <div className="cover-row">
-      <span>{label}</span>
-      <b className={full ? 'ok' : 'warn'}>{v.linked} из {v.total}</b>
-      <i className="bar"><i style={{ width: `${v.total ? (v.linked / v.total) * 100 : 0}%` }} className={full ? 'ok' : 'warn'} /></i>
-    </div>
   );
 }

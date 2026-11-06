@@ -61,6 +61,8 @@ export interface Process {
   xml: string;
 }
 
+export type CardSide = 'top' | 'right' | 'bottom' | 'left';
+
 /** Связь между карточками на доске: источник → документ, модель → документ и т. п. */
 export interface CardLink {
   id: string;
@@ -68,6 +70,9 @@ export interface CardLink {
   from: string;
   to: string;
   label: string;
+  /** Стороны, выбранные при создании связи; у старых связей определяются автоматически. */
+  fromSide?: CardSide;
+  toSide?: CardSide;
 }
 
 /** Шлюз на доске: ромб-развилка между карточками, к нему можно проводить связи. */
