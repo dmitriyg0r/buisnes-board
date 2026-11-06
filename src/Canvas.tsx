@@ -2,10 +2,9 @@ import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useStat
 import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Doc, type Issue, type Source } from './data';
 import { splitMarkdown } from './markdown';
-import { aiModels, type AiModel, type Settings } from './settings';
-import { applyGenerated, buildContext, GenError, streamGenerate } from './ai';
-import { AiDraftLayer, AiProgress, beginDraft, ghostRect } from './AiDraft';
-import { HttpError } from './api';
+import type { AiModel, Settings } from './settings';
+import { AiChat } from './AiChat';
+import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
 
@@ -835,11 +834,6 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const pausedRef = useRef(paused);
   pausedRef.current = paused;
 
-  const [aiText, setAiText] = useState('');
-  const [aiBusy, setAiBusy] = useState(false);
-  const [aiMsg, setAiMsg] = useState<{ ok: boolean | null; text: string } | null>(null);
-  const aiAbort = useRef<AbortController | null>(null);
-  useEffect(() => () => aiAbort.current?.abort(), []);
   /** где появятся новые карточки: как и положение по умолчанию, по порядку в своём столбце */
   const procPos = { x: 232, y: 60 + processes.length * (MODEL_SIZE.h + 48) };
   const docPos = { x: 232 + MODEL_SIZE.w + 48, y: 120 + docs.length * (DOC_SIZE.h + 48) };
@@ -852,29 +846,17 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const k = Math.min(c.k, (size.w - 120) / (r.right - r.left), (size.h - 220) / (r.bottom - r.top));
     setCam({ k, x: size.w / 2 - ((r.left + r.right) / 2) * k, y: (size.h - 120) / 2 - ((r.top + r.bottom) / 2) * k });
   };
-  const askAi = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const text = aiText.trim();
-    if (!text || aiBusy) return;
-    const ctl = new AbortController();
-    aiAbort.current = ctl;
-    setAiBusy(true);
-    setAiMsg(null);
-    const draft = beginDraft(aiModels.find((m) => m.id === settings.aiModel)?.label ?? 'ИИ');
-    revealDraft();
-    try {
-      const r = await streamGenerate(text, settings.aiModel, buildContext(api.model), (ev) => ev.type === 'delta' && draft.push(ev.text), ctl.signal);
-      api.apply((m) => applyGenerated(m, r));
-      setAiText('');
-      setAiMsg({ ok: true, text: `Добавлены процесс «${r.process.title}» и документ «${r.document.title}». Ctrl+Z отменит.` });
-    } catch (err) {
-      if (ctl.signal.aborted) setAiMsg({ ok: null, text: 'Генерация отменена.' });
-      else setAiMsg({ ok: false, text: err instanceof HttpError || err instanceof GenError ? (err.message.startsWith('HTTP ') ? 'Нет связи с сервером' : err.message) : 'Нет связи с сервером' });
-    }
-    draft.end();
-    aiAbort.current = null;
-    setAiBusy(false);
+  /** подвести камеру к карточке из чата */
+  const draftBuilding = useDraftBuilding();
+  const focusCard = (id: string) => {
+    if (!cardIds.includes(id)) return;
+    const p = posOf(id);
+    const sz = cardSize(id);
+    const c = camRef.current;
+    const k = Math.min(c.k, (size.w - 120) / sz.w, (size.h * 0.6) / sz.h);
+    setCam({ k, x: size.w / 2 - (p.x + sz.w / 2) * k, y: size.h * 0.4 - (p.y + sz.h / 2) * k });
   };
+
 
   const menuAt = useRef<Pos>({ x: 0, y: 0 });
   const openMenu: ContextOpener = (target, ev) => {
@@ -1037,36 +1019,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         menuAt.current = w;
       }}
     >
-      <div className="ai-bar" onContextMenu={(e) => e.stopPropagation()}>
-        <form className="ai-field" onSubmit={(e) => void askAi(e)}>
-          <Icon name="sparkle" size={16} />
-          <input
-            value={aiText}
-            onChange={(e) => setAiText(e.target.value)}
-            placeholder="Опишите процесс: ИИ построит схему и регламент"
-            aria-label="Запрос к ИИ"
-            disabled={aiBusy}
-            maxLength={4000}
-          />
-          <select
-            className="ai-model"
-            value={settings.aiModel}
-            onChange={(e) => onModel(e.target.value as AiModel)}
-            aria-label="Модель ИИ"
-            disabled={aiBusy}
-          >
-            {aiModels.map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-          </select>
-          <button type="submit" className="ai-send" disabled={aiBusy || !aiText.trim()} title={aiBusy ? 'Строим процесс…' : 'Построить'} aria-label="Отправить">
-            <Icon name="arrowUp" size={16} />
-          </button>
-        </form>
-        {aiBusy && <AiProgress onCancel={() => aiAbort.current?.abort()} />}
-        {aiMsg && <div className={`ai-note ${aiMsg.ok === null ? '' : aiMsg.ok ? 'ok' : 'err'}`} role={aiMsg.ok === false ? 'alert' : 'status'}>{aiMsg.text}</div>}
-      </div>
-      {cardIds.length === 0 && !aiBusy && (
+      <AiChat projectId={projectId} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} />
+      {cardIds.length === 0 && !draftBuilding && (
         <div className="canvas-empty">
           <b>Проект пуст</b>
           <span>Добавьте модель процесса, документ или источник — они появятся на доске.</span>

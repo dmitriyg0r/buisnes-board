@@ -25,17 +25,28 @@ const subscribe = (f: () => void) => {
     subs.delete(f);
   };
 };
-const useDraft = () => useSyncExternalStore(subscribe, () => state);
+/** Идёт ли построение процесса. Меняется редко, поэтому Canvas не перерисовывается на каждый токен. */
+export const useDraftBuilding = () => useSyncExternalStore(subscribe, () => !!state && state.plan.hasProcess);
+export const useDraft = () => useSyncExternalStore(subscribe, () => state);
 
-const EMPTY: Plan = { processTitle: '', nodes: [], flows: [], docTitle: '', sections: [], inDoc: false };
+const EMPTY: Plan = { reply: '', hasProcess: false, processTitle: '', nodes: [], flows: [], docTitle: '', sections: [], inDoc: false };
 
-/** Начинает черновик. push принимает кусочки текста модели, end убирает черновик с доски. */
-export function beginDraft(label: string) {
+/**
+ * Начинает черновик. push принимает кусочки текста модели, end убирает черновик с доски.
+ * onProcess вызывается один раз, когда модель начала строить процесс: до этого она может просто отвечать в чат.
+ */
+export function beginDraft(label: string, onProcess?: () => void) {
   let text = '';
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let announced = false;
   const flush = () => {
     timer = null;
-    publish({ label, plan: partialPlan(text), hasText: text.length > 0 });
+    const plan = partialPlan(text);
+    if (plan.hasProcess && !announced) {
+      announced = true;
+      onProcess?.();
+    }
+    publish({ label, plan, hasText: text.length > 0 });
   };
   publish({ label, plan: EMPTY, hasText: false });
   return {
@@ -170,7 +181,8 @@ type Pt = { x: number; y: number };
 
 export function AiDraftLayer({ procPos, docPos }: { procPos: Pt; docPos: Pt }) {
   const d = useDraft();
-  if (!d) return null;
+  // пока модель только отвечает в чат, на доске ничего не рисуем
+  if (!d || !d.plan.hasProcess) return null;
   const { plan } = d;
   return (
     <>
@@ -216,12 +228,18 @@ export function AiProgress({ onCancel }: { onCancel: () => void }) {
   const d = useDraft();
   if (!d) return null;
   const { plan } = d;
-  const stage = !d.hasText ? 0 : plan.inDoc ? 2 : 1;
-  const steps = [
-    { name: 'Читаю доску', note: '' },
-    { name: 'Строю схему', note: plan.nodes.length ? `${plan.nodes.length} шаг.` : '' },
-    { name: 'Пишу регламент', note: plan.sections.length ? `${plan.sections.length} пункт.` : '' },
-  ];
+  // этапы зависят от того, что делает модель: строит процесс или просто отвечает в чат
+  const steps = plan.hasProcess
+    ? [
+        { name: 'Читаю доску', note: '' },
+        { name: 'Строю схему', note: plan.nodes.length ? `${plan.nodes.length} шаг.` : '' },
+        { name: 'Пишу регламент', note: plan.sections.length ? `${plan.sections.length} пункт.` : '' },
+      ]
+    : [
+        { name: 'Читаю доску', note: '' },
+        { name: 'Отвечаю', note: '' },
+      ];
+  const stage = !d.hasText ? 0 : plan.hasProcess ? (plan.inDoc ? 2 : 1) : 1;
   return (
     <div className="ai-steps" role="status" aria-live="polite">
       <ol>

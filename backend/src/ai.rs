@@ -33,10 +33,11 @@ const MAX_ANSWER: usize = 400_000;
 /// Генерация длинная: общий лимит клиента (10 с) здесь не подходит.
 const CALL_TIMEOUT: Duration = Duration::from_secs(180);
 
-const INSTRUCTIONS: &str = r#"Ты бизнес-аналитик. По описанию пользователя и материалам на доске ты строишь модель бизнес-процесса и пишешь к ней регламент на русском языке.
+const INSTRUCTIONS: &str = r#"Ты бизнес-аналитик и ведёшь диалог с пользователем в чате на доске бизнес-процессов. Ты можешь отвечать на вопросы о процессах и материалах на доске, строить модель бизнес-процесса и писать к ней регламент. Всё на русском языке.
 
-Верни ТОЛЬКО один JSON-объект, без пояснений и без markdown-обёртки, строго такой формы:
+Верни ТОЛЬКО один JSON-объект, без пояснений и без markdown-обёртки. Ключи строго в таком порядке:
 {
+  "reply": "ответ пользователю: 1-4 предложения",
   "process": {
     "title": "название процесса",
     "nodes": [ { "id": "n1", "type": "start|task|gateway|end", "name": "текст" } ],
@@ -48,14 +49,22 @@ const INSTRUCTIONS: &str = r#"Ты бизнес-аналитик. По опис�
   }
 }
 
+Правила диалога:
+- reply есть всегда: это то, что пользователь прочитает в чате. Если построил процесс, скажи, что получилось (ключевые шаги, развилки) и что стоит уточнить. Если это вопрос или уточнение, ответь по делу.
+- process и document добавляй, только когда пользователь просит построить процесс или описывает процесс для моделирования. На вопросы, благодарности и уточнения отвечай одним reply, без process и document.
+- document добавляй только вместе с process.
+- Если данных не хватает для хорошего процесса, не строй его: в reply задай 1-3 конкретных вопроса.
+- Существующие процессы и документы на доске менять ты не умеешь. Если просят доработать существующий, построй новую версию как новый процесс с названием вроде «Название (версия 2)» и скажи об этом в reply.
+- Не повторяй уже построенное, если об этом не просили.
+
 Правила модели процесса:
 - id узлов: латиница, цифры, «_» и «-», уникальные (n1, n2, ...).
 - Ровно один узел типа start и хотя бы один end. Каждый узел достижим от start, из каждого узла (кроме end) есть выход.
-- task называй глаголом действия («Проверить заявку»). gateway — развилка или слияние; у каждой исходящей ветки gateway задай label («Да», «Нет», условие).
+- task называй глаголом действия («Проверить заявку»). gateway: развилка или слияние; у каждой исходящей ветки gateway задай label («Да», «Нет», условие).
 - Не больше 40 узлов; не делай лишней детализации.
 
 Правила документа:
-- Заголовки пунктов нумеруй: «§ 1. Цель», «§ 2. Участники», «§ 3. Порядок выполнения» и т. д. Подпункты — «§ 3.1. ...».
+- Заголовки пунктов нумеруй: «§ 1. Цель», «§ 2. Участники», «§ 3. Порядок выполнения» и т. д. Подпункты: «§ 3.1. ...».
 - Пункт про шаги процесса описывает их по порядку; в steps перечисли id узлов (task или gateway), которые этот пункт описывает. Остальные пункты оставь с пустым steps.
 - В markdown не повторяй заголовок пункта и не используй заголовки уровня выше третьего.
 - Опирайся только на описание пользователя и материалы с доски; не выдумывай нормативные ссылки, сроки и роли, которых там нет. Если данных не хватает, напиши в пункте, что именно нужно уточнить."#;
@@ -74,6 +83,49 @@ pub struct GenerateReq {
     model: String,
     /// сжатое описание того, что уже есть на доске (собирает клиент)
     context: Option<String>,
+    /// предыдущие реплики чата: так модель понимает уточнения вроде «а теперь добавь отказ»
+    history: Option<Vec<Turn>>,
+}
+
+#[derive(Deserialize)]
+pub struct Turn {
+    role: String,
+    text: String,
+}
+
+const MAX_TURNS: usize = 12;
+const MAX_TURN_CHARS: usize = 1500;
+
+/// Собирает текст запроса: диалог, новое сообщение и описание доски.
+fn build_input(prompt: &str, context: &str, history: &[Turn]) -> String {
+    let mut out = String::new();
+    // берём последние реплики: давняя часть разговора модели не нужна, а лимит контекста общий
+    let skip = history.len().saturating_sub(MAX_TURNS);
+    let turns: Vec<String> = history
+        .iter()
+        .skip(skip)
+        .filter_map(|t| {
+            let who = match t.role.as_str() {
+                "user" => "Пользователь",
+                "assistant" => "ИИ",
+                _ => return None,
+            };
+            let text: String = t.text.trim().chars().take(MAX_TURN_CHARS).collect();
+            (!text.is_empty()).then(|| format!("{who}: {text}"))
+        })
+        .collect();
+    if !turns.is_empty() {
+        out.push_str("Предыдущий диалог:\n");
+        out.push_str(&turns.join("\n"));
+        out.push_str("\n\n");
+    }
+    out.push_str("Новое сообщение пользователя:\n");
+    out.push_str(prompt);
+    if !context.trim().is_empty() {
+        out.push_str("\n\nЧто уже есть на доске:\n");
+        out.push_str(context);
+    }
+    out
 }
 
 type Tx = Sender<Result<Bytes, Infallible>>;
@@ -115,11 +167,7 @@ pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<G
     if !s.ai_busy.lock().map_err(|_| AppError::Internal)?.insert(user.id) {
         return Err(AppError::BadRequest("предыдущая генерация ещё идёт: дождитесь результата".into()));
     }
-    let input = if context.trim().is_empty() {
-        format!("Задача пользователя:\n{prompt}")
-    } else {
-        format!("Задача пользователя:\n{prompt}\n\nЧто уже есть на доске:\n{context}")
-    };
+    let input = build_input(prompt, &context, b.history.as_deref().unwrap_or(&[]));
 
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let uid = user.id;
@@ -285,8 +333,17 @@ fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 40 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// Проверяет и чистит ответ модели: клиент получает только то, что точно сможет нарисовать.
+/// Проверяет и чистит ответ модели: клиент получает только то, что точно сможет показать и нарисовать.
+/// Реплика есть всегда; процесс и документ необязательны (на вопрос модель отвечает одной репликой).
 fn normalize(v: &Value) -> Result<Value, String> {
+    let reply = clip(&v["reply"], 2000);
+    if v["process"].is_null() {
+        if reply.is_empty() {
+            return Err("пустой ответ".into());
+        }
+        return Ok(json!({ "reply": reply }));
+    }
+
     let p = &v["process"];
     let nodes_in = p["nodes"].as_array().ok_or("нет списка шагов")?;
     let flows_in = p["flows"].as_array().ok_or("нет списка переходов")?;
@@ -333,33 +390,36 @@ fn normalize(v: &Value) -> Result<Value, String> {
         }
         flows.push(Value::Object(o));
     }
-
-    let doc = &v["document"];
-    let secs_in = doc["sections"].as_array().ok_or("нет пунктов документа")?;
-    if secs_in.is_empty() || secs_in.len() > MAX_SECTIONS {
-        return Err(format!("пунктов должно быть от 1 до {MAX_SECTIONS}"));
-    }
-    let mut sections = Vec::new();
-    for sec in secs_in {
-        let title = clip(&sec["title"], 200);
-        if title.is_empty() {
-            return Err("у пункта нет заголовка".into());
-        }
-        let markdown: String = sec["markdown"].as_str().unwrap_or("").trim().chars().take(8000).collect();
-        // ссылки на несуществующие шаги молча отбрасываем
-        let steps: Vec<Value> = sec["steps"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|x| x.as_str()).filter(|x| ids.contains(*x)).map(|x| Value::from(x)).collect())
-            .unwrap_or_default();
-        sections.push(json!({ "title": title, "markdown": markdown, "steps": steps }));
-    }
-
     let ptitle = clip(&p["title"], 200);
-    let dtitle = clip(&doc["title"], 200);
-    Ok(json!({
-        "process": { "title": if ptitle.is_empty() { "Процесс".to_owned() } else { ptitle }, "nodes": nodes, "flows": flows },
-        "document": { "title": if dtitle.is_empty() { "Регламент".to_owned() } else { dtitle }, "sections": sections },
-    }))
+    let mut out = Map::new();
+    out.insert("reply".into(), reply.into());
+    out.insert("process".into(), json!({ "title": if ptitle.is_empty() { "Процесс".to_owned() } else { ptitle }, "nodes": nodes, "flows": flows }));
+
+    // документ необязателен: без него остаётся одна схема
+    let doc = &v["document"];
+    if !doc.is_null() {
+        let secs_in = doc["sections"].as_array().ok_or("нет пунктов документа")?;
+        if secs_in.is_empty() || secs_in.len() > MAX_SECTIONS {
+            return Err(format!("пунктов должно быть от 1 до {MAX_SECTIONS}"));
+        }
+        let mut sections = Vec::new();
+        for sec in secs_in {
+            let title = clip(&sec["title"], 200);
+            if title.is_empty() {
+                return Err("у пункта нет заголовка".into());
+            }
+            let markdown: String = sec["markdown"].as_str().unwrap_or("").trim().chars().take(8000).collect();
+            // ссылки на несуществующие шаги молча отбрасываем
+            let steps: Vec<Value> = sec["steps"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|x| x.as_str()).filter(|x| ids.contains(*x)).map(Value::from).collect())
+                .unwrap_or_default();
+            sections.push(json!({ "title": title, "markdown": markdown, "steps": steps }));
+        }
+        let dtitle = clip(&doc["title"], 200);
+        out.insert("document".into(), json!({ "title": if dtitle.is_empty() { "Регламент".to_owned() } else { dtitle }, "sections": sections }));
+    }
+    Ok(Value::Object(out))
 }
 
 #[cfg(test)]
@@ -434,6 +494,50 @@ mod tests {
         let (deltas, res) = run_sse("data: {\"type\":\"response.output_text.done\",\"text\":\"готово\"}\n");
         assert!(deltas.is_empty());
         assert_eq!(res.unwrap(), "готово");
+    }
+
+    #[test]
+    fn reply_only_answer_is_valid() {
+        let n = normalize(&json!({ "reply": "Пока не хватает данных: кто согласует?" })).unwrap();
+        assert_eq!(n["reply"], "Пока не хватает данных: кто согласует?");
+        assert!(n.get("process").is_none() && n.get("document").is_none());
+        assert!(normalize(&json!({})).is_err(), "ни реплики, ни процесса");
+        assert!(normalize(&json!({ "reply": "  " })).is_err());
+    }
+
+    #[test]
+    fn document_is_optional_with_process() {
+        let mut v = good();
+        v["reply"] = "Построил схему".into();
+        v.as_object_mut().unwrap().remove("document");
+        let n = normalize(&v).unwrap();
+        assert_eq!(n["reply"], "Построил схему");
+        assert!(n.get("document").is_none());
+        assert_eq!(n["process"]["nodes"].as_array().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn builds_input_with_history_and_board() {
+        let h = vec![
+            Turn { role: "user".into(), text: "Построй процесс отпуска".into() },
+            Turn { role: "assistant".into(), text: "Построил.".into() },
+            Turn { role: "system".into(), text: "игнорируется".into() },
+            Turn { role: "user".into(), text: "   ".into() },
+        ];
+        let s = build_input("Добавь отказ", "Процесс «Отпуск»", &h);
+        assert!(s.starts_with("Предыдущий диалог:\nПользователь: Построй процесс отпуска\nИИ: Построил.\n\n"));
+        assert!(!s.contains("игнорируется"));
+        assert!(s.contains("Новое сообщение пользователя:\nДобавь отказ"));
+        assert!(s.ends_with("Что уже есть на доске:\nПроцесс «Отпуск»"));
+        assert_eq!(build_input("Привет", "", &[]), "Новое сообщение пользователя:\nПривет");
+    }
+
+    #[test]
+    fn history_is_trimmed_to_last_turns() {
+        let h: Vec<Turn> = (0..30).map(|i| Turn { role: "user".into(), text: format!("реплика {i}") }).collect();
+        let s = build_input("x", "", &h);
+        assert!(s.contains("реплика 29") && s.contains("реплика 18"));
+        assert!(!s.contains("реплика 17"));
     }
 
     #[test]
