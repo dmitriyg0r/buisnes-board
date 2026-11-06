@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Source } from './data';
 import { Icon } from './Icon';
+import { objectCatalog, type ObjectCategoryId, type ObjectTypeId } from './objectCatalog';
 
 interface Props {
-  /** сколько уже добавлено: нужно для названий по умолчанию */
   counts: { processes: number; docs: number };
   onAddModel: (title: string) => void;
   onAddDoc: (title: string) => void;
@@ -12,104 +12,88 @@ interface Props {
 }
 
 export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddSource, onClose }: Props) {
-  const [kind, setKind] = useState<'model' | 'doc' | 'source'>(counts.processes === 0 ? 'model' : counts.docs === 0 ? 'doc' : 'source');
+  const dialog = useRef<HTMLDialogElement>(null);
+  const [categoryId, setCategoryId] = useState<ObjectCategoryId>('processes');
+  const [typeId, setTypeId] = useState<ObjectTypeId>(objectCatalog[0].types[0].id);
   const [modelName, setModelName] = useState(counts.processes ? `Модель процесса ${counts.processes + 1}` : 'Модель процесса');
   const [title, setTitle] = useState(counts.docs ? `Документ ${counts.docs + 1}` : 'Регламент');
   const [name, setName] = useState('');
   const [ext, setExt] = useState<Source['ext']>('DOCX');
   const [pages, setPages] = useState(1);
+  const category = objectCatalog.find((item) => item.id === categoryId)!;
+  const type = category.types.find((item) => item.id === typeId) ?? category.types[0];
+  const value = type.kind === 'process' ? modelName : type.kind === 'document' ? title : name;
+  const valid = value.trim().length > 0;
 
   useEffect(() => {
-    const k = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', k);
-    return () => window.removeEventListener('keydown', k);
-  }, [onClose]);
+    const element = dialog.current;
+    element?.showModal();
+    element?.querySelector<HTMLButtonElement>('[data-category-active]')?.focus();
+    return () => { if (element?.open) element.close(); };
+  }, []);
 
-  const valid = kind === 'model' ? modelName.trim().length > 0 : kind === 'doc' ? title.trim().length > 0 : name.trim().length > 0;
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
+  const chooseCategory = (id: ObjectCategoryId) => {
+    const next = objectCatalog.find((item) => item.id === id)!;
+    setCategoryId(id);
+    setTypeId(next.types[0].id);
+  };
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
     if (!valid) return;
-    if (kind === 'model') onAddModel(modelName.trim());
-    else if (kind === 'doc') onAddDoc(title.trim());
-    else onAddSource({ name: name.trim(), ext, pages: Math.max(1, Math.round(pages) || 1) });
+    switch (type.id) {
+      case 'bpmn': onAddModel(modelName.trim()); break;
+      case 'markdown': onAddDoc(title.trim()); break;
+      case 'source-reference': onAddSource({ name: name.trim(), ext, pages: Math.max(1, Math.round(pages) || 1) }); break;
+      default: { const unsupported: never = type.id; return unsupported; }
+    }
     onClose();
   };
 
   return (
-    <div className="dlg-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <form className="dlg" role="dialog" aria-modal="true" aria-label="Добавить материал" onSubmit={submit}>
+    <dialog ref={dialog} className="dlg create-object-dialog" aria-labelledby="create-object-title" onCancel={(event) => { event.preventDefault(); onClose(); }} onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <form onSubmit={submit}>
         <div className="dlg-head">
           <span className="dlg-icon"><Icon name="plus" size={18} /></span>
           <div className="dlg-title">
-            <b>Добавить материал</b>
-            <small>Материал появится на полотне и в дереве проекта</small>
+            <b id="create-object-title">Добавить объект</b>
+            <small>Выберите категорию и тип объекта</small>
           </div>
-          <button type="button" className="icon-btn" aria-label="Закрыть" onClick={onClose}>
-            <Icon name="close" />
-          </button>
+          <button type="button" className="icon-btn" aria-label="Закрыть" onClick={onClose}><Icon name="close" /></button>
         </div>
-
-        <div className="dlg-body">
-          <fieldset className="kinds">
-            <legend className="plabel">Что добавляем</legend>
-            <label className={`kind${kind === 'model' ? ' on' : ''}`}>
-              <input type="radio" name="kind" checked={kind === 'model'} onChange={() => setKind('model')} />
-              <b>Модель процесса (BPMN)</b>
-              <small>Дорожки, шаги и переходы процесса. Моделей может быть несколько</small>
-            </label>
-            <label className={`kind${kind === 'doc' ? ' on' : ''}`}>
-              <input type="radio" name="kind" checked={kind === 'doc'} onChange={() => setKind('doc')} />
-              <b>Документ (Markdown)</b>
-              <small>Текст, который можно править. Заголовки становятся пунктами, их связывают с шагами модели</small>
-            </label>
-            <label className={`kind${kind === 'source' ? ' on' : ''}`}>
-              <input type="radio" name="kind" checked={kind === 'source'} onChange={() => setKind('source')} />
-              <b>Источник</b>
-              <small>Соглашение, интервью или другой материал, на который опираются замечания</small>
-            </label>
-          </fieldset>
-
-          {kind === 'model' ? (
-            <label className="prow">
-              <span className="plabel">Название модели</span>
-              <input className="pinput" value={modelName} onChange={(e) => setModelName(e.target.value)} autoFocus />
-            </label>
-          ) : kind === 'doc' ? (
-            <label className="prow">
-              <span className="plabel">Название документа</span>
-              <input className="pinput" value={title} onChange={(e) => setTitle(e.target.value)} autoFocus />
-            </label>
-          ) : (
-            <>
-              <label className="prow">
-                <span className="plabel">Название файла</span>
-                <input className="pinput" value={name} onChange={(e) => setName(e.target.value)} placeholder="Название файла" autoFocus />
+        <div className="create-object-content">
+          <nav className="create-object-categories" aria-label="Категории объектов">
+            <span className="create-object-label">Категории</span>
+            {objectCatalog.map((item) => <button key={item.id} type="button" className={`create-object-category${categoryId === item.id ? ' on' : ''}`} aria-pressed={categoryId === item.id} data-category-active={categoryId === item.id || undefined} onClick={() => chooseCategory(item.id)}>
+              <Icon name="folder" size={17} /><span>{item.title}</span><Icon name="chevronRight" size={14} />
+            </button>)}
+          </nav>
+          <div className="create-object-main">
+            <div className="create-object-heading"><h2>{category.title}</h2><p>{category.description}</p></div>
+            <fieldset className="create-object-types">
+              <legend className="create-object-label">Тип объекта</legend>
+              {category.types.map((item) => <label key={item.id} className={`create-object-type${type.id === item.id ? ' on' : ''}`}>
+                <input type="radio" name="object-type" checked={type.id === item.id} onChange={() => setTypeId(item.id)} />
+                <span className="create-object-type-icon"><Icon name={item.icon} size={19} /></span>
+                <span className="create-object-type-copy"><b>{item.title}</b><small>{item.description}</small></span>
+                <span className="create-object-format">{item.format}</span>
+              </label>)}
+            </fieldset>
+            <div className="create-object-fields">
+              <label className="create-object-field"><span>{type.kind === 'process' ? 'Название модели' : type.kind === 'document' ? 'Название документа' : 'Название источника'}</span>
+                <input className="pinput" value={value} onChange={(event) => type.kind === 'process' ? setModelName(event.target.value) : type.kind === 'document' ? setTitle(event.target.value) : setName(event.target.value)} placeholder={type.kind === 'source' ? 'Название файла' : undefined} required />
               </label>
-              <label className="prow">
-                <span className="plabel">Формат</span>
-                <select className="pinput" value={ext} onChange={(e) => setExt(e.target.value as Source['ext'])}>
-                  <option>DOCX</option>
-                  <option>PDF</option>
-                </select>
-              </label>
-              <label className="prow">
-                <span className="plabel">Страниц</span>
-                <input className="pinput" type="number" min={1} value={pages} onChange={(e) => setPages(Number(e.target.value))} />
-              </label>
-              <p className="pnote">Сам файл пока не загружается: сохраняются название и формат.</p>
-            </>
-          )}
-        </div>
-
-        <div className="dlg-foot">
-          <span />
-          <div className="pactions">
-            <button type="button" className="btn" onClick={onClose}>Отмена</button>
-            <button type="submit" className="btn btn-dark" disabled={!valid}>Добавить</button>
+              {type.kind === 'source' && <>
+                <div className="create-object-source-fields">
+                  <label className="create-object-field"><span>Формат</span><select className="pinput" value={ext} onChange={(event) => setExt(event.target.value as Source['ext'])}><option>DOCX</option><option>PDF</option></select></label>
+                  <label className="create-object-field"><span>Страниц</span><input className="pinput" type="number" min={1} value={pages} onChange={(event) => setPages(Number(event.target.value))} /></label>
+                </div>
+                <p className="pnote">Сам файл пока не загружается: сохраняются название, формат и количество страниц.</p>
+              </>}
+            </div>
           </div>
         </div>
+        <div className="dlg-foot"><span>Объект появится на полотне и в структуре проекта</span><div className="pactions"><button type="button" className="btn" onClick={onClose}>Отмена</button><button type="submit" className="btn btn-dark" disabled={!valid}>Добавить</button></div></div>
       </form>
-    </div>
+    </dialog>
   );
 }

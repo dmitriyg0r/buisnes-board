@@ -333,6 +333,49 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 .dlg-tab em { font-style: normal; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--amber); color: #3b2000; font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
 .dlg-body { flex: 1 1 auto; min-height: 220px; overflow: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
 .dlg-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px 12px 20px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+/* ---------- каталог объектов проекта ---------- */
+.create-object-dialog { width: 760px; padding: 0; border: 0; color: var(--ink); }
+.create-object-dialog:not([open]) { display: none; }
+.create-object-dialog::backdrop { background: rgba(31, 36, 48, 0.3); }
+.create-object-dialog form { display: flex; flex-direction: column; min-height: 0; max-height: min(720px, calc(100vh - 48px)); }
+.create-object-content { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 350px; overflow: auto; }
+.create-object-categories { padding: 20px 10px; background: #faf9f6; border-right: 1px solid var(--line); }
+.create-object-label { display: block; margin: 0 0 9px; padding: 0; font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.create-object-categories > .create-object-label { padding-left: 10px; }
+.create-object-category { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 38px; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); text-align: left; font-size: 13px; font-weight: 500; }
+.create-object-category span { flex: 1; min-width: 0; }
+.create-object-category svg { flex: none; }
+.create-object-category:hover { background: #efeee9; }
+.create-object-category.on { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+.create-object-category:focus-visible, .create-object-type:focus-within { outline: 2px solid var(--blue); outline-offset: 2px; }
+.create-object-main { display: flex; flex-direction: column; gap: 20px; padding: 22px 24px 26px; }
+.create-object-heading h2 { margin: 0; font-size: 17px; line-height: 23px; font-weight: 600; }
+.create-object-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12.5px; line-height: 18px; }
+.create-object-types { display: flex; flex-direction: column; gap: 8px; min-width: 0; padding: 0; margin: 0; border: 0; }
+.create-object-type { display: flex; align-items: flex-start; gap: 12px; padding: 12px; border: 1px solid var(--line-2); border-radius: 10px; cursor: pointer; }
+.create-object-type:hover { background: #faf9f6; }
+.create-object-type.on { border-color: #8cabf0; background: #f6f9ff; }
+.create-object-type input { width: 16px; height: 16px; flex: none; margin: 2px 0 0; accent-color: var(--blue); }
+.create-object-type-icon { display: flex; color: var(--blue); }
+.create-object-type-copy { display: flex; flex: 1; flex-direction: column; gap: 3px; min-width: 0; }
+.create-object-type-copy b { font-size: 13.5px; font-weight: 600; }
+.create-object-type-copy small { color: var(--ink-2); font-size: 12px; line-height: 17px; }
+.create-object-format { flex: none; padding: 3px 6px; border-radius: 5px; background: #e8eefb; color: var(--blue-ink); font-size: 10.5px; font-weight: 600; }
+.create-object-fields { display: flex; flex-direction: column; gap: 12px; }
+.create-object-field { display: flex; flex-direction: column; gap: 6px; color: var(--ink-2); font-size: 12.5px; font-weight: 500; }
+.create-object-source-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+@media (max-width: 600px) {
+  .create-object-dialog { width: calc(100% - 24px); max-height: calc(100% - 24px); }
+  .create-object-dialog form { max-height: calc(100vh - 24px); }
+  .create-object-content { grid-template-columns: 1fr; min-height: 0; }
+  .create-object-categories { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .create-object-categories > .create-object-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .create-object-category { flex: 0 0 auto; width: auto; }
+  .create-object-category > svg:last-child { display: none; }
+  .create-object-main { gap: 15px; padding: 18px; }
+  .create-object-dialog .dlg-foot > span { display: none; }
+  .create-object-dialog .dlg-foot { justify-content: flex-end; }
+}
 .prow { display: grid; grid-template-columns: 170px 1fr; gap: 12px; align-items: start; }
 .plabel { font-size: 12.5px; line-height: 20px; font-weight: 500; color: var(--ink-2); padding-top: 6px; }
 .pgroup > .plabel, .pgroup .plabel:only-child { padding-top: 0; }
@@ -498,21 +541,28 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 
 /* ---------- связи между карточками ---------- */
 .card-port { position: absolute; z-index: 6; width: 14px; height: 14px; padding: 0; border: 2px solid var(--blue); border-radius: 50%; background: #fff; cursor: crosshair; touch-action: none; visibility: hidden; pointer-events: none; }
-.card.sel .card-port { visibility: visible; pointer-events: auto; }
+.card.sel .card-port, .card.link-target .card-port { visibility: visible; pointer-events: auto; }
 .card-port:hover, .card-port:focus-visible { background: var(--blue); outline: 3px solid rgba(37, 99, 235, .2); }
-.card-port-top { top: 0; left: 50%; transform: translate(-50%, -50%); }
-.card-port-right { top: 50%; right: 0; transform: translate(50%, -50%); }
-.card-port-bottom { bottom: 0; left: 50%; transform: translate(-50%, 50%); }
-.card-port-left { top: 50%; left: 0; transform: translate(-50%, -50%); }
+.card-port-top { top: 0; transform: translate(-50%, -50%); }
+.card-port-right { right: 0; transform: translate(50%, -50%); }
+.card-port-bottom { bottom: 0; transform: translate(-50%, 50%); }
+.card-port-left { left: 0; transform: translate(-50%, -50%); }
 .card.link-target { outline: 2px dashed var(--blue); outline-offset: 5px; }
 .card-link-preview { position: absolute; left: 0; top: 0; width: 10px; height: 10px; overflow: visible; z-index: 7; pointer-events: none; }
-.card-link-preview path { fill: none; stroke: var(--blue); stroke-width: 2; stroke-dasharray: 6 4; }
+
 .card-link-layer { position: absolute; left: 0; top: 0; width: 10px; height: 10px; overflow: visible; z-index: 4; pointer-events: none; }
 .clink { fill: none; stroke: #7b8090; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .clink.on { stroke: var(--blue); stroke-width: 3; }
 .clink-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; }
+.clink-handle { fill: #fff; stroke: var(--blue); stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: all; touch-action: none; }
+.clink-handle.endpoint { cursor: crosshair; }
+.clink-handle.segment.horizontal { cursor: ns-resize; }
+.clink-handle.segment.vertical { cursor: ew-resize; }
+.clink-handle:hover, .clink-handle:focus-visible { fill: var(--blue-soft); outline: none; stroke-width: 3; }
+.clink-reconnect { position: absolute; top: calc(100% + 8px); right: 0; display: grid; gap: 10px; width: 240px; padding: 12px; border: 1px solid var(--line-2); border-radius: 10px; background: #fff; box-shadow: var(--shadow); }
+.clink-reconnect label { display: grid; gap: 4px; color: var(--ink-2); font-size: 12px; font-weight: 600; }
 .clink-label { position: absolute; z-index: 5; transform: translate(-50%, -50%); padding: 2px 8px; border-radius: 999px; background: #fff; border: 1px solid #cfccc2; color: var(--ink-2); font-size: 12px; font-weight: 600; white-space: nowrap; cursor: pointer; }
-.clink-label.on { border-color: var(--blue); color: var(--blue-ink); }
+.clink-label.on { border-color: var(--blue); color: var(--blue-ink); transform: translate(-50%, calc(-100% - 9px)); }
 .clink-input { position: absolute; z-index: 6; width: 140px; height: 32px; padding: 0 10px; border: 1.5px solid var(--blue); border-radius: 8px; background: #fff; font-family: inherit; font-size: 13px; text-align: center; box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16); outline: none; }
 .canvas.linking .card { cursor: crosshair; }
 .card.link-src { outline: 2px dashed var(--blue); outline-offset: 5px; }
