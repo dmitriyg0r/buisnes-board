@@ -4,7 +4,7 @@ const KEY = 'bb.settings.v1';
 
 /** Модели для строки ИИ на доске */
 export const aiModels = [
-  { id: '6.1sol-medium', label: '6.1sol medium' },
+  { id: '6.1-sol', label: '6.1 sol' },
   { id: '6.1-terra', label: '6.1 terra' },
 ] as const;
 export type AiModel = (typeof aiModels)[number]['id'];
