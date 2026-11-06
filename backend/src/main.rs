@@ -54,7 +54,20 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
             get(integrations::get_codex).put(integrations::put_codex).delete(integrations::delete_codex),
         )
         .route("/integrations/codex/check", post(integrations::check_codex))
+        .route("/workspaces", get(routes::workspaces::list).post(routes::workspaces::create))
+        .route("/workspaces/:id", patch(routes::workspaces::update).delete(routes::workspaces::delete))
+        .route("/workspaces/:id/folders", get(routes::workspaces::list_folders))
+        .route("/workspaces/:id/files", get(routes::files::list_workspace))
+        .route("/folders", post(routes::workspaces::create_folder))
+        .route("/folders/:id", patch(routes::workspaces::update_folder).delete(routes::workspaces::delete_folder))
+        .route("/folders/:id/move", post(routes::workspaces::move_folder))
+        .route("/files", get(routes::files::list).post(routes::files::upload))
+        .route("/files/:id", patch(routes::files::rename).delete(routes::files::delete))
+        .route("/files/:id/download", get(routes::files::download))
+        .route("/files/:id/copy", post(routes::files::copy))
+        .route("/files/:id/move", post(routes::files::move_file))
         .route("/projects", get(routes::projects::list).post(routes::projects::create))
+        .route("/projects/:id/move", post(routes::projects::move_project))
         .route(
             "/projects/:id",
             get(routes::projects::get).patch(routes::projects::update).delete(routes::projects::delete),
@@ -111,6 +124,7 @@ async fn health(axum::extract::State(s): axum::extract::State<AppState>) -> Json
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let _ = dotenvy::from_filename("backend/.env");
     let _ = dotenvy::dotenv();
     tracing_subscriber::fmt()
         .with_env_filter(

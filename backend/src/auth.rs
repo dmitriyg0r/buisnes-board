@@ -196,9 +196,12 @@ pub async fn register(State(s): State<AppState>, Json(b): Json<Register>) -> App
         }
         Err(e) => return Err(e.into()),
     };
+    let workspace: Uuid = sqlx::query_scalar("INSERT INTO workspaces (owner_id, name, is_default) VALUES ($1, 'Моя база', true) RETURNING id")
+        .bind(user.id).fetch_one(&mut *tx).await?;
     if first {
-        // данные, созданные до появления входа, достаются первому пользователю
-        sqlx::query("UPDATE projects SET owner_id = $1 WHERE owner_id IS NULL").bind(user.id).execute(&mut *tx).await?;
+        // Данные, созданные до появления входа, достаются первому пользователю.
+        sqlx::query("UPDATE projects SET owner_id = $1, workspace_id = $2 WHERE owner_id IS NULL")
+            .bind(user.id).bind(workspace).execute(&mut *tx).await?;
         sqlx::query("UPDATE app_settings SET key = $2 WHERE key = 'default'")
             .bind(user.id)
             .bind(format!("user:{}", user.id))

@@ -16,11 +16,13 @@ use crate::AppState;
 pub struct Project {
     pub id: Uuid,
     pub name: String,
+    pub workspace_id: Uuid,
+    pub folder_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
-const COLS: &str = "id, name, created_at, updated_at";
+const COLS: &str = "id, name, workspace_id, folder_id, created_at, updated_at";
 
 fn clean_name(name: &str) -> AppResult<String> {
     let n = name.trim();
@@ -41,16 +43,23 @@ pub async fn list(State(s): State<AppState>, user: AuthUser) -> AppResult<Json<V
 #[derive(Deserialize)]
 pub struct NewProject {
     name: Option<String>,
+    workspace_id: Option<Uuid>,
+    folder_id: Option<Uuid>,
 }
 
 pub async fn create(State(s): State<AppState>, user: AuthUser, Json(b): Json<NewProject>) -> AppResult<(StatusCode, Json<Project>)> {
     let name = clean_name(b.name.as_deref().unwrap_or("Новый проект"))?;
     let mut tx = s.db.begin().await?;
-    let p = sqlx::query_as::<_, Project>(&format!("INSERT INTO projects (name, owner_id) VALUES ($1, $2) RETURNING {COLS}"))
-        .bind(name)
-        .bind(user.id)
-        .fetch_one(&mut *tx)
-        .await?;
+    let workspace: Uuid = sqlx::query_scalar("SELECT id FROM workspaces WHERE owner_id = $1 AND (id = $2 OR ($2 IS NULL AND is_default))")
+        .bind(user.id).bind(b.workspace_id).fetch_optional(&mut *tx).await?.ok_or(AppError::NotFound)?;
+    if let Some(folder) = b.folder_id {
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM folders WHERE id = $1 AND workspace_id = $2)")
+            .bind(folder).bind(workspace).fetch_one(&mut *tx).await?;
+        if !exists { return Err(AppError::NotFound); }
+    }
+    let p = sqlx::query_as::<_, Project>(&format!("INSERT INTO projects (name, owner_id, workspace_id, folder_id) VALUES ($1, $2, $3, $4) RETURNING {COLS}"))
+        .bind(name).bind(user.id).bind(workspace).bind(b.folder_id)
+        .fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO project_models (project_id, data) VALUES ($1, $2)")
         .bind(p.id)
         .bind(json!({ "links": [], "cardLinks": [], "processes": [], "docs": [], "sources": [], "meta": {} }))
@@ -96,4 +105,21 @@ pub async fn delete(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uu
         return Err(AppError::NotFound);
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct MoveProject {
+    workspace_id: Uuid,
+    folder_id: Option<Uuid>,
+}
+
+pub async fn move_project(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>, Json(b): Json<MoveProject>) -> AppResult<Json<Project>> {
+    let p = sqlx::query_as::<_, Project>(&format!(
+        "UPDATE projects SET workspace_id = $3, folder_id = $4, updated_at = now() \
+         WHERE id = $1 AND owner_id = $2 \
+         AND EXISTS (SELECT 1 FROM workspaces WHERE id = $3 AND owner_id = $2) \
+         AND ($4::uuid IS NULL OR EXISTS (SELECT 1 FROM folders WHERE id = $4 AND workspace_id = $3)) RETURNING {COLS}"
+    )).bind(id).bind(user.id).bind(b.workspace_id).bind(b.folder_id)
+        .fetch_optional(&s.db).await?.ok_or(AppError::NotFound)?;
+    Ok(Json(p))
 }

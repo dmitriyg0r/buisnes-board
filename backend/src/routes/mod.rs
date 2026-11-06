@@ -1,7 +1,9 @@
+pub mod files;
 pub mod issues;
 pub mod model;
 pub mod projects;
 pub mod settings;
+pub mod workspaces;
 
 use sqlx::PgPool;
 use uuid::Uuid;
