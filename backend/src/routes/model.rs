@@ -77,3 +77,13 @@ pub async fn put(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>
         }))),
     }
 }
+
+/// Лёгкий опрос: клиент узнаёт, изменилась ли модель, не скачивая её целиком.
+pub async fn version(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    ensure_project(&s.db, id, user.id).await?;
+    let v: Option<i64> = sqlx::query_scalar("SELECT version FROM project_models WHERE project_id = $1")
+        .bind(id)
+        .fetch_optional(&s.db)
+        .await?;
+    v.map(|v| Json(json!({ "version": v }))).ok_or(AppError::NotFound)
+}

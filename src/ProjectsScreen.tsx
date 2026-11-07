@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HttpError } from './api';
 import type { User } from './auth';
 import { Icon } from './Icon';
-import { deleteProject, forgetProject, patchProject, type Project } from './projects';
+import { deleteProject, forgetProject, listSharedProjects, patchProject, removeMember, type Project, type SharedProject } from './projects';
+import { ProjectSettingsDialog } from './ProjectSettingsDialog';
 import { initials } from './settings';
 import * as api from './workspaces';
 import { WorkspaceGrid } from './WorkspaceGrid';
@@ -29,6 +30,9 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
   const [menu, setMenu] = useState<{ item: Item; x: number; y: number } | null>(null);
   const [baseMenu, setBaseMenu] = useState<{ workspace: api.Workspace; x: number; y: number } | null>(null);
   const [backgroundMenu, setBackgroundMenu] = useState<{ destination: api.Location; x: number; y: number } | null>(null);
+  const [shared, setShared] = useState<SharedProject[]>([]);
+  const [sharedMenu, setSharedMenu] = useState<{ project: SharedProject; x: number; y: number } | null>(null);
+  const [projectSettings, setProjectSettings] = useState<api.LocatedProject | null>(null);
   const [settingsId, setSettingsId] = useState<string | null>(null);
   const [actionDialog, setActionDialog] = useState<ActionDialog | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -42,7 +46,8 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
   const searchInput = useRef<HTMLInputElement>(null);
   const search = useMemo(() => searchTree(query, workspaces, folders, projects, treeFiles), [query, workspaces, folders, projects, treeFiles]);
   const refresh = useCallback(async () => {
-    const [w, p] = await Promise.all([api.listWorkspaces(), api.listWorkspaceProjects()]);
+    const [w, p, sh] = await Promise.all([api.listWorkspaces(), api.listWorkspaceProjects(), listSharedProjects().catch(() => [] as SharedProject[])]);
+    setShared(sh);
     const [folderLists, fileLists] = await Promise.all([
       Promise.all(w.map((base) => api.listFolders(base.id))),
       Promise.all(w.map((base) => api.listTreeFiles(base.id))),
@@ -172,7 +177,8 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
     <main className="ws-browser"><aside className="ws-sidebar" aria-label="Дерево баз и папок"><div className="ws-sidebar-head"><strong>Базы</strong><button type="button" className="btn" onClick={createBase} disabled={busy}>Новая база</button></div>
       <div className="ws-tree-search"><Icon name="search" size={16}/><input ref={searchInput} type="search" aria-label="Поиск по базам, папкам, проектам и файлам" placeholder="Поиск по базам и файлам" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && query) { event.preventDefault(); setQuery(''); } }}/>{query && <button type="button" aria-label="Очистить поиск" onClick={() => { setQuery(''); searchInput.current?.focus(); }}><Icon name="close" size={14}/></button>}</div>
       {search.active && !search.workspaceIds.size && !loading && <p className="ws-tree-search-empty" role="status">Ничего не найдено</p>}
-      {workspaces.filter((w) => !search.active || search.workspaceIds.has(w.id)).map((w) => <div key={w.id} className="ws-tree-base"><button type="button" className={`ws-base-button ${location?.workspace_id === w.id && !location.folder_id ? 'active' : ''}`} data-workspace-drop data-workspace-id={w.id} data-folder-id="" aria-current={location?.workspace_id === w.id && !location.folder_id ? 'location' : undefined} onClick={() => choose(w.id, null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); setBackgroundMenu(null); setBaseMenu({ workspace: w, x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setMenu(null); setBackgroundMenu(null); setBaseMenu({ workspace: w, x: rect.left, y: rect.bottom }); } }}>{w.name}</button>{treeFolders(w.id, null, 0, new Set())}{renderTreeProjects(w.id, null, 0)}{renderTreeFiles(w.id, null, 0)}</div>)}</aside>
+      {workspaces.filter((w) => !search.active || search.workspaceIds.has(w.id)).map((w) => <div key={w.id} className="ws-tree-base"><button type="button" className={`ws-base-button ${location?.workspace_id === w.id && !location.folder_id ? 'active' : ''}`} data-workspace-drop data-workspace-id={w.id} data-folder-id="" aria-current={location?.workspace_id === w.id && !location.folder_id ? 'location' : undefined} onClick={() => choose(w.id, null)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); setBackgroundMenu(null); setBaseMenu({ workspace: w, x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => { if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); setMenu(null); setBackgroundMenu(null); setBaseMenu({ workspace: w, x: rect.left, y: rect.bottom }); } }}>{w.name}</button>{treeFolders(w.id, null, 0, new Set())}{renderTreeProjects(w.id, null, 0)}{renderTreeFiles(w.id, null, 0)}</div>)}
+      {shared.length > 0 && !search.active && <div className="ws-tree-base"><span className="ws-base-button" style={{ cursor: 'default' }}>Общие со мной</span>{shared.map((p) => <div key={p.id} className="ws-tree-row ws-tree-project-row" style={{ paddingLeft: 34 }}><button type="button" className="ws-tree-file ws-tree-project" title={`${p.name} — владелец: ${p.owner_name}`} onClick={() => onOpen(p)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); setBaseMenu(null); setBackgroundMenu(null); setSharedMenu({ project: p, x: event.clientX, y: event.clientY }); }}><Icon name="model" size={15}/><span>{p.name}</span></button></div>)}</div>}</aside>
     <section className="ws-content" aria-label="Содержимое базы" tabIndex={0} onContextMenu={(event) => { const target = event.target as Element; if (!location || event.defaultPrevented || target.closest('button, input, textarea, select, a, .ws-toolbar, .ws-breadcrumbs, .ws-heading, .ws-clipboard, .auth-error')) return; event.preventDefault(); openBackgroundMenu(location, event.clientX, event.clientY); }} onKeyDown={(event) => { if (event.target !== event.currentTarget || !location || !(event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) return; event.preventDefault(); const rect = event.currentTarget.getBoundingClientRect(); openBackgroundMenu(location, rect.left + 16, rect.top + 16); }}>
       {error && <div className="auth-error" role="alert">{error} <button type="button" onClick={() => void run(async () => {})}>Повторить загрузку</button></div>}
       {loading ? <p>Загрузка…</p> : !workspace ? <div className="ws-empty"><b>Нет баз</b><span>Создайте базу для проектов и файлов.</span><button type="button" className="btn btn-dark" onClick={createBase}>Создать базу</button></div> : <>
@@ -200,6 +206,7 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
     </section></main>
     {menu && <WorkspaceContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} actions={[
       { label: menu.item.kind === 'file' ? 'Скачать' : 'Открыть', run: () => openItem(menu.item) },
+      ...(menu.item.kind === 'project' ? [{ label: 'Настройки проекта', run: () => { setError(null); setProjectSettings(menu.item.data as api.LocatedProject); } }] : []),
       ...(menu.item.kind === 'folder' ? creationActions({ workspace_id: menu.item.data.workspace_id, folder_id: menu.item.data.id }) : []),
       { label: 'Переименовать', shortcut: 'F2', disabled: busy, run: () => rename(menu.item) },
       ...(menu.item.kind === 'file' ? [{ label: 'Копировать', shortcut: 'Ctrl/⌘ C', disabled: busy, run: () => setClipboard({ item: menu.item, mode: 'copy' as const }) }] : []),
@@ -211,6 +218,11 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
       ...creationActions({ workspace_id: baseMenu.workspace.id, folder_id: null }),
       { label: 'Настройки базы', run: () => openBaseSettings(baseMenu.workspace.id) },
     ]} />}
+    {sharedMenu && <WorkspaceContextMenu x={sharedMenu.x} y={sharedMenu.y} onClose={() => setSharedMenu(null)} actions={[
+      { label: 'Открыть', run: () => onOpen(sharedMenu.project) },
+      { label: 'Покинуть проект', danger: true, disabled: busy, run: () => void run(async () => { await removeMember(sharedMenu.project.id, user.id); forgetProject(sharedMenu.project.id); }) },
+    ]} />}
+    {projectSettings && <ProjectSettingsDialog key={projectSettings.id} project={projectSettings} onClose={() => setProjectSettings(null)} />}
     {backgroundMenu && <WorkspaceContextMenu x={backgroundMenu.x} y={backgroundMenu.y} onClose={() => setBackgroundMenu(null)} actions={creationActions(backgroundMenu.destination)} />}
     {settingsWorkspace && <WorkspaceSettingsDialog key={settingsWorkspace.id} workspace={settingsWorkspace} busy={busy} error={error} onClose={() => { setSettingsId(null); setError(null); }} onRename={(name) => run(async () => { await api.renameWorkspace(settingsWorkspace.id, name); })} onDelete={() => run(async () => { await api.deleteWorkspace(settingsWorkspace.id); })} onExport={() => void run(async () => { await api.exportWorkspace(settingsWorkspace.id); })}/>}
     {actionDialog && <WorkspaceActionDialog title={actionDialog.kind === 'name' ? actionDialog.title : 'Удалить элемент?'} label={actionDialog.kind === 'name' ? actionDialog.label : undefined} initialValue={actionDialog.kind === 'name' ? actionDialog.initialValue : undefined} maxLength={actionDialog.kind === 'name' ? actionDialog.maxLength : undefined} description={actionDialog.kind === 'remove' ? `Удалить «${actionDialog.item.data.name}»? ${actionDialog.item.kind === 'folder' ? 'Папка и всё её содержимое будут удалены без возможности восстановления.' : actionDialog.item.kind === 'project' ? 'Все данные проекта будут удалены без возможности восстановления.' : 'Файл будет удалён без возможности восстановления.'}` : undefined} confirmLabel={actionDialog.kind === 'name' ? actionDialog.confirmLabel : 'Удалить'} danger={actionDialog.kind === 'remove'} busy={busy} error={error} onClose={() => { setActionDialog(null); setError(null); }} onConfirm={(value) => actionDialog.kind === 'name' ? actionDialog.save(value) : confirmRemove(actionDialog.item)}/>}
