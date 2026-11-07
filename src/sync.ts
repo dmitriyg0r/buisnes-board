@@ -140,11 +140,11 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mApi.model, ready, tick]);
 
-  /* ----- опрос изменений других участников ----- */
+  /* ----- изменения других участников: сигнал по потоку событий, опрос версии как запасной путь ----- */
   useEffect(() => {
     if (!ready) return;
-    const timer = setInterval(() => {
-      if (document.hidden || revoked.current) return;
+    const poll = () => {
+      if (revoked.current) return;
       queue.current = queue.current.then(async () => {
         try {
           const { version: v } = await http<{ version: number }>('GET', `/projects/${projectId}/model/version`);
@@ -158,8 +158,13 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
           // сетевые сбои игнорируем: следующий опрос повторит попытку
         }
       });
-    }, 3000);
-    return () => clearInterval(timer);
+    };
+    const timer = setInterval(() => { if (!document.hidden) poll(); }, 4000);
+    window.addEventListener('bb:model-hint', poll);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('bb:model-hint', poll);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, projectId]);
 

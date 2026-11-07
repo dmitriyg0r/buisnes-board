@@ -46,6 +46,10 @@ pub struct AppState {
     /// начатые входы через ChatGPT (device-code): по одному на пользователя, живут в памяти
     /// пользователи, у которых сейчас идёт генерация (по одной на человека)
     pub ai_busy: Arc<Mutex<std::collections::HashSet<uuid::Uuid>>>,
+    /// комнаты присутствия: по одной на открытый проект, живут в памяти
+    pub rooms: Arc<Mutex<HashMap<uuid::Uuid, tokio::sync::broadcast::Sender<routes::presence::Ev>>>>,
+    /// имена пользователей для курсоров: (имя, когда загружено)
+    pub names: Arc<Mutex<HashMap<uuid::Uuid, (String, Instant)>>>,
     pub codex_flows: Arc<Mutex<HashMap<uuid::Uuid, integrations::DeviceFlow>>>,
 }
 
@@ -83,6 +87,8 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
         .route("/projects/:id/sharing", get(routes::sharing::get))
         .route("/projects/:id/sharing/link", post(routes::sharing::enable).delete(routes::sharing::disable))
         .route("/projects/:id/members/:user_id", axum::routing::delete(routes::sharing::remove_member))
+        .route("/projects/:id/events", get(routes::presence::stream))
+        .route("/projects/:id/presence", post(routes::presence::cursor))
         .route("/projects/:id/model/version", get(routes::model::version))
         .route("/projects", get(routes::projects::list).post(routes::projects::create))
         .route("/projects/:id/move", post(routes::projects::move_project))
@@ -132,6 +138,8 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
             cfg,
             limiter: Arc::new(Mutex::new(HashMap::new())),
             ai_busy: Arc::new(Mutex::new(Default::default())),
+            rooms: Arc::new(Mutex::new(HashMap::new())),
+            names: Arc::new(Mutex::new(HashMap::new())),
             codex_flows: Arc::new(Mutex::new(HashMap::new())),
             http: http_client(openai_proxy.as_deref()),
         })

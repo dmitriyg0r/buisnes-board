@@ -74,6 +74,8 @@ pub async fn remove_member(State(s): State<AppState>, user: AuthUser, Path((id, 
     if r.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    // отозванный участник сразу теряет поток событий проекта
+    super::presence::publish(&s, id, super::presence::Ev::kick(member));
     Ok(StatusCode::NO_CONTENT)
 }
 

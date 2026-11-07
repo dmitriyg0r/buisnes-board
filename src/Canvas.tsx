@@ -15,6 +15,17 @@ import { PropertiesDialog, type PropTarget } from './PropertiesDialog';
 import type { ModelApi } from './useModel';
 import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
 import { loadView, saveView, type CardSizes } from './viewState';
+import type { Presence } from './presence';
+
+/* Положение и размер карточек лежат в общей модели (meta), чтобы коллеги видели перемещения. */
+const POS_KEY = 'layout:pos';
+const SIZE_KEY = 'layout:size';
+const fmtPos = (p?: { x: number; y: number }) => (p ? `${Math.round(p.x)},${Math.round(p.y)}` : '');
+const fmtSize = (z?: { w: number; h: number }) => (z ? `${Math.round(z.w)},${Math.round(z.h)}` : '');
+const nums = (v: string): [number, number] | null => {
+  const [a, b] = v.split(',').map(Number);
+  return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : null;
+};
 
 interface Pos {
   x: number;
@@ -41,6 +52,8 @@ interface Props {
   onEditDoc: (id: string) => void;
   /** редактор или другой диалог открыт: горячие клавиши полотна не работают */
   paused: boolean;
+  /** курсоры коллег и отправка своего */
+  presence?: Presence;
 }
 
 /* ---------- перетаскиваемая карточка ---------- */
@@ -490,7 +503,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused, presence }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways } = api.model;
   const pnodes = projectNodes(processes);
@@ -516,16 +529,54 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const i = Math.max(0, sources.findIndex((s) => s.id === key));
     return { x: 16 + (i % 2) * 12, y: 120 + i * (SOURCE_SIZE.h + 74) };
   };
-  const [pos, setPos] = useState<Record<string, Pos>>(() => saved?.pos ?? {});
+  const [pos, setPos] = useState<Record<string, Pos>>(() => {
+    const shared: Record<string, Pos> = {};
+    for (const [id, v] of Object.entries(api.model.meta[POS_KEY] ?? {})) { const n = nums(v); if (n) shared[id] = { x: n[0], y: n[1] }; }
+    return { ...(saved?.pos ?? {}), ...shared };
+  });
   const posOf = (id: string): Pos => pos[id] ?? defaultPos(id);
   const cardIds = cardIdsOf(api.model);
-  const [sizes, setSizes] = useState<CardSizes>(() => saved?.sizes ?? {});
+  const [sizes, setSizes] = useState<CardSizes>(() => {
+    const shared: CardSizes = {};
+    for (const [id, v] of Object.entries(api.model.meta[SIZE_KEY] ?? {})) { const n = nums(v); if (n) shared[id] = { w: n[0], h: n[1] }; }
+    return { ...(saved?.sizes ?? {}), ...shared };
+  });
   const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
   const MIN_CARD = (id: string) => (id.startsWith('proc:') ? { w: 320, h: 240 } : id.startsWith('gw:') ? { w: 96, h: 96 } : { w: 240, h: 200 });
   const MAX_CARD = 2400;
   // положение и размеры карточек входят в общую историю «назад / вперёд» вместе с моделью
   const layoutRef = useRef({ pos, sizes });
   layoutRef.current = { pos, sizes };
+  // чужие перемещения и размеры: применяем только записи, которые изменились в модели (свои незаписанные правки не трогаем)
+  const prevMeta = useRef(api.model.meta);
+  useEffect(() => {
+    const prev = prevMeta.current;
+    prevMeta.current = api.model.meta;
+    const np = api.model.meta[POS_KEY] ?? {}, op = prev[POS_KEY] ?? {};
+    const ns = api.model.meta[SIZE_KEY] ?? {}, os = prev[SIZE_KEY] ?? {};
+    const dp: Record<string, Pos> = {}, ds: CardSizes = {};
+    for (const [id, v] of Object.entries(np)) { const n = v !== op[id] && v !== fmtPos(layoutRef.current.pos[id]) ? nums(v) : null; if (n) dp[id] = { x: n[0], y: n[1] }; }
+    for (const [id, v] of Object.entries(ns)) { const n = v !== os[id] && v !== fmtSize(layoutRef.current.sizes[id]) ? nums(v) : null; if (n) ds[id] = { w: n[0], h: n[1] }; }
+    if (Object.keys(dp).length) setPos((s) => ({ ...s, ...dp }));
+    if (Object.keys(ds).length) setSizes((s) => ({ ...s, ...ds }));
+  }, [api.model.meta]);
+  // свои перемещения и размеры уходят в модель после паузы, когда карточку отпустили
+  const metaNow = useRef(api.model.meta);
+  metaNow.current = api.model.meta;
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const curP = metaNow.current[POS_KEY] ?? {}, curS = metaNow.current[SIZE_KEY] ?? {};
+      const wantP: Record<string, string> = {}, wantS: Record<string, string> = {};
+      for (const id of cardIds) {
+        if (pos[id] && fmtPos(pos[id]) !== curP[id]) wantP[id] = fmtPos(pos[id]);
+        if (sizes[id] && fmtSize(sizes[id]) !== curS[id]) wantS[id] = fmtSize(sizes[id]);
+      }
+      if (!Object.keys(wantP).length && !Object.keys(wantS).length) return;
+      api.applyLive((m) => ({ ...m, meta: { ...m.meta, ...(Object.keys(wantP).length ? { [POS_KEY]: { ...m.meta[POS_KEY], ...wantP } } : {}), ...(Object.keys(wantS).length ? { [SIZE_KEY]: { ...m.meta[SIZE_KEY], ...wantS } } : {}) } }));
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, sizes, api.model.meta]);
   api.bindExtra(
     () => layoutRef.current,
     (v) => {
@@ -1005,7 +1056,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const spawnAt = useRef<Pos | null>(null);
   const prevIds = useRef(cardIds);
   useEffect(() => {
-    const added = cardIds.filter((i) => !prevIds.current.includes(i) && !pos[i]);
+    const added = cardIds.filter((i) => !prevIds.current.includes(i) && !pos[i] && !api.model.meta[POS_KEY]?.[i]);
     prevIds.current = cardIds;
     // пачка карточек разом — это загрузка проекта, а не действие пользователя: их места не трогаем
     const fresh = added.length === 1 ? added : [];
@@ -1121,6 +1172,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
 
   const rootMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (presence && root.current) { const w = pointOnCanvas(e.clientX, e.clientY); presence.send(w.x, w.y); }
     if (mode === 'link' && linkFrom && !portDragRef.current) {
       const target = portTargetAt(e.clientX, e.clientY, linkFrom);
       const point = pointOnCanvas(e.clientX, e.clientY);
@@ -1397,6 +1449,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       onPointerDownCapture={rootDownCapture}
       onPointerDown={rootDown}
       onPointerMove={rootMove}
+      onPointerLeave={() => presence?.send(null, null)}
       onPointerUp={rootUp}
       onContextMenu={(e) => {
         if (e.target !== root.current && e.target !== world.current) return e.preventDefault();
@@ -1416,6 +1469,12 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       <ZoomCtx.Provider value={cam.k}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
           <AiDraftLayer procPos={procPos} docPos={docPos} />
+          {presence?.peers.filter((p) => p.x !== null && p.y !== null).map((p) => (
+            <div key={p.id} className="peer-cursor" style={{ left: p.x!, top: p.y!, transform: `scale(${1 / cam.k})`, color: p.color }} aria-hidden="true">
+              <svg width="18" height="20" viewBox="0 0 18 20"><path d="M1 1l6.5 17 2.4-7 7-2.4z" fill="currentColor" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round"/></svg>
+              <span style={{ background: p.color }}>{p.name}</span>
+            </div>
+          ))}
           {sources.map((s, i) => (
             <DragCard
               key={s.id}

@@ -2,6 +2,7 @@ pub mod export;
 pub mod files;
 pub mod issues;
 pub mod model;
+pub mod presence;
 pub mod projects;
 pub mod settings;
 pub mod sharing;
