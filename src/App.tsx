@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { blankXml, parseProcess } from './bpmn';
+import { blankXml } from './bpmn';
 import { emptyModel, NO_ISSUE, type IssueStatus } from './data';
 import { reconcileSections, sectionTitles, starterMarkdown } from './markdown';
 import { autoIssues, coverage } from './coverage';
@@ -19,7 +19,7 @@ import { ProjectsScreen } from './ProjectsScreen';
 import { patchProject, viewKey, type Project } from './projects';
 import { useIssues, type IssueFields } from './useIssues';
 
-const BpmnEditorDialog = lazy(() => import('./BpmnEditorDialog'));
+const DiagramModelEditor = lazy(() => import('./DiagramModelEditor'));
 const DocEditorDialog = lazy(() => import('./DocEditorDialog'));
 
 const rid = (p: string) => p + Math.random().toString(36).slice(2, 8);
@@ -259,20 +259,23 @@ function Workspace({
 
       {editing?.type === 'process' && api.model.processes.find((p) => p.id === editing.id) && (
         <Suspense fallback={<div className="bpmn-editor boot" role="status">Загрузка редактора…</div>}>
-          <BpmnEditorDialog
+          <DiagramModelEditor
             key={editing.id}
             title={api.model.processes.find((p) => p.id === editing.id)!.title}
             xml={api.model.processes.find((p) => p.id === editing.id)!.xml}
+            processId={editing.id}
+            links={api.model.links}
             onClose={() => setEditing(null)}
-            onSave={(title, xml) => {
+            onSave={(title, xml, removeLinkIds) => {
               const pid = editing.id;
-              // связи с шагами, которых больше нет в диаграмме, удаляются
-              const ids = new Set(parseProcess(xml).nodes.map((n) => `${pid}:${n.id}`));
-              api.apply((m) => ({
-                ...m,
-                processes: m.processes.map((p) => (p.id === pid ? { ...p, title, xml } : p)),
-                links: m.links.filter((l) => !l.nodeId.startsWith(`${pid}:`) || ids.has(l.nodeId)),
-              }));
+              const removeIds = new Set(removeLinkIds);
+              api.apply((m) => {
+                return {
+                  ...m,
+                  processes: m.processes.map((p) => (p.id === pid ? { ...p, title, xml } : p)),
+                  links: m.links.filter((link) => !removeIds.has(link.id)),
+                };
+              });
               setEditing(null);
             }}
           />

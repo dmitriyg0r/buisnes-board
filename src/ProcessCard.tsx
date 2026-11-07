@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { drawDataElements } from './bpmnOverlay';
+import { drawDataElements, fitWithData } from './bpmnOverlay';
 import { Icon } from './Icon';
 
 /** Нужная нам часть bpmn-visualization: библиотека подгружается отдельным куском при первой отрисовке. */
@@ -109,6 +109,7 @@ export function ProcessCard({ title, xml, activeNodeId, issueNodeIds, hasSteps, 
     try {
       v.load(xml, { fit: { type: fitType.current, margin: 28 } });
       try {
+        if (box.current) fitWithData(v.graph.view, xml, box.current.clientWidth, box.current.clientHeight);
         drawDataElements(v.graph.view, xml);
       } catch {
         /* без элементов данных диаграмма всё равно читаема */
