@@ -4,6 +4,7 @@ import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type Ca
 import { splitMarkdown } from './markdown';
 import type { AiModel, Settings } from './settings';
 import { AiChat } from './AiChat';
+import { rectOf, routeAround, routeHits } from './linkRoute';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
@@ -384,23 +385,30 @@ function sidePoint(box: Box, side: CardSide, degrees = 0, offset = 0.5): Pos {
   return { x: box.x + box.w / 2 + x * Math.cos(angle) - y * Math.sin(angle), y: box.y + box.h / 2 + x * Math.sin(angle) + y * Math.cos(angle) };
 }
 
-/** Прокладывает связь через выбранные стороны, не меняя старые автоматические маршруты. */
-function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number, aOffset = 0.5, bOffset = 0.5): Pos[] {
+/**
+ * Прокладывает связь через выбранные стороны. Простой маршрут остаётся, пока он не заходит на карточки;
+ * если заходит (на исходную, на целевую или на любую из `avoid`), строится обход.
+ */
+function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number, aOffset = 0.5, bOffset = 0.5, avoid: Box[] = []): Pos[] {
   const start = sidePoint(a, aSide, aAngle, aOffset);
   const end = sidePoint(b, bSide, bAngle, bOffset);
   const av = sideVector[aSide];
   const bv = sideVector[bSide];
   const out = { x: start.x + av.x * 24, y: start.y + av.y * 24 };
   const into = { x: end.x + bv.x * 24, y: end.y + bv.y * 24 };
+  let base: Pos[];
   if (av.x && bv.x) {
     const mx = av.x === bv.x ? (av.x > 0 ? Math.max(out.x, into.x) + 24 : Math.min(out.x, into.x) - 24) : (out.x + into.x) / 2;
-    return [start, out, { x: mx, y: out.y }, { x: mx, y: into.y }, into, end];
-  }
-  if (av.y && bv.y) {
+    base = [start, out, { x: mx, y: out.y }, { x: mx, y: into.y }, into, end];
+  } else if (av.y && bv.y) {
     const my = av.y === bv.y ? (av.y > 0 ? Math.max(out.y, into.y) + 24 : Math.min(out.y, into.y) - 24) : (out.y + into.y) / 2;
-    return [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
-  }
-  return [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
+    base = [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
+  } else base = [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
+
+  const rects = [a, b, ...avoid].map((box) => rectOf(box));
+  if (!routeHits(base, rects)) return base;
+  const around = routeAround(out, into, rects, av, { x: -bv.x, y: -bv.y });
+  return around ? [start, ...around, end] : base;
 }
 
 /** Убирает повторяющиеся и лишние точки, сохраняя развороты маршрута. */
@@ -774,9 +782,11 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   const boxForLink = (id: string): Box => ({ ...posOf(id), ...(id.startsWith('src:') ? sourceSizes[id] ?? cardSize(id) : cardSize(id)) });
   const angleForLink = (id: string) => { const i = sources.findIndex((s) => `src:${s.id}` === id); return i < 0 ? 0 : i % 2 ? 1.2 : -1.4; };
+  /** Остальные карточки: связь старается не заходить и на них. */
+  const obstaclesFor = (a: string, b: string | null) => cardIds.filter((id) => id !== a && id !== b).map(boxForLink);
   const pointsForLink = (link: CardLink) => {
     const base = validSide(link.fromSide) && validSide(link.toSide)
-      ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset)
+      ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset, obstaclesFor(link.from, link.to))
       : routeCards(boxForLink(link.from), boxForLink(link.to));
     const points = Array.isArray(link.routePoints) ? link.routePoints.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)) : [];
     const automatic = simplifyRoute(base);
@@ -1371,6 +1381,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       attached ? boxForLink(preview.target!) : { ...preview.point, w: 0, h: 0 },
       attached ? preview.toAnchor!.side : opposite[preview.anchor.side], attached ? angleForLink(preview.target!) : 0,
       preview.anchor.offset, attached ? preview.toAnchor!.offset : 0.5,
+      obstaclesFor(preview.from, attached ? preview.target : null),
     );
   })();
 
