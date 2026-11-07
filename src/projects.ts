@@ -24,3 +24,36 @@ export function forgetProject(id: string) {
     /* ignore */
   }
 }
+
+/* ----- общий доступ ----- */
+export interface SharedProject extends Project { owner_name: string }
+export interface Member { user_id: string; name: string; email: string; role: string; joined_at: string }
+export interface Sharing { enabled: boolean; members: Member[] }
+
+export const getProject = (id: string) => http<Project>('GET', `/projects/${id}`);
+export const listSharedProjects = () => http<SharedProject[]>('GET', '/projects/shared');
+export const getSharing = (id: string) => http<Sharing>('GET', `/projects/${id}/sharing`);
+/** Включает доступ или перевыпускает ссылку; токен возвращается один раз. */
+export const enableSharing = (id: string) => http<{ token: string }>('POST', `/projects/${id}/sharing/link`);
+export const disableSharing = (id: string) => http<void>('DELETE', `/projects/${id}/sharing/link`);
+export const removeMember = (id: string, userId: string) => http<void>('DELETE', `/projects/${id}/members/${userId}`);
+export const joinProject = (token: string) => http<{ project_id: string; name: string }>('POST', '/invites/join', { token });
+export const inviteUrl = (token: string) => `${window.location.origin}/join/${token}`;
+
+/* Токен из ссылки хранится только до входа и присоединения. Ключ без префикса bb., чтобы его не стирала смена пользователя. */
+const JOIN_KEY = 'join.pending';
+export function captureJoinToken(): string | null {
+  try {
+    const m = window.location.pathname.match(/^\/join\/([A-Za-z0-9_-]{8,128})\/?$/);
+    if (m) {
+      sessionStorage.setItem(JOIN_KEY, m[1]);
+      window.history.replaceState(null, '', '/');
+    }
+    return sessionStorage.getItem(JOIN_KEY);
+  } catch {
+    return null;
+  }
+}
+export function clearJoinToken() {
+  try { sessionStorage.removeItem(JOIN_KEY); } catch { /* ignore */ }
+}

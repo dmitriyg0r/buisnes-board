@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
+use super::member_sql;
 use crate::AppState;
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -23,6 +24,7 @@ pub struct Project {
 }
 
 const COLS: &str = "id, name, workspace_id, folder_id, created_at, updated_at";
+
 
 fn clean_name(name: &str) -> AppResult<String> {
     let n = name.trim();
@@ -70,7 +72,7 @@ pub async fn create(State(s): State<AppState>, user: AuthUser, Json(b): Json<New
 }
 
 pub async fn get(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> AppResult<Json<Project>> {
-    sqlx::query_as::<_, Project>(&format!("SELECT {COLS} FROM projects WHERE id = $1 AND owner_id = $2"))
+    sqlx::query_as::<_, Project>(&format!("SELECT {COLS} FROM projects p WHERE p.id = $1 AND {}", member_sql("$2")))
         .bind(id)
         .bind(user.id)
         .fetch_optional(&s.db)

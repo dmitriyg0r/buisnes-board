@@ -4,6 +4,7 @@ import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type Ca
 import { splitMarkdown } from './markdown';
 import type { AiModel, Settings } from './settings';
 import { AiChat } from './AiChat';
+import { rectOf, routeAround, routeHits } from './linkRoute';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
@@ -14,6 +15,17 @@ import { PropertiesDialog, type PropTarget } from './PropertiesDialog';
 import type { ModelApi } from './useModel';
 import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
 import { loadView, saveView, type CardSizes } from './viewState';
+import type { Presence } from './presence';
+
+/* Положение и размер карточек лежат в общей модели (meta), чтобы коллеги видели перемещения. */
+const POS_KEY = 'layout:pos';
+const SIZE_KEY = 'layout:size';
+const fmtPos = (p?: { x: number; y: number }) => (p ? `${Math.round(p.x)},${Math.round(p.y)}` : '');
+const fmtSize = (z?: { w: number; h: number }) => (z ? `${Math.round(z.w)},${Math.round(z.h)}` : '');
+const nums = (v: string): [number, number] | null => {
+  const [a, b] = v.split(',').map(Number);
+  return Number.isFinite(a) && Number.isFinite(b) ? [a, b] : null;
+};
 
 interface Pos {
   x: number;
@@ -40,6 +52,8 @@ interface Props {
   onEditDoc: (id: string) => void;
   /** редактор или другой диалог открыт: горячие клавиши полотна не работают */
   paused: boolean;
+  /** курсоры коллег и отправка своего */
+  presence?: Presence;
 }
 
 /* ---------- перетаскиваемая карточка ---------- */
@@ -59,6 +73,7 @@ function DragCard({
   onPortCancel,
   draggingLink,
   linkTarget,
+  snapPort,
   linkLabel,
   linkSource,
   portSize,
@@ -83,6 +98,8 @@ function DragCard({
   onPortCancel: (e: React.PointerEvent<HTMLButtonElement>) => void;
   draggingLink: boolean;
   linkTarget: boolean;
+  /** точка этой карточки, к которой сейчас «присасывается» конец связи */
+  snapPort?: CardAnchor | null;
   linkLabel: string;
   linkSource: boolean;
   portSize: { w: number; h: number };
@@ -148,13 +165,16 @@ function DragCard({
       <span className="pin" />
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
-        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(12, Math.floor((side === 'top' || side === 'bottom' ? portSize.w : portSize.h) / 100)));
+        // от одной до трёх точек на сторону: примерно по одной на каждые 220 px длины. Больше не нужно: место
+        // конкретной связи выбирается и без точек, при клике по карточке оно берётся из места клика
+        const length = side === 'top' || side === 'bottom' ? portSize.w : portSize.h;
+        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(3, Math.floor(length / 220)));
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const anchor = { side, offset };
           const style = side === 'top' || side === 'bottom' ? { left: `${offset * 100}%` } : { top: `${offset * 100}%` };
           return <button
-            key={`${side}-${i}`} type="button" className={`card-port card-port-${side}`} style={style} data-link-port={side} data-link-offset={offset} data-nodrag
+            key={`${side}-${i}`} type="button" className={`card-port card-port-${side}${snapPort && snapPort.side === side && Math.abs(snapPort.offset - offset) < 1e-6 ? ' snap' : ''}`} style={style} data-link-port={side} data-link-offset={offset} data-nodrag
             tabIndex={selected || linkTarget ? 0 : -1}
             aria-label={`Связь от «${linkLabel}», точка ${label} ${i + 1} из ${count}`} title={`Создать связь ${label}`}
             onPointerDown={(e) => onPortDown(id, anchor, e)} onPointerMove={onPortMove} onPointerUp={onPortUp} onPointerCancel={onPortCancel} onLostPointerCapture={onPortCancel}
@@ -378,23 +398,30 @@ function sidePoint(box: Box, side: CardSide, degrees = 0, offset = 0.5): Pos {
   return { x: box.x + box.w / 2 + x * Math.cos(angle) - y * Math.sin(angle), y: box.y + box.h / 2 + x * Math.sin(angle) + y * Math.cos(angle) };
 }
 
-/** Прокладывает связь через выбранные стороны, не меняя старые автоматические маршруты. */
-function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number, aOffset = 0.5, bOffset = 0.5): Pos[] {
+/**
+ * Прокладывает связь через выбранные стороны. Простой маршрут остаётся, пока он не заходит на карточки;
+ * если заходит (на исходную, на целевую или на любую из `avoid`), строится обход.
+ */
+function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number, aOffset = 0.5, bOffset = 0.5, avoid: Box[] = []): Pos[] {
   const start = sidePoint(a, aSide, aAngle, aOffset);
   const end = sidePoint(b, bSide, bAngle, bOffset);
   const av = sideVector[aSide];
   const bv = sideVector[bSide];
   const out = { x: start.x + av.x * 24, y: start.y + av.y * 24 };
   const into = { x: end.x + bv.x * 24, y: end.y + bv.y * 24 };
+  let base: Pos[];
   if (av.x && bv.x) {
     const mx = av.x === bv.x ? (av.x > 0 ? Math.max(out.x, into.x) + 24 : Math.min(out.x, into.x) - 24) : (out.x + into.x) / 2;
-    return [start, out, { x: mx, y: out.y }, { x: mx, y: into.y }, into, end];
-  }
-  if (av.y && bv.y) {
+    base = [start, out, { x: mx, y: out.y }, { x: mx, y: into.y }, into, end];
+  } else if (av.y && bv.y) {
     const my = av.y === bv.y ? (av.y > 0 ? Math.max(out.y, into.y) + 24 : Math.min(out.y, into.y) - 24) : (out.y + into.y) / 2;
-    return [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
-  }
-  return [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
+    base = [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
+  } else base = [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
+
+  const rects = [a, b, ...avoid].map((box) => rectOf(box));
+  if (!routeHits(base, rects)) return base;
+  const around = routeAround(out, into, rects, av, { x: -bv.x, y: -bv.y });
+  return around ? [start, ...around, end] : base;
 }
 
 /** Убирает повторяющиеся и лишние точки, сохраняя развороты маршрута. */
@@ -476,7 +503,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused, presence }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways } = api.model;
   const pnodes = projectNodes(processes);
@@ -502,16 +529,54 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const i = Math.max(0, sources.findIndex((s) => s.id === key));
     return { x: 16 + (i % 2) * 12, y: 120 + i * (SOURCE_SIZE.h + 74) };
   };
-  const [pos, setPos] = useState<Record<string, Pos>>(() => saved?.pos ?? {});
+  const [pos, setPos] = useState<Record<string, Pos>>(() => {
+    const shared: Record<string, Pos> = {};
+    for (const [id, v] of Object.entries(api.model.meta[POS_KEY] ?? {})) { const n = nums(v); if (n) shared[id] = { x: n[0], y: n[1] }; }
+    return { ...(saved?.pos ?? {}), ...shared };
+  });
   const posOf = (id: string): Pos => pos[id] ?? defaultPos(id);
   const cardIds = cardIdsOf(api.model);
-  const [sizes, setSizes] = useState<CardSizes>(() => saved?.sizes ?? {});
+  const [sizes, setSizes] = useState<CardSizes>(() => {
+    const shared: CardSizes = {};
+    for (const [id, v] of Object.entries(api.model.meta[SIZE_KEY] ?? {})) { const n = nums(v); if (n) shared[id] = { w: n[0], h: n[1] }; }
+    return { ...(saved?.sizes ?? {}), ...shared };
+  });
   const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
   const MIN_CARD = (id: string) => (id.startsWith('proc:') ? { w: 320, h: 240 } : id.startsWith('gw:') ? { w: 96, h: 96 } : { w: 240, h: 200 });
   const MAX_CARD = 2400;
   // положение и размеры карточек входят в общую историю «назад / вперёд» вместе с моделью
   const layoutRef = useRef({ pos, sizes });
   layoutRef.current = { pos, sizes };
+  // чужие перемещения и размеры: применяем только записи, которые изменились в модели (свои незаписанные правки не трогаем)
+  const prevMeta = useRef(api.model.meta);
+  useEffect(() => {
+    const prev = prevMeta.current;
+    prevMeta.current = api.model.meta;
+    const np = api.model.meta[POS_KEY] ?? {}, op = prev[POS_KEY] ?? {};
+    const ns = api.model.meta[SIZE_KEY] ?? {}, os = prev[SIZE_KEY] ?? {};
+    const dp: Record<string, Pos> = {}, ds: CardSizes = {};
+    for (const [id, v] of Object.entries(np)) { const n = v !== op[id] && v !== fmtPos(layoutRef.current.pos[id]) ? nums(v) : null; if (n) dp[id] = { x: n[0], y: n[1] }; }
+    for (const [id, v] of Object.entries(ns)) { const n = v !== os[id] && v !== fmtSize(layoutRef.current.sizes[id]) ? nums(v) : null; if (n) ds[id] = { w: n[0], h: n[1] }; }
+    if (Object.keys(dp).length) setPos((s) => ({ ...s, ...dp }));
+    if (Object.keys(ds).length) setSizes((s) => ({ ...s, ...ds }));
+  }, [api.model.meta]);
+  // свои перемещения и размеры уходят в модель после паузы, когда карточку отпустили
+  const metaNow = useRef(api.model.meta);
+  metaNow.current = api.model.meta;
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const curP = metaNow.current[POS_KEY] ?? {}, curS = metaNow.current[SIZE_KEY] ?? {};
+      const wantP: Record<string, string> = {}, wantS: Record<string, string> = {};
+      for (const id of cardIds) {
+        if (pos[id] && fmtPos(pos[id]) !== curP[id]) wantP[id] = fmtPos(pos[id]);
+        if (sizes[id] && fmtSize(sizes[id]) !== curS[id]) wantS[id] = fmtSize(sizes[id]);
+      }
+      if (!Object.keys(wantP).length && !Object.keys(wantS).length) return;
+      api.applyLive((m) => ({ ...m, meta: { ...m.meta, ...(Object.keys(wantP).length ? { [POS_KEY]: { ...m.meta[POS_KEY], ...wantP } } : {}), ...(Object.keys(wantS).length ? { [SIZE_KEY]: { ...m.meta[SIZE_KEY], ...wantS } } : {}) } }));
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pos, sizes, api.model.meta]);
   api.bindExtra(
     () => layoutRef.current,
     (v) => {
@@ -768,9 +833,11 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   const boxForLink = (id: string): Box => ({ ...posOf(id), ...(id.startsWith('src:') ? sourceSizes[id] ?? cardSize(id) : cardSize(id)) });
   const angleForLink = (id: string) => { const i = sources.findIndex((s) => `src:${s.id}` === id); return i < 0 ? 0 : i % 2 ? 1.2 : -1.4; };
+  /** Остальные карточки: связь старается не заходить и на них. */
+  const obstaclesFor = (a: string, b: string | null) => cardIds.filter((id) => id !== a && id !== b).map(boxForLink);
   const pointsForLink = (link: CardLink) => {
     const base = validSide(link.fromSide) && validSide(link.toSide)
-      ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset)
+      ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset, obstaclesFor(link.from, link.to))
       : routeCards(boxForLink(link.from), boxForLink(link.to));
     const points = Array.isArray(link.routePoints) ? link.routePoints.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)) : [];
     const automatic = simplifyRoute(base);
@@ -788,14 +855,19 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const side = (['top', 'right', 'bottom', 'left'] as const)[distances.indexOf(Math.min(...distances))];
     return { side, offset: id.startsWith('gw:') ? 0.5 : Math.max(0, Math.min(1, side === 'top' || side === 'bottom' ? x / box.w : y / box.h)) };
   };
-  const addCardLink = (from: string, to: string, a: CardAnchor, b: CardAnchor) => {
-    if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return;
+  /** true, если связь создана */
+  const addCardLink = (from: string, to: string, a: CardAnchor, b: CardAnchor): boolean => {
+    if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return false;
     const lid = 'c' + Math.random().toString(36).slice(2, 7);
     api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from, to, label: '', fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset }] }));
     setSelLink(lid);
+    return true;
   };
   const pickForLink = (id: string, anchor?: CardAnchor, point?: Pos) => {
-    const chosen = anchor ?? (point ? anchorAt(id, pointOnCanvas(point.x, point.y)) : { side: 'right', offset: 0.5 } as CardAnchor);
+    // клик по телу карточки: конец связи липнет к ближайшей точке карточки
+    const cardEl = point ? Array.from(world.current?.querySelectorAll<HTMLElement>('[data-card]') ?? []).find((c) => c.dataset.card === id) : undefined;
+    const snapped = !anchor && point && cardEl ? nearestAnchor(cardEl, point.x, point.y) : null;
+    const chosen = anchor ?? snapped ?? (point ? anchorAt(id, pointOnCanvas(point.x, point.y)) : { side: 'right', offset: 0.5 } as CardAnchor);
     if (!linkFrom) {
       setLinkFrom(id);
       setLinkFromAnchor(chosen);
@@ -809,7 +881,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       setLinkPointer(null);
       return;
     }
-    if (linkFromAnchor) addCardLink(linkFrom, id, linkFromAnchor, chosen);
+    // связь проведена: режим связи выключается, дальше снова выбор и перетаскивание
+    if (linkFromAnchor && addCardLink(linkFrom, id, linkFromAnchor, chosen)) setMode('select');
     setLinkFrom(null);
     setLinkFromAnchor(null);
     setLinkPointer(null);
@@ -821,6 +894,13 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
   const setLinkLabel = (id: string, label: string) =>
     api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((l) => (l.id === id ? { ...l, label } : l)) }));
+  /** Ближайшая к точке экрана точка связи карточки: концы связей «присасываются» к точкам, а не встают где попало. */
+  const nearestAnchor = (card: HTMLElement, x: number, y: number): CardAnchor | null => {
+    const ports = Array.from(card.querySelectorAll<HTMLElement>('[data-link-port]'));
+    const nearest = ports.map((port) => { const r = port.getBoundingClientRect(); return { port, distance: Math.hypot(x - r.left - r.width / 2, y - r.top - r.height / 2) }; }).sort((a, b) => a.distance - b.distance)[0]?.port;
+    const side = nearest?.dataset.linkPort;
+    return validSide(side) ? { side, offset: Number(nearest?.dataset.linkOffset) } : null;
+  };
   const portTargetAt = (x: number, y: number, from: string) => {
     const cards = Array.from(world.current?.querySelectorAll<HTMLElement>('[data-card]') ?? []).filter((card) => card.dataset.card !== from && cardIds.includes(card.dataset.card ?? ''));
     const candidates = cards.map((card) => {
@@ -829,10 +909,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     }).filter((item) => item.distance <= 36).sort((a, b) => a.distance - b.distance);
     const card = candidates[0]?.card;
     if (!card?.dataset.card) return { target: null, toAnchor: null };
-    const ports = Array.from(card.querySelectorAll<HTMLElement>('[data-link-port]'));
-    const nearest = ports.map((port) => { const r = port.getBoundingClientRect(); return { port, distance: Math.hypot(x - r.left - r.width / 2, y - r.top - r.height / 2) }; }).sort((a, b) => a.distance - b.distance)[0]?.port;
-    const side = nearest?.dataset.linkPort;
-    return { target: card.dataset.card, toAnchor: validSide(side) ? { side, offset: Number(nearest?.dataset.linkOffset) } : null };
+    return { target: card.dataset.card, toAnchor: nearestAnchor(card, x, y) };
   };
   const reconnectLink = (link: CardLink, end: 'from' | 'to', id: string, anchor: CardAnchor): CardLink | null => {
     const from = end === 'from' ? id : link.from;
@@ -921,7 +998,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, linkLabel, portSize: boxForLink(id) });
+  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel, portSize: boxForLink(id) });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFrom(null);
@@ -979,7 +1056,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const spawnAt = useRef<Pos | null>(null);
   const prevIds = useRef(cardIds);
   useEffect(() => {
-    const added = cardIds.filter((i) => !prevIds.current.includes(i) && !pos[i]);
+    const added = cardIds.filter((i) => !prevIds.current.includes(i) && !pos[i] && !api.model.meta[POS_KEY]?.[i]);
     prevIds.current = cardIds;
     // пачка карточек разом — это загрузка проекта, а не действие пользователя: их места не трогаем
     const fresh = added.length === 1 ? added : [];
@@ -1095,16 +1172,14 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
 
   const rootMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (presence && root.current) { const w = pointOnCanvas(e.clientX, e.clientY); presence.send(w.x, w.y); }
     if (mode === 'link' && linkFrom && !portDragRef.current) {
       const target = portTargetAt(e.clientX, e.clientY, linkFrom);
       const point = pointOnCanvas(e.clientX, e.clientY);
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       const card = hit?.closest<HTMLElement>('[data-card]');
-      const port = hit?.closest<HTMLElement>('[data-link-port]');
-      const side = port?.dataset.linkPort;
-      const toAnchor = card?.dataset.card === target.target
-        ? validSide(side) ? { side, offset: Number(port?.dataset.linkOffset) } : anchorAt(target.target!, point)
-        : null;
+      // курсор над карточкой: предпросмотр липнет к её ближайшей точке (как и итоговая связь)
+      const toAnchor = card?.dataset.card === target.target ? target.toAnchor : null;
       setLinkPointer({ point, target: target.target, toAnchor });
     }
     const g = gest.current;
@@ -1358,6 +1433,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       attached ? boxForLink(preview.target!) : { ...preview.point, w: 0, h: 0 },
       attached ? preview.toAnchor!.side : opposite[preview.anchor.side], attached ? angleForLink(preview.target!) : 0,
       preview.anchor.offset, attached ? preview.toAnchor!.offset : 0.5,
+      obstaclesFor(preview.from, attached ? preview.target : null),
     );
   })();
 
@@ -1373,6 +1449,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       onPointerDownCapture={rootDownCapture}
       onPointerDown={rootDown}
       onPointerMove={rootMove}
+      onPointerLeave={() => presence?.send(null, null)}
       onPointerUp={rootUp}
       onContextMenu={(e) => {
         if (e.target !== root.current && e.target !== world.current) return e.preventDefault();
@@ -1392,6 +1469,12 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       <ZoomCtx.Provider value={cam.k}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
           <AiDraftLayer procPos={procPos} docPos={docPos} />
+          {presence?.peers.filter((p) => p.x !== null && p.y !== null).map((p) => (
+            <div key={p.id} className="peer-cursor" style={{ left: p.x!, top: p.y!, transform: `scale(${1 / cam.k})`, color: p.color }} aria-hidden="true">
+              <svg width="18" height="20" viewBox="0 0 18 20"><path d="M1 1l6.5 17 2.4-7 7-2.4z" fill="currentColor" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round"/></svg>
+              <span style={{ background: p.color }}>{p.name}</span>
+            </div>
+          ))}
           {sources.map((s, i) => (
             <DragCard
               key={s.id}

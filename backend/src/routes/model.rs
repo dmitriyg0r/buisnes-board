@@ -61,6 +61,7 @@ pub async fn put(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>
     if let Some(doc) = updated {
         // в списке проектов «изменён» считается по последней правке модели
         sqlx::query("UPDATE projects SET updated_at = now() WHERE id = $1").bind(id).execute(&s.db).await?;
+        super::presence::publish(&s, id, super::presence::Ev::new(json!({ "t": "model", "v": doc.version }), Some(user.id)));
         return Ok(Json(doc));
     }
 
@@ -76,4 +77,14 @@ pub async fn put(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>
             "current_version": v
         }))),
     }
+}
+
+/// Лёгкий опрос: клиент узнаёт, изменилась ли модель, не скачивая её целиком.
+pub async fn version(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> AppResult<Json<Value>> {
+    ensure_project(&s.db, id, user.id).await?;
+    let v: Option<i64> = sqlx::query_scalar("SELECT version FROM project_models WHERE project_id = $1")
+        .bind(id)
+        .fetch_optional(&s.db)
+        .await?;
+    v.map(|v| Json(json!({ "version": v }))).ok_or(AppError::NotFound)
 }

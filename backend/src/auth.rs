@@ -62,11 +62,11 @@ fn cookie_token(h: &HeaderMap) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-fn hash_token(t: &str) -> String {
+pub fn hash_token(t: &str) -> String {
     format!("{:x}", Sha256::digest(t.as_bytes()))
 }
 
-fn new_token() -> String {
+pub fn new_token() -> String {
     let mut b = [0u8; 32];
     OsRng.fill_bytes(&mut b);
     b.iter().map(|x| format!("{x:02x}")).collect()
@@ -129,7 +129,7 @@ fn check_role(r: &str) -> AppResult<()> {
 
 /* ----- ограничение числа неудачных попыток входа ----- */
 
-fn check_limit(s: &AppState, key: &str) -> AppResult<()> {
+pub fn check_limit(s: &AppState, key: &str) -> AppResult<()> {
     let mut m = s.limiter.lock().map_err(|_| AppError::Internal)?;
     if let Some((n, since)) = m.get(key) {
         if since.elapsed() > FAIL_WINDOW {
@@ -141,7 +141,7 @@ fn check_limit(s: &AppState, key: &str) -> AppResult<()> {
     Ok(())
 }
 
-fn note_failure(s: &AppState, key: &str) {
+pub fn note_failure(s: &AppState, key: &str) {
     if let Ok(mut m) = s.limiter.lock() {
         let e = m.entry(key.to_string()).or_insert((0, Instant::now()));
         e.0 += 1;
