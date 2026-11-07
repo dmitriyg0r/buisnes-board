@@ -59,6 +59,7 @@ function DragCard({
   onPortCancel,
   draggingLink,
   linkTarget,
+  snapPort,
   linkLabel,
   linkSource,
   portSize,
@@ -83,6 +84,8 @@ function DragCard({
   onPortCancel: (e: React.PointerEvent<HTMLButtonElement>) => void;
   draggingLink: boolean;
   linkTarget: boolean;
+  /** точка этой карточки, к которой сейчас «присасывается» конец связи */
+  snapPort?: CardAnchor | null;
   linkLabel: string;
   linkSource: boolean;
   portSize: { w: number; h: number };
@@ -157,7 +160,7 @@ function DragCard({
           const anchor = { side, offset };
           const style = side === 'top' || side === 'bottom' ? { left: `${offset * 100}%` } : { top: `${offset * 100}%` };
           return <button
-            key={`${side}-${i}`} type="button" className={`card-port card-port-${side}`} style={style} data-link-port={side} data-link-offset={offset} data-nodrag
+            key={`${side}-${i}`} type="button" className={`card-port card-port-${side}${snapPort && snapPort.side === side && Math.abs(snapPort.offset - offset) < 1e-6 ? ' snap' : ''}`} style={style} data-link-port={side} data-link-offset={offset} data-nodrag
             tabIndex={selected || linkTarget ? 0 : -1}
             aria-label={`Связь от «${linkLabel}», точка ${label} ${i + 1} из ${count}`} title={`Создать связь ${label}`}
             onPointerDown={(e) => onPortDown(id, anchor, e)} onPointerMove={onPortMove} onPointerUp={onPortUp} onPointerCancel={onPortCancel} onLostPointerCapture={onPortCancel}
@@ -800,7 +803,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     return true;
   };
   const pickForLink = (id: string, anchor?: CardAnchor, point?: Pos) => {
-    const chosen = anchor ?? (point ? anchorAt(id, pointOnCanvas(point.x, point.y)) : { side: 'right', offset: 0.5 } as CardAnchor);
+    // клик по телу карточки: конец связи липнет к ближайшей точке карточки
+    const cardEl = point ? Array.from(world.current?.querySelectorAll<HTMLElement>('[data-card]') ?? []).find((c) => c.dataset.card === id) : undefined;
+    const snapped = !anchor && point && cardEl ? nearestAnchor(cardEl, point.x, point.y) : null;
+    const chosen = anchor ?? snapped ?? (point ? anchorAt(id, pointOnCanvas(point.x, point.y)) : { side: 'right', offset: 0.5 } as CardAnchor);
     if (!linkFrom) {
       setLinkFrom(id);
       setLinkFromAnchor(chosen);
@@ -827,6 +833,13 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
   const setLinkLabel = (id: string, label: string) =>
     api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((l) => (l.id === id ? { ...l, label } : l)) }));
+  /** Ближайшая к точке экрана точка связи карточки: концы связей «присасываются» к точкам, а не встают где попало. */
+  const nearestAnchor = (card: HTMLElement, x: number, y: number): CardAnchor | null => {
+    const ports = Array.from(card.querySelectorAll<HTMLElement>('[data-link-port]'));
+    const nearest = ports.map((port) => { const r = port.getBoundingClientRect(); return { port, distance: Math.hypot(x - r.left - r.width / 2, y - r.top - r.height / 2) }; }).sort((a, b) => a.distance - b.distance)[0]?.port;
+    const side = nearest?.dataset.linkPort;
+    return validSide(side) ? { side, offset: Number(nearest?.dataset.linkOffset) } : null;
+  };
   const portTargetAt = (x: number, y: number, from: string) => {
     const cards = Array.from(world.current?.querySelectorAll<HTMLElement>('[data-card]') ?? []).filter((card) => card.dataset.card !== from && cardIds.includes(card.dataset.card ?? ''));
     const candidates = cards.map((card) => {
@@ -835,10 +848,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     }).filter((item) => item.distance <= 36).sort((a, b) => a.distance - b.distance);
     const card = candidates[0]?.card;
     if (!card?.dataset.card) return { target: null, toAnchor: null };
-    const ports = Array.from(card.querySelectorAll<HTMLElement>('[data-link-port]'));
-    const nearest = ports.map((port) => { const r = port.getBoundingClientRect(); return { port, distance: Math.hypot(x - r.left - r.width / 2, y - r.top - r.height / 2) }; }).sort((a, b) => a.distance - b.distance)[0]?.port;
-    const side = nearest?.dataset.linkPort;
-    return { target: card.dataset.card, toAnchor: validSide(side) ? { side, offset: Number(nearest?.dataset.linkOffset) } : null };
+    return { target: card.dataset.card, toAnchor: nearestAnchor(card, x, y) };
   };
   const reconnectLink = (link: CardLink, end: 'from' | 'to', id: string, anchor: CardAnchor): CardLink | null => {
     const from = end === 'from' ? id : link.from;
@@ -927,7 +937,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, linkLabel, portSize: boxForLink(id) });
+  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel, portSize: boxForLink(id) });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFrom(null);
@@ -1106,11 +1116,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       const point = pointOnCanvas(e.clientX, e.clientY);
       const hit = document.elementFromPoint(e.clientX, e.clientY);
       const card = hit?.closest<HTMLElement>('[data-card]');
-      const port = hit?.closest<HTMLElement>('[data-link-port]');
-      const side = port?.dataset.linkPort;
-      const toAnchor = card?.dataset.card === target.target
-        ? validSide(side) ? { side, offset: Number(port?.dataset.linkOffset) } : anchorAt(target.target!, point)
-        : null;
+      // курсор над карточкой: предпросмотр липнет к её ближайшей точке (как и итоговая связь)
+      const toAnchor = card?.dataset.card === target.target ? target.toAnchor : null;
       setLinkPointer({ point, target: target.target, toAnchor });
     }
     const g = gest.current;
