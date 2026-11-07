@@ -91,6 +91,51 @@ pub struct GenerateReq {
     context: Option<String>,
     /// предыдущие реплики чата: так модель понимает уточнения вроде «а теперь добавь отказ»
     history: Option<Vec<Turn>>,
+    /// проект, на доске которого идёт генерация: его участники видят черновик в реальном времени
+    project_id: Option<Uuid>,
+}
+
+/// Пересылает кусочки ответа модели остальным участникам проекта (SSE-поток проекта).
+/// Кусочки копятся и уходят не чаще раза в 100 мс, чтобы не засорять канал.
+struct Relay {
+    room: Option<(AppState, Uuid, Uuid, String)>,
+    buf: String,
+    last: std::time::Instant,
+}
+
+impl Relay {
+    fn new(room: Option<(AppState, Uuid, Uuid, String)>) -> Self {
+        Relay { room, buf: String::new(), last: std::time::Instant::now() }
+    }
+    fn send(&self, kind: &str, text: &str) {
+        if let Some((s, project, user, name)) = &self.room {
+            crate::routes::presence::publish(
+                s,
+                *project,
+                crate::routes::presence::Ev::new(json!({ "t": "ai", "k": kind, "u": user, "n": name, "d": text }), Some(*user)),
+            );
+        }
+    }
+    fn push(&mut self, d: &str) {
+        if self.room.is_none() {
+            return;
+        }
+        self.buf.push_str(d);
+        if self.last.elapsed() >= Duration::from_millis(100) {
+            self.flush();
+        }
+    }
+    fn flush(&mut self) {
+        if !self.buf.is_empty() {
+            let text = std::mem::take(&mut self.buf);
+            self.send("delta", &text);
+        }
+        self.last = std::time::Instant::now();
+    }
+    fn finish(&mut self) {
+        self.flush();
+        self.send("end", "");
+    }
 }
 
 #[derive(Deserialize)]
@@ -166,6 +211,15 @@ pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<G
     let Some(model) = model_id(&b.model) else {
         return Err(AppError::BadRequest("неизвестная модель".into()));
     };
+    // участник проекта: чужой проект выглядит как несуществующий
+    let room = match b.project_id {
+        Some(pid) => {
+            crate::routes::ensure_project(&s.db, pid, user.id).await?;
+            let name = crate::routes::presence::display_name(&s, user.id).await?;
+            Some((s.clone(), pid, user.id, name))
+        }
+        None => None,
+    };
     // не подключён ChatGPT и подобное: обычная ошибка до начала потока
     access_token(&s, user.id, false).await?;
 
@@ -179,10 +233,13 @@ pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<G
     let uid = user.id;
     tokio::spawn(async move {
         emit(&tx, json!({ "type": "start" })).await;
-        let done = match stream_codex(&s, uid, model, &input, &tx).await {
+        let mut relay = Relay::new(room);
+        relay.send("start", "");
+        let done = match stream_codex(&s, uid, model, &input, &tx, &mut relay).await {
             Ok(text) => finish(&text),
             Err(m) => Err(m),
         };
+        relay.finish();
         match done {
             Ok(data) => emit(&tx, json!({ "type": "result", "data": data })).await,
             Err(m) => emit(&tx, json!({ "type": "error", "message": m })).await,
@@ -213,7 +270,7 @@ fn finish(text: &str) -> Result<Value, String> {
 }
 
 /// Читает поток событий Responses API и пересылает клиенту кусочки текста. Возвращает весь текст ответа.
-async fn stream_codex(s: &AppState, user: Uuid, model: &str, input: &str, tx: &Tx) -> Result<String, String> {
+async fn stream_codex(s: &AppState, user: Uuid, model: &str, input: &str, tx: &Tx, relay: &mut Relay) -> Result<String, String> {
     let body = json!({
         "model": model,
         "store": false,
@@ -262,6 +319,7 @@ async fn stream_codex(s: &AppState, user: Uuid, model: &str, input: &str, tx: &T
                             if !emit(tx, json!({ "type": "delta", "text": d })).await {
                                 return Err("отменено".into());
                             }
+                            relay.push(&d);
                         }
                     }
                 }
@@ -513,6 +571,41 @@ fn normalize(v: &Value) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    /// Черновик ИИ уходит участникам проекта пачками: начало, текст, конец; автору события не возвращаются (фильтр в потоке).
+    #[tokio::test]
+    async fn relay_sends_start_text_end() {
+        use crate::routes::presence::Ev;
+        let db = sqlx::postgres::PgPoolOptions::new().connect_lazy("postgres://x@127.0.0.1:1/x").unwrap();
+        let cfg = crate::Config { cookie_secure: false, allow_registration: true, dummy_hash: String::new(), secrets_key: None, openai_proxy: None };
+        let s = crate::AppState {
+            db, cfg,
+            limiter: Default::default(), http: reqwest::Client::new(), ai_busy: Default::default(),
+            rooms: Default::default(), names: Default::default(), codex_flows: Default::default(),
+        };
+        let (project, user) = (Uuid::new_v4(), Uuid::new_v4());
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<Ev>(16);
+        s.rooms.lock().unwrap().insert(project, tx);
+        let mut relay = Relay::new(Some((s.clone(), project, user, "Анна".into())));
+        relay.send("start", "");
+        relay.push("{\"rep");
+        relay.push("ly\":\"ok\"}");
+        relay.finish();
+        let mut kinds = Vec::new();
+        let mut text = String::new();
+        while let Ok(ev) = rx.try_recv() {
+            let v: Value = serde_json::from_str(&ev.json).unwrap();
+            assert_eq!(v["t"], "ai");
+            assert_eq!(v["n"], "Анна");
+            assert_eq!(ev.from, Some(user));
+            kinds.push(v["k"].as_str().unwrap().to_string());
+            if v["k"] == "delta" { text.push_str(v["d"].as_str().unwrap()); }
+        }
+        assert_eq!(kinds.first().map(String::as_str), Some("start"));
+        assert_eq!(kinds.last().map(String::as_str), Some("end"));
+        assert_eq!(text, "{\"reply\":\"ok\"}");
+    }
 
     fn good() -> Value {
         json!({
