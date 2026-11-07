@@ -11,8 +11,16 @@ export type Rect = { x0: number; y0: number; x1: number; y1: number };
 export const ROUTE_GAP = 10;
 /** Штраф за излом: из двух маршрутов равной длины побеждает тот, где поворотов меньше. */
 const BEND = 30;
-/** Штраф за движение вплотную вдоль края карточки: при прочих равных линия идёт по середине свободного места. */
-const HUG = 12;
+/**
+ * Комфортное расстояние от линии до карточки. Обход ищет линии на этом расстоянии, а за проход вдоль
+ * карточки ближе него берёт плату, растущую по мере приближения: линия не жмётся к краю, если есть место.
+ */
+export const COMFORT = 28;
+/** Плата за единицу длины отрезка, идущего вплотную к карточке (у самого края). */
+const CROWD = 1.5;
+/** Слабое «дальнее притяжение»: из равных по длине маршрутов побеждает тот, что идёт подальше от карточек, посреди промежутка. */
+const FAR = 150;
+const FAR_WEIGHT = 0.03;
 /** Обход смотрит только на карточки в этой окрестности связи, остальные не влияют. */
 const WINDOW = 400;
 
@@ -45,15 +53,33 @@ export function routeAround(out: Pos, into: Pos, rects: Rect[], first: Pos, last
   const uniq = (v: number[]) => [...new Set(v.map(rd))].sort((a, b) => a - b);
   // между соседними координатами добавляем середину: по ней линия идёт посреди промежутка между карточками
   const withMid = (v: number[]) => v.flatMap((n, i) => (i + 1 < v.length ? [n, rd((n + v[i + 1]) / 2)] : [n]));
-  const xs = withMid(uniq([out.x, into.x, ...near.flatMap((r) => [r.x0, r.x1])]));
-  const ys = withMid(uniq([out.y, into.y, ...near.flatMap((r) => [r.y0, r.y1])]));
-  // отрезок идёт вдоль края какого-либо прямоугольника (в пределах его длины)
-  const hugs = (p: Pos, q: Pos) =>
-    near.some((r) =>
-      p.x === q.x
-        ? (p.x === r.x0 || p.x === r.x1) && Math.max(p.y, q.y) > r.y0 && Math.min(p.y, q.y) < r.y1
-        : (p.y === r.y0 || p.y === r.y1) && Math.max(p.x, q.x) > r.x0 && Math.min(p.x, q.x) < r.x1,
-    );
+  // сами карточки (прямоугольники пришли с зазором ROUTE_GAP)
+  const boxes: Rect[] = near.map((r) => ({ x0: r.x0 + ROUTE_GAP, y0: r.y0 + ROUTE_GAP, x1: r.x1 - ROUTE_GAP, y1: r.y1 - ROUTE_GAP }));
+  // линии сетки: края с зазором, а также линии на комфортном расстоянии от карточек
+  const xs = withMid(uniq([out.x, into.x, ...near.flatMap((r) => [r.x0, r.x1]), ...boxes.flatMap((b) => [b.x0 - COMFORT, b.x1 + COMFORT])]));
+  const ys = withMid(uniq([out.y, into.y, ...near.flatMap((r) => [r.y0, r.y1]), ...boxes.flatMap((b) => [b.y0 - COMFORT, b.y1 + COMFORT])]));
+  /**
+   * Плата за тесноту: отрезок идёт сбоку от карточки ближе COMFORT. Для отрезка, который подходит к карточке
+   * торцом (проходит в её полосе), тесноты нет, это обычный заход.
+   */
+  const crowd = (p: Pos, q: Pos) => {
+    let extra = 0;
+    const add = (d: number, overlap: number) => {
+      if (overlap <= 0) return;
+      if (d < COMFORT) extra += overlap * CROWD * (1 - d / COMFORT);
+      if (d < FAR) extra += overlap * FAR_WEIGHT * (1 - d / FAR);
+    };
+    for (const b of boxes) {
+      if (p.x === q.x) {
+        const d = p.x < b.x0 ? b.x0 - p.x : p.x > b.x1 ? p.x - b.x1 : -1;
+        if (d >= 0) add(d, Math.min(Math.max(p.y, q.y), b.y1 + FAR) - Math.max(Math.min(p.y, q.y), b.y0 - FAR));
+      } else {
+        const d = p.y < b.y0 ? b.y0 - p.y : p.y > b.y1 ? p.y - b.y1 : -1;
+        if (d >= 0) add(d, Math.min(Math.max(p.x, q.x), b.x1 + FAR) - Math.max(Math.min(p.x, q.x), b.x0 - FAR));
+      }
+    }
+    return extra;
+  };
   const si = xs.indexOf(rd(out.x));
   const sj = ys.indexOf(rd(out.y));
   const ei = xs.indexOf(rd(into.x));
@@ -94,7 +120,7 @@ export function routeAround(out: Pos, into: Pos, rects: Rect[], first: Pos, last
       const p = { x: xs[cur.i], y: ys[cur.j] };
       const q = { x: xs[ni], y: ys[nj] };
       if (near.some((r) => segHits(p, q, r))) continue;
-      const c = cur.c + Math.abs(q.x - p.x) + Math.abs(q.y - p.y) + (nd !== cur.d ? BEND : 0) + (hugs(p, q) ? HUG : 0);
+      const c = cur.c + Math.abs(q.x - p.x) + Math.abs(q.y - p.y) + (nd !== cur.d ? BEND : 0) + crowd(p, q);
       const nk = id(ni, nj, nd);
       if (c < (cost.get(nk) ?? Infinity)) {
         cost.set(nk, c);
