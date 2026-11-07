@@ -8,7 +8,7 @@ import { Canvas } from './Canvas';
 import { IssuePanel } from './IssuePanel';
 import { Icon } from './Icon';
 import { useModel } from './useModel';
-import { useSettings } from './settings';
+import { initials, useSettings } from './settings';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog';
 import { ProfileMenu } from './ProfileMenu';
 import { useSync, type SyncState } from './sync';
@@ -18,6 +18,7 @@ import { AddMaterialDialog } from './AddMaterialDialog';
 import { ProjectsScreen } from './ProjectsScreen';
 import { captureJoinToken, clearJoinToken, getProject, joinProject, patchProject, viewKey, type Project } from './projects';
 import { HttpError } from './api';
+import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
 
 const BpmnEditorDialog = lazy(() => import('./BpmnEditorDialog'));
@@ -188,6 +189,8 @@ function Workspace({
       return next;
     });
   const sync = useSync(api, settings, patch, project.id);
+  const presence = usePresence(project.id);
+  const online = presence.peers.filter((p) => Date.now() - p.seen < 12_000);
   const store = useIssues(project.id);
   const [selectedId, setSelectedId] = useState('i1');
 
@@ -243,6 +246,7 @@ function Workspace({
           {syncLabel[sync]}
         </span>
         <div className="grow" />
+        {online.length > 0 && <div className="peer-avatars" aria-label="Сейчас на доске">{online.map((p) => <span key={p.id} className="peer-avatar" style={{ background: p.color }} title={p.name}>{initials(p.name)}</span>)}</div>}
         <ProfileMenu
           name={settings.name}
           role={settings.role}
@@ -271,6 +275,7 @@ function Workspace({
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
           paused={editing !== null || addOpen || settingsTab !== null}
+          presence={presence}
         />
         <IssuePanel
           issues={issues}

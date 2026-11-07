@@ -61,6 +61,7 @@ pub async fn put(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>
     if let Some(doc) = updated {
         // в списке проектов «изменён» считается по последней правке модели
         sqlx::query("UPDATE projects SET updated_at = now() WHERE id = $1").bind(id).execute(&s.db).await?;
+        super::presence::publish(&s, id, super::presence::Ev::new(json!({ "t": "model", "v": doc.version }), Some(user.id)));
         return Ok(Json(doc));
     }
 

@@ -881,3 +881,20 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ps-copy .btn { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .ps-reissue { margin-top: 4px; }
 .ps-note { margin: 8px 0 0; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+
+/* Курсоры коллег и аватары «на доске» */
+.peer-cursor { position: absolute; z-index: 60; pointer-events: none; transform-origin: 0 0; transition: left .12s linear, top .12s linear; }
+.peer-cursor svg { display: block; filter: drop-shadow(0 1px 2px #0003); }
+.peer-cursor span { position: absolute; left: 14px; top: 16px; padding: 2px 7px; border-radius: 10px; color: #fff; font-size: 11.5px; font-weight: 600; white-space: nowrap; box-shadow: 0 1px 3px #0003; }
+.peer-avatars { display: flex; align-items: center; margin-right: 12px; }
+.peer-avatar { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; margin-left: -6px; border: 2px solid #fff; border-radius: 50%; color: #fff; font-size: 11px; font-weight: 700; }
+.peer-avatar:first-child { margin-left: 0; }
+
+.ws-shared { margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line); }
+.ws-shared h2 { margin: 0 0 12px; font-size: 15px; }
+.ws-shared-list { display: flex; flex-wrap: wrap; gap: 14px; }
+.ws-shared-card { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; width: 132px; padding: 8px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: left; font: inherit; color: var(--ink); }
+.ws-shared-card:hover, .ws-shared-card:focus-visible { background: #f1efe8; border-color: var(--line-2); }
+.ws-shared-card .ws-project-preview { width: 100%; }
+.ws-shared-card b { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.ws-shared-card small { color: var(--muted); font-size: 11.5px; }

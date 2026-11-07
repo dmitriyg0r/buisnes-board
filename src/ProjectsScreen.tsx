@@ -60,6 +60,11 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
       return { workspace_id: workspace.id, folder_id: current?.workspace_id === workspace.id && d.some((x) => x.id === current.folder_id && x.workspace_id === workspace.id) ? current.folder_id : null };
     });
   }, []);
+  // коллеги могут поделиться проектом в любой момент: список «Общие со мной» обновляется сам
+  useEffect(() => {
+    const timer = setInterval(() => { if (!document.hidden) void listSharedProjects().then((next) => setShared((old) => JSON.stringify(old) === JSON.stringify(next) ? old : next)).catch(() => undefined); }, 5000);
+    return () => clearInterval(timer);
+  }, []);
   useEffect(() => { void refresh().catch(() => setError('Не удалось загрузить базы. Проверьте подключение и попробуйте снова.')).finally(() => setLoading(false)); }, [refresh]);
   useEffect(() => {
     if (!location) { setFiles([]); return; }
@@ -202,6 +207,7 @@ export function ProjectsScreen({ user, onOpen, onLogout }: Props) {
         onContextMenu={(key, x, y) => { const item = items.find((entry) => `${entry.kind}:${entry.data.id}` === key); if (item) { setSelected(item); setMenu({ item, x, y }); } }}
         onMove={(key, workspaceId, folderId) => { const item = items.find((entry) => `${entry.kind}:${entry.data.id}` === key); if (item) moveTo(item, { workspace_id: workspaceId, folder_id: folderId }); }}
       />
+      {shared.length > 0 && <section className="ws-shared" aria-label="Общие со мной"><h2>Общие со мной</h2><div className="ws-shared-list">{shared.map((p) => <button type="button" key={p.id} className="ws-shared-card" onClick={() => setSelected(null)} onDoubleClick={() => onOpen(p)} onContextMenu={(event) => { event.preventDefault(); setMenu(null); setBaseMenu(null); setBackgroundMenu(null); setSharedMenu({ project: p, x: event.clientX, y: event.clientY }); }} onKeyDown={(event) => { if (event.key === 'Enter') onOpen(p); }}><span className="ws-project-preview"><ProjectThumbnail projectId={p.id}/></span><b>{p.name}</b><small>Владелец: {p.owner_name}</small></button>)}</div></section>}
       </>}
     </section></main>
     {menu && <WorkspaceContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} actions={[
