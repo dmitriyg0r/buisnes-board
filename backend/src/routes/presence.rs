@@ -82,6 +82,15 @@ pub async fn stream(
 pub struct Cursor {
     x: Option<f64>,
     y: Option<f64>,
+    /// карточки, которые участник сейчас тащит: показываем их другим в реальном времени
+    drag: Option<Vec<DragItem>>,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+pub struct DragItem {
+    id: String,
+    x: f64,
+    y: f64,
 }
 
 async fn display_name(s: &AppState, id: Uuid) -> AppResult<String> {
@@ -100,6 +109,13 @@ pub async fn cursor(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uu
     ensure_project(&s.db, id, user.id).await?;
     let name = display_name(&s, user.id).await?;
     let ok = |v: f64| v.is_finite() && v.abs() < 1e7;
+    if let Some(items) = b.drag {
+        if items.len() > 64 || items.iter().any(|i| i.id.is_empty() || i.id.len() > 200 || !ok(i.x) || !ok(i.y)) {
+            return Err(AppError::BadRequest("некорректные данные перетаскивания".into()));
+        }
+        publish(&s, id, Ev::new(json!({ "t": "drag", "u": user.id, "d": items }), Some(user.id)));
+        return Ok(StatusCode::NO_CONTENT);
+    }
     let (x, y) = match (b.x, b.y) {
         (Some(x), Some(y)) if ok(x) && ok(y) => (Some(x), Some(y)),
         (None, None) => (None, None),

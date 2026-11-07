@@ -1,4 +1,4 @@
-import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source } from './data';
 import { splitMarkdown } from './markdown';
@@ -16,6 +16,9 @@ import type { ModelApi } from './useModel';
 import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
 import { loadView, saveView, type CardSizes } from './viewState';
 import type { Presence } from './presence';
+
+/** карточки, которые коллега тащит прямо сейчас: их движение сглаживается */
+const LiveCtx = createContext<Set<string>>(new Set());
 
 /* Положение и размер карточек лежат в общей модели (meta), чтобы коллеги видели перемещения. */
 const POS_KEY = 'layout:pos';
@@ -113,6 +116,7 @@ function DragCard({
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const moved = useRef(false);
   const k = useContext(ZoomCtx);
+  const live = useContext(LiveCtx).has(id);
 
   return (
     <div
@@ -121,7 +125,7 @@ function DragCard({
       role="group"
       aria-label={linkLabel}
       className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}${linkTarget && draggingLink ? ' link-target' : ''}`}
-      style={{ left: pos.x, top: pos.y, ...style }}
+      style={{ left: pos.x, top: pos.y, ...(live ? { transition: 'left .08s linear, top .08s linear' } : null), ...style }}
       onContextMenu={(e) => onContext({ type: 'card', id }, e)}
       onFocus={(e) => { if (e.target === e.currentTarget) onGrab(id, false); }}
       onKeyDown={(e) => { if (e.target === e.currentTarget && e.key === 'Enter' && !linking && onEdit) { e.preventDefault(); e.stopPropagation(); onEdit(); } }}
@@ -547,6 +551,25 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   // положение и размеры карточек входят в общую историю «назад / вперёд» вместе с моделью
   const layoutRef = useRef({ pos, sizes });
   layoutRef.current = { pos, sizes };
+  // перетаскивание в реальном времени: свои позиции уходят сразу, чужие применяются без ожидания записи в модель
+  const sentDrag = useRef<Record<string, string>>({});
+  const [liveIds, setLiveIds] = useState<Set<string>>(new Set());
+  const liveTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (!presence || !gestureCk.current) return;
+    const items = Object.entries(pos).filter(([id, p]) => fmtPos(p) !== sentDrag.current[id]).map(([id, p]) => ({ id, x: Math.round(p.x), y: Math.round(p.y) }));
+    if (!items.length) return;
+    for (const i of items) sentDrag.current[i.id] = `${i.x},${i.y}`;
+    presence.sendDrag(items);
+  }, [pos]);
+  useEffect(() => presence?.onDrag((items) => {
+    if (gestureCk.current) return; // свою карточку не дёргаем
+    for (const i of items) sentDrag.current[i.id] = `${Math.round(i.x)},${Math.round(i.y)}`;
+    setPos((s) => { const n = { ...s }; for (const i of items) n[i.id] = { x: i.x, y: i.y }; return n; });
+    setLiveIds(new Set(items.map((i) => i.id)));
+    clearTimeout(liveTimer.current);
+    liveTimer.current = setTimeout(() => setLiveIds(new Set()), 250);
+  }), [presence?.onDrag]);
   // чужие перемещения и размеры: применяем только записи, которые изменились в модели (свои незаписанные правки не трогаем)
   const prevMeta = useRef(api.model.meta);
   useEffect(() => {
@@ -1466,7 +1489,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           <button type="button" className="btn btn-dark" onClick={onAddMaterial}>Добавить объект</button>
         </div>
       )}
-      <ZoomCtx.Provider value={cam.k}>
+      <ZoomCtx.Provider value={cam.k}><LiveCtx.Provider value={liveIds}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
           <AiDraftLayer procPos={procPos} docPos={docPos} />
           {presence?.peers.filter((p) => p.x !== null && p.y !== null).map((p) => (
@@ -1718,7 +1741,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h, borderWidth: 1 / cam.k }} />
           )}
         </div>
-      </ZoomCtx.Provider>
+      </LiveCtx.Provider></ZoomCtx.Provider>
 
       {settings.minimap && (
         <Minimap
