@@ -78,6 +78,12 @@ pub fn app(db: PgPool, cfg: Config, frontend: Option<String>) -> Router {
         .route("/files/:id/download", get(routes::files::download))
         .route("/files/:id/copy", post(routes::files::copy))
         .route("/files/:id/move", post(routes::files::move_file))
+        .route("/projects/shared", get(routes::sharing::list_shared))
+        .route("/invites/join", post(routes::sharing::join))
+        .route("/projects/:id/sharing", get(routes::sharing::get))
+        .route("/projects/:id/sharing/link", post(routes::sharing::enable).delete(routes::sharing::disable))
+        .route("/projects/:id/members/:user_id", axum::routing::delete(routes::sharing::remove_member))
+        .route("/projects/:id/model/version", get(routes::model::version))
         .route("/projects", get(routes::projects::list).post(routes::projects::create))
         .route("/projects/:id/move", post(routes::projects::move_project))
         .route(

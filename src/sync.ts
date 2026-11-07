@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { http, HttpError } from './api';
 import { emptyModel, type Model } from './data';
+import { mergeModel } from './mergeModel';
 import { normalizeModel } from './normalize';
 import type { Settings } from './settings';
 import type { ModelApi } from './useModel';
 
-export type SyncState = 'connecting' | 'saved' | 'saving' | 'offline' | 'conflict';
+export type SyncState = 'connecting' | 'saved' | 'saving' | 'offline' | 'conflict' | 'revoked';
 
 interface ModelDto {
   data: Model;
@@ -45,6 +46,22 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
   modelRef.current = mApi.model;
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
+
+  const revoked = useRef(false);
+
+  /** Подтянуть модель с сервера и слить с локальными несохранёнными правками. */
+  const pull = async () => {
+    const r = await http<ModelDto>('GET', `/projects/${projectId}/model`);
+    if (r.version === version.current) return false;
+    const remote = normalize(r.data);
+    const base = normalize(JSON.parse(lastModel.current || '{}'));
+    const local = modelRef.current;
+    const hasLocal = JSON.stringify(local) !== lastModel.current;
+    version.current = r.version;
+    lastModel.current = JSON.stringify(remote);
+    mApi.setRemote(hasLocal ? mergeModel(base, local, remote) : remote);
+    return hasLocal;
+  };
 
   const retryLater = () => setTimeout(() => setTick((t) => t + 1), 5000);
 
@@ -100,19 +117,18 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
           setState(JSON.stringify(modelRef.current) === lastModel.current ? 'saved' : 'saving');
         } catch (e) {
           if (e instanceof HttpError && e.status === 409) {
-            // модель изменена в другом месте: принимаем серверную версию
+            // модель изменена другим участником: сливаем его правки с моими, мои уйдут следующей записью
             try {
-              const r = await http<ModelDto>('GET', `/projects/${projectId}/model`);
-              const m = normalize(r.data);
-              version.current = r.version;
-              lastModel.current = JSON.stringify(m);
-              mApi.setRemote(m);
+              await pull();
               setState('conflict');
-              setTimeout(() => setState('saved'), 4000);
+              setTimeout(() => setState((st) => (st === 'conflict' ? 'saved' : st)), 4000);
             } catch {
               setState('offline');
               retryLater();
             }
+          } else if (e instanceof HttpError && e.status === 404) {
+            revoked.current = true;
+            setState('revoked');
           } else if (isOffline(e)) {
             setState('offline');
             retryLater();
@@ -123,6 +139,29 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mApi.model, ready, tick]);
+
+  /* ----- опрос изменений других участников ----- */
+  useEffect(() => {
+    if (!ready) return;
+    const timer = setInterval(() => {
+      if (document.hidden || revoked.current) return;
+      queue.current = queue.current.then(async () => {
+        try {
+          const { version: v } = await http<{ version: number }>('GET', `/projects/${projectId}/model/version`);
+          if (v === version.current) return;
+          if (await pull()) setState('saving');
+        } catch (e) {
+          if (e instanceof HttpError && (e.status === 404 || e.status === 403)) {
+            revoked.current = true;
+            setState('revoked');
+          }
+          // сетевые сбои игнорируем: следующий опрос повторит попытку
+        }
+      });
+    }, 3000);
+    return () => clearInterval(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, projectId]);
 
   /* ----- сохранение настроек полотна ----- */
   useEffect(() => {
