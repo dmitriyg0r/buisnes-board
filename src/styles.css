@@ -622,15 +622,20 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .doc-editor .mdx-root { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: #fff; --baseFont: 'Inter', system-ui, sans-serif; --accentBorder: var(--blue-line); --accentSolid: var(--blue); }
 .doc-editor .mdx-root > [role="toolbar"], .doc-editor .mdx-root > div:first-child { flex: none; }
 .doc-editor .mdxeditor-toolbar { border-radius: 0; border-bottom: 1px solid var(--line); background: #faf9f6; padding: 6px 16px; }
-.doc-editor .mdxeditor-root-contenteditable { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.doc-editor .mdxeditor-root-contenteditable > div { height: 100%; }
+/* Служебные обёртки MDX между корнем и текстом делят высоту окна, а не растут по содержимому: иначе прокручивать
+   нечего, а длинный документ уходит за нижний край экрана. Библиотека сама ставит обёртке текста display: block
+   в атрибуте style, поэтому в режиме «Текст» прокручивается именно она, а в режимах «Исходный Markdown» и «Сравнение», где редактор кода
+   растёт по содержимому, внешняя обёртка. */
+.doc-editor .mdxeditor-diff-source-wrapper { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
+.doc-editor .mdxeditor-rich-text-editor { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.doc-editor .mdxeditor-root-contenteditable { overflow: visible; }
+.doc-editor .mdxeditor-root-contenteditable > div { min-height: 100%; }
 .md-live { max-width: 820px; min-height: 100%; margin: 0 auto; padding: 28px 32px 64px !important; font-size: 16px !important; line-height: 26px !important; outline: none; color: var(--ink); }
 .md-live h1 { font-size: 28px; line-height: 36px; margin: 0 0 12px; }
 .md-live h2 { font-size: 22px; line-height: 30px; margin: 22px 0 8px; }
 .md-live h3 { font-size: 18px; line-height: 26px; margin: 18px 0 6px; }
 .md-live p { margin: 0 0 10px; }
 .md-code-input { width: 100%; padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 8px; background: #f6f5f1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13.5px; line-height: 20px; resize: vertical; }
-.md-foot { flex: none; margin: 0; padding: 8px 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); background: #faf9f6; }
 
 /* ручка изменения размера карточки */
 .resize-grip { position: absolute; right: 3px; bottom: 3px; width: 18px; height: 18px; z-index: 8; cursor: nwse-resize; border-radius: 0 0 11px 0; opacity: 0; transition: opacity 0.12s; touch-action: none; background: linear-gradient(135deg, transparent 0 52%, #9aa0b0 52% 60%, transparent 60% 72%, #9aa0b0 72% 80%, transparent 80%); }
