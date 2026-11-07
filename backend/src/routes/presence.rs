@@ -93,7 +93,7 @@ pub struct DragItem {
     y: f64,
 }
 
-async fn display_name(s: &AppState, id: Uuid) -> AppResult<String> {
+pub async fn display_name(s: &AppState, id: Uuid) -> AppResult<String> {
     if let Some((n, at)) = s.names.lock().map_err(|_| AppError::Internal)?.get(&id) {
         if at.elapsed() < NAME_TTL {
             return Ok(n.clone());

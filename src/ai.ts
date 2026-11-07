@@ -66,11 +66,11 @@ export type StreamEvent = { type: 'start' } | { type: 'delta'; text: string };
  * Возвращает проверенный сервером результат. Отмена через signal закрывает соединение, и сервер
  * перестаёт читать ответ модели.
  */
-export async function streamGenerate(prompt: string, model: AiModel, context: string, history: Turn[], onEvent: (e: StreamEvent) => void, signal: AbortSignal): Promise<GenResult> {
+export async function streamGenerate(prompt: string, model: AiModel, context: string, history: Turn[], onEvent: (e: StreamEvent) => void, signal: AbortSignal, projectId?: string): Promise<GenResult> {
   const res = await fetch('/api/ai/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt, model, context, history }),
+    body: JSON.stringify({ prompt, model, context, history, project_id: projectId }),
     signal,
   });
   if (!res.ok || !res.body) {

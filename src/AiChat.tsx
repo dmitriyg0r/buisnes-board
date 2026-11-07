@@ -5,6 +5,7 @@ import { AiProgress, beginDraft, useDraft } from './AiDraft';
 import { Icon } from './Icon';
 import { aiModels, type AiModel } from './settings';
 import type { ModelApi } from './useModel';
+import type { Presence } from './presence';
 
 /** Что ИИ сделал на доске: созданное и изменённое. */
 interface Refs {
@@ -134,6 +135,8 @@ function LiveBubble({ onCancel }: { onCancel: () => void }) {
 
 interface Props {
   projectId: string;
+  /** ИИ-генерация коллег показывается на доске как собственная */
+  presence?: Presence;
   api: ModelApi;
   aiModel: AiModel;
   onModel: (m: AiModel) => void;
@@ -143,10 +146,28 @@ interface Props {
   onFocusCard: (cardId: string) => void;
 }
 
-export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard }: Props) {
+export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, onFocusCard }: Props) {
   const [msgs, setMsgs] = useState<Msg[]>(() => loadMsgs(projectId));
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  // коллега просит ИИ построить процесс: его черновик растёт и у нас (если мы сами не генерируем)
+  useEffect(() => {
+    let draft: ReturnType<typeof beginDraft> | null = null;
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => { clearTimeout(guard); draft?.end(); draft = null; };
+    const off = presence?.onAi((e) => {
+      if (busyRef.current) return;
+      if (e.k === 'end') { stop(); return; }
+      if (!draft) draft = beginDraft(e.name);
+      if (e.k === 'delta') draft.push(e.text);
+      // если поток оборвался без «конца», черновик не должен висеть вечно
+      clearTimeout(guard);
+      guard = setTimeout(stop, 60_000);
+    });
+    return () => { off?.(); stop(); };
+  }, [presence?.onAi]);
   const [open, setOpenState] = useState(loadOpen);
   const abort = useRef<AbortController | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
@@ -187,7 +208,7 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
     abort.current = ctl;
     const draft = beginDraft(aiModels.find((m) => m.id === aiModel)?.label ?? 'ИИ', onReveal);
     try {
-      const r = await streamGenerate(prompt, aiModel, buildContext(api.model), history, (ev) => ev.type === 'delta' && draft.push(ev.text), ctl.signal);
+      const r = await streamGenerate(prompt, aiModel, buildContext(api.model), history, (ev) => ev.type === 'delta' && draft.push(ev.text), ctl.signal, projectId);
       let applied = null as Applied | null;
       if (r.processes?.length || r.documents?.length || r.updates?.length) {
         api.apply((m) => {
