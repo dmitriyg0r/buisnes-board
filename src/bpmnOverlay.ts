@@ -17,6 +17,7 @@ interface View {
   scale: number;
   translate: { x: number; y: number };
   getOverlayPane: () => Element;
+  scaleAndTranslate: (scale: number, x: number, y: number) => void;
 }
 
 const el = (name: string, attrs: Record<string, string | number>) => {
@@ -24,6 +25,31 @@ const el = (name: string, attrs: Record<string, string | number>) => {
   for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v));
   return n;
 };
+
+/** Учитываем геометрию данных при вписывании: основной просмотрщик их не измеряет. */
+export function fitWithData(view: View, xml: string, width: number, height: number): void {
+  if (width <= 56 || height <= 56) return;
+  const doc = new DOMParser().parseFromString(xml, 'application/xml');
+  if (doc.querySelector('parsererror') || !Array.from(doc.getElementsByTagNameNS(BPMN, '*')).some((item) => SHAPES.has(item.localName))) return;
+  const points: { x: number; y: number }[] = [];
+  for (const shape of Array.from(doc.getElementsByTagNameNS(BPMNDI, 'BPMNShape'))) {
+    const bounds = shape.getElementsByTagNameNS(DC, 'Bounds')[0];
+    if (!bounds || !['x', 'y', 'width', 'height'].every((key) => bounds.hasAttribute(key))) continue;
+    const x = Number(bounds.getAttribute('x')); const y = Number(bounds.getAttribute('y')); const w = Number(bounds.getAttribute('width')); const h = Number(bounds.getAttribute('height'));
+    if ([x, y, w, h].every(Number.isFinite) && w > 0 && h > 0) points.push({ x, y }, { x: x + w, y: y + h });
+  }
+  for (const waypoint of Array.from(doc.getElementsByTagNameNS(DI, 'waypoint'))) {
+    if (!waypoint.hasAttribute('x') || !waypoint.hasAttribute('y')) continue;
+    const x = Number(waypoint.getAttribute('x')); const y = Number(waypoint.getAttribute('y'));
+    if (Number.isFinite(x) && Number.isFinite(y)) points.push({ x, y });
+  }
+  if (!points.length) return;
+  const minX = Math.min(...points.map((point) => point.x)); const maxX = Math.max(...points.map((point) => point.x));
+  const minY = Math.min(...points.map((point) => point.y)); const maxY = Math.max(...points.map((point) => point.y));
+  const diagramWidth = Math.max(1, maxX - minX); const diagramHeight = Math.max(1, maxY - minY);
+  const scale = Math.min((width - 56) / diagramWidth, (height - 56) / diagramHeight);
+  view.scaleAndTranslate(scale, -minX + (width / scale - diagramWidth) / 2, -minY + (height / scale - diagramHeight) / 2);
+}
 
 export function drawDataElements(view: View, xml: string): void {
   const pane = view.getOverlayPane();
@@ -39,6 +65,10 @@ export function drawDataElements(view: View, xml: string): void {
     if (!id) continue;
     kind.set(id, e.localName);
     name.set(id, e.getAttribute('name') ?? '');
+  }
+  for (const e of Array.from(doc.getElementsByTagNameNS(BPMN, 'dataObjectReference'))) {
+    const id = e.getAttribute('id'); const referenced = e.getAttribute('dataObjectRef');
+    if (id && referenced && !name.get(id)) name.set(id, name.get(referenced) ?? '');
   }
 
   const s = view.scale;

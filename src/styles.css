@@ -530,6 +530,87 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .bpmn-canvas { flex: 1 1 auto; min-height: 0; position: relative; }
 .bpmn-canvas .bjs-container, .bpmn-canvas .djs-container { width: 100%; height: 100%; }
 
+/* ---------- собственный редактор диаграмм ---------- */
+.diagram-editor { color: var(--ink); }
+.diagram-editor .btn:disabled { opacity: .45; cursor: not-allowed; }
+.diagram-notation { padding: 4px 8px; border-radius: 6px; background: var(--blue-soft); color: var(--blue-ink); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.diagram-experimental { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.diagram-alert { flex: none; padding: 10px 18px; background: #fff4d9; color: #694509; font-size: 13px; line-height: 20px; }
+.diagram-workspace { display: grid; grid-template-columns: 208px minmax(0, 1fr); flex: 1; min-height: 0; }
+.diagram-sidebar, .diagram-properties { display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: auto; padding: 16px 10px; background: var(--panel); }
+.diagram-sidebar { border-right: 1px solid var(--line); }
+.diagram-sidebar > * { flex-shrink: 0; }
+.diagram-properties { position: absolute; z-index: 20; top: 76px; right: 18px; width: min(280px, calc(100vw - 36px)); max-height: calc(100vh - 100px); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 24px #0002; gap: 14px; padding: 18px; }
+.diagram-sidebar-title { padding: 6px 9px; color: var(--muted); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+.diagram-tool { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 8px 10px; border: 0; border-radius: 8px; background: transparent; color: var(--ink-2); font: inherit; font-size: 12.5px; line-height: 1.35; text-align: left; }
+.diagram-tool span { min-width: 0; overflow-wrap: anywhere; }
+.diagram-tool:hover:not(:disabled) { background: #ebeae4; }
+.diagram-tool.on { background: var(--blue-soft); color: var(--blue-ink); font-weight: 600; }
+.diagram-tool:disabled { opacity: .45; cursor: not-allowed; }
+.diagram-palette-search { width: 100%; min-width: 0; height: 32px; }
+.diagram-palette-group { display: flex; align-items: center; gap: 5px; margin-top: 6px; padding: 5px 2px; border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 600; text-align: left; }
+.diagram-palette-group:hover { color: var(--ink); }
+.diagram-palette-group:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.diagram-palette-empty { padding: 0 4px; color: var(--muted); font-size: 12px; }
+.diagram-tool:focus-visible, .diagram-toolbar button:focus-visible, .diagram-zoom button:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.diagram-palette-icon { flex: none; width: 16px; height: 16px; border: 1.6px solid currentColor; border-radius: 50%; }
+.diagram-palette-icon.double-circle { border-width: 3px; }
+.diagram-palette-icon.rounded-rectangle { width: 18px; height: 14px; border-radius: 4px; }
+.diagram-palette-icon.diamond { width: 12px; height: 12px; margin: 2px; border-radius: 0; transform: rotate(45deg); }
+.diagram-palette-svg { flex: none; width: 22px; height: 22px; overflow: visible; }
+.diagram-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; background-color: var(--bg); background-image: radial-gradient(circle, #d3d0c5 1.1px, transparent 1.3px); background-size: 22px 22px; }
+.diagram-surface { flex: 1; width: 100%; min-height: 0; touch-action: none; user-select: none; outline: none; }
+.diagram-surface:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+.diagram-surface.placing { cursor: crosshair; }
+.diagram-surface.placing-object .diagram-node, .diagram-surface.placing-object .diagram-region .diagram-region-header, .diagram-surface.placing-object .diagram-edge-hit { cursor: crosshair; }
+.diagram-placement-preview { opacity: .7; pointer-events: none; }
+.diagram-placement-preview .diagram-shape { stroke: var(--blue); stroke-width: 2; stroke-dasharray: 5 3; }
+.diagram-node { cursor: grab; }
+.diagram-node:active { cursor: grabbing; }
+.diagram-node:focus { outline: none; }
+.diagram-node:focus-visible .diagram-shape { stroke: var(--blue); stroke-width: 3; }
+.diagram-shape { fill: #fff; stroke: #424858; stroke-width: 1.5; }
+.diagram-shape.double-circle { stroke-width: 3; }
+.diagram-shape.selected { stroke: var(--blue); stroke-width: 3; }
+.diagram-glyph, .diagram-kind { fill: none; stroke: #424858; stroke-width: 1.8; pointer-events: none; }
+.diagram-inner-outline { fill: none; stroke: #424858; stroke-width: 1.5; pointer-events: none; }
+.diagram-envelope-filled { fill: #424858; stroke: #424858; stroke-width: 1.5; }
+.diagram-envelope-line { fill: none; stroke: #fff; stroke-width: 1.5; }
+.diagram-node-label, .diagram-edge-label { fill: var(--ink); font-family: inherit; font-size: 12px; pointer-events: none; }
+.diagram-edge { fill: none; stroke: #424858; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+.diagram-edge.selected { stroke: var(--blue); stroke-width: 2.5; }
+.diagram-edge-hit { fill: none; stroke: transparent; stroke-width: 15; cursor: pointer; }
+.diagram-edge.preview { stroke: var(--blue); }
+.diagram-toolbar { top: 10px; }
+.diagram-connection-tool { display: flex; align-items: center; }
+.diagram-connection-dropdown { width: 22px; }
+.diagram-zoom { right: 16px; bottom: 16px; }
+.diagram-connect-hint { position: absolute; z-index: 7; top: 55px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--muted); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.diagram-connect-hint b { color: var(--ink); font-weight: 600; }
+.diagram-properties > b { font-size: 14px; }
+.diagram-properties > p, .diagram-property-id { margin: 0; color: var(--muted); font-size: 12.5px; line-height: 19px; overflow-wrap: anywhere; }
+.diagram-delete { display: flex; align-items: center; justify-content: center; gap: 6px; color: #a42618; }
+
+@media (max-width: 850px) {
+  .diagram-workspace { grid-template-columns: 160px minmax(0, 1fr); }
+
+
+
+
+  .bpmn-head { flex-wrap: wrap; height: auto; min-height: 60px; padding: 10px 12px; }
+  .bpmn-title { width: 160px; }
+}
+@media (max-width: 600px) {
+  .diagram-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .diagram-sidebar { flex-direction: row; overflow-x: auto; padding: 6px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .diagram-palette-search { flex: 0 0 150px; width: 150px; }
+  .diagram-sidebar-title { display: none; }
+  .diagram-tool { flex: none; white-space: nowrap; }
+
+  .diagram-stage-footer > span { display: none; }
+  .diagram-stage-footer { justify-content: flex-end; }
+}
+
 /* ---------- сворачиваемые панели ---------- */
 .workspace { min-height: 0; }
 .tree.rail, .panel.rail { align-items: center; gap: 14px; padding: 10px 0; overflow: hidden; }
@@ -735,6 +816,11 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ws-context-menu button:hover, .ws-context-menu button:focus-visible { outline: none; color: var(--blue-ink); background: var(--blue-soft); }
 .ws-context-menu button.danger { color: #a43434; }
 .ws-context-menu button:disabled { opacity: .45; }
+.ws-context-menu.diagram-connection-options { width: min(368px, calc(100vw - 16px)); max-height: min(430px, calc(100vh - 16px)); overflow-y: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 4px; padding: 6px; }
+.ws-context-menu.diagram-connection-options button { min-width: 0; min-height: 66px; flex-direction: column; justify-content: center; gap: 2px; padding: 4px 3px; border: 1px solid var(--line); text-align: center; font-size: 11px; line-height: 1.15; overflow-wrap: anywhere; }
+.ws-context-menu.diagram-connection-options button[aria-checked="true"] { border-color: var(--blue); background: var(--blue-soft); color: var(--blue-ink); }
+.diagram-connection-example { width: 100%; max-width: 90px; height: 28px; flex: none; }
+@media (max-width: 400px) { .ws-context-menu.diagram-connection-options { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .ws-context-shortcut { color: var(--muted); font-size: 11px; white-space: nowrap; }
 .ws-drop-target { outline: 2px solid var(--blue-ink) !important; outline-offset: 2px; background: var(--blue-soft) !important; }
 .ws-view-switch { display: inline-flex; align-items: center; height: 36px; padding: 2px; background: #e8e7e2; border-radius: 7px; }
@@ -854,6 +940,26 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ai-doclist li.more { background: transparent; border-color: transparent; color: var(--muted); }
 .ai-more { align-self: center; font-size: 12px; color: var(--muted); }
 
+.diagram-edge-handle, .diagram-segment-handle { fill: #fff; stroke: #4266c8; stroke-width: 2; cursor: move; vector-effect: non-scaling-stroke; }
+.diagram-segment-handle { fill: #4266c8; cursor: grab; }
+.diagram-edge-handle:focus-visible, .diagram-segment-handle:focus-visible { outline: none; stroke: #101d50; stroke-width: 4; }
+.diagram-edge.invalid { stroke: #ba3030; }
+.diagram-edge-help { font-size: 12px; line-height: 1.4; color: #555e70; }
+.diagram-region { pointer-events: none; }
+.diagram-region .diagram-region-header { fill: #edf0f6; fill-opacity: .7; pointer-events: all; cursor: pointer; }
+.diagram-region .diagram-region-header.selected { stroke: var(--blue); stroke-width: 3; }
+.diagram-region rect { fill: #fff; fill-opacity: .65; stroke: #777e8d; stroke-width: 1.5; }
+.diagram-region path { fill: none; stroke: #777e8d; stroke-width: 1.5; }
+.diagram-region text { fill: var(--ink-2); font: 12px Inter, system-ui, sans-serif; }
+
+/* Контур текстовой аннотации не закрашивается. */
+.diagram-annotation { fill: none; }
+
+.diagram-resize-handle { fill: #fff; stroke: var(--blue); stroke-width: 2; cursor: nwse-resize; }
+.diagram-inline-input { width: 100%; height: 30px; font-size: 12px; }
+.diagram-inline-textarea { width: 100%; height: 100%; resize: none; font-size: 12px; }
+.diagram-region text { pointer-events: all; cursor: text; }
+.diagram-edge-label { pointer-events: all; cursor: text; }
 /* Окно «Поделиться» */
 .ps-dialog { width: min(460px, calc(100% - 32px)); }
 .ps-dialog .ws-settings-head { border-bottom: 0; padding-bottom: 8px; }
