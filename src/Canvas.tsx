@@ -148,7 +148,10 @@ function DragCard({
       <span className="pin" />
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
-        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(12, Math.floor((side === 'top' || side === 'bottom' ? portSize.w : portSize.h) / 100)));
+        // от одной до трёх точек на сторону: примерно по одной на каждые 220 px длины. Больше не нужно: место
+        // конкретной связи выбирается и без точек, при клике по карточке оно берётся из места клика
+        const length = side === 'top' || side === 'bottom' ? portSize.w : portSize.h;
+        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(3, Math.floor(length / 220)));
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const anchor = { side, offset };
@@ -788,11 +791,13 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const side = (['top', 'right', 'bottom', 'left'] as const)[distances.indexOf(Math.min(...distances))];
     return { side, offset: id.startsWith('gw:') ? 0.5 : Math.max(0, Math.min(1, side === 'top' || side === 'bottom' ? x / box.w : y / box.h)) };
   };
-  const addCardLink = (from: string, to: string, a: CardAnchor, b: CardAnchor) => {
-    if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return;
+  /** true, если связь создана */
+  const addCardLink = (from: string, to: string, a: CardAnchor, b: CardAnchor): boolean => {
+    if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return false;
     const lid = 'c' + Math.random().toString(36).slice(2, 7);
     api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from, to, label: '', fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset }] }));
     setSelLink(lid);
+    return true;
   };
   const pickForLink = (id: string, anchor?: CardAnchor, point?: Pos) => {
     const chosen = anchor ?? (point ? anchorAt(id, pointOnCanvas(point.x, point.y)) : { side: 'right', offset: 0.5 } as CardAnchor);
@@ -809,7 +814,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       setLinkPointer(null);
       return;
     }
-    if (linkFromAnchor) addCardLink(linkFrom, id, linkFromAnchor, chosen);
+    // связь проведена: режим связи выключается, дальше снова выбор и перетаскивание
+    if (linkFromAnchor && addCardLink(linkFrom, id, linkFromAnchor, chosen)) setMode('select');
     setLinkFrom(null);
     setLinkFromAnchor(null);
     setLinkPointer(null);
