@@ -13,6 +13,7 @@ import { HtmlPreview } from './HtmlPreview';
 import { getModelNotation } from './modeling/registry';
 import type { IndependentModel } from './data';
 import { exportCanvasObject } from './aiCanvasTools';
+import { testHtml, type HtmlTestStep } from './htmlTest';
 import type { AiEffect, AiToolHost, AiToolResult } from './aiToolContract';
 
 const MarkdownView = lazy(() => import('./MarkdownView'));
@@ -1090,24 +1091,36 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const zoomCenter = (factor: number) => zoomAt(factor, size.w / 2, size.h / 2);
   const setZoom = (k: number) => zoomAt(k / camRef.current.k, size.w / 2, size.h / 2);
 
-  const fit = () => {
+  // Плавающий чат не входит в рабочую область, куда вписываются карточки.
+  const availableArea = () => {
+    const el = root.current;
+    if (!el) return { x: 40, y: 56, w: Math.max(1, size.w - 80), h: Math.max(1, size.h - 160) };
+    const bounds = el.getBoundingClientRect();
+    const chat = el.querySelector<HTMLElement>('.ai-bar')?.getBoundingClientRect();
+    const bottom = chat ? Math.min(el.clientHeight - 24, chat.top - bounds.top - 16) : el.clientHeight - 40;
+    return { x: 40, y: 56, w: Math.max(1, el.clientWidth - 80), h: Math.max(1, bottom - 56) };
+  };
+
+  const [chatCollapseRequest, setChatCollapseRequest] = useState(0);
+  const fit = async (collapseChat = true) => {
+    if (collapseChat && root.current?.querySelector('.ai-bar.open')) {
+      setChatCollapseRequest((count) => count + 1);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }
     const el = root.current;
     if (!el) return;
-    const w = el.clientWidth;
-    const h = el.clientHeight;
+    const area = availableArea();
     const ids = cardIds;
     if (!ids.length) return;
     const minx = Math.min(...ids.map((i) => posOf(i).x));
     const miny = Math.min(...ids.map((i) => posOf(i).y));
     const maxx = Math.max(...ids.map((i) => posOf(i).x + cardSize(i).w));
     const maxy = Math.max(...ids.map((i) => posOf(i).y + cardSize(i).h));
-    const top = 40;
-    const bottom = 40;
-    const k = clampK(Math.min((w - 80) / (maxx - minx), (h - top - bottom) / (maxy - miny), 1));
+    const k = clampK(Math.min(area.w / (maxx - minx), area.h / (maxy - miny), 1));
     setCam({
       k,
-      x: (w - (maxx - minx) * k) / 2 - minx * k,
-      y: top + (h - top - bottom - (maxy - miny) * k) / 2 - miny * k,
+      x: area.x + (area.w - (maxx - minx) * k) / 2 - minx * k,
+      y: area.y + (area.h - (maxy - miny) * k) / 2 - miny * k,
     });
   };
 
@@ -1314,8 +1327,9 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const p = posOf(id);
     const sz = cardSize(id);
     const c = camRef.current;
-    const k = Math.min(c.k, (size.w - 120) / sz.w, (size.h * 0.6) / sz.h);
-    setCam({ k, x: size.w / 2 - (p.x + sz.w / 2) * k, y: size.h * 0.4 - (p.y + sz.h / 2) * k });
+    const area = availableArea();
+    const k = clampK(Math.min(c.k, area.w / sz.w, area.h / sz.h));
+    setCam({ k, x: area.x + area.w / 2 - (p.x + sz.w / 2) * k, y: area.y + area.h / 2 - (p.y + sz.h / 2) * k });
   };
 
 
@@ -1518,20 +1532,23 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const aiTools: AiToolHost = {
     snapshot: () => ({
       issues, settings: { grid: settings.grid, snap: settings.snap, minimap: settings.minimap, wheelZoom: settings.wheelZoom, aiModel: settings.aiModel },
-      view: { x: camRef.current.x, y: camRef.current.y, zoom: camRef.current.k, width: size.w, height: size.h, selectedIds: selCards, selectedLinkId: selLink ?? undefined, ...aiPanels, mode },
+      view: { x: camRef.current.x, y: camRef.current.y, zoom: camRef.current.k, width: size.w, height: size.h, safeArea: availableArea(), selectedIds: selCards, selectedLinkId: selLink ?? undefined, ...aiPanels, mode },
       canUndo: api.canUndo, canRedo: api.canRedo,
     }),
     execute: async (effect) => {
       const args = effect.arguments;
       switch (effect.tool) {
+        case 'read_html_test': return testHtml(String(args.id), String(args.html), args.steps as HtmlTestStep[]);
         case 'set_view': {
+          const result = await onAiWorkspaceEffect(effect);
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
           if (args.x !== undefined || args.y !== undefined || args.zoom !== undefined) setCam({ x: Number(args.x ?? camRef.current.x), y: Number(args.y ?? camRef.current.y), k: Number(args.zoom ?? camRef.current.k) });
-          if (args.fit) fit();
+          if (args.fit) await fit(args.chat !== true);
           if (typeof args.focusId === 'string') focusCard(args.focusId);
           if (Array.isArray(args.selectedIds)) { setSelCards(args.selectedIds as string[]); setSelLink(null); }
           if (args.mode) switchMode(args.mode as 'select' | 'link' | 'gateway');
           if (args.aiModel === '6.1-sol' || args.aiModel === '6.1-terra') onModel(args.aiModel);
-          return onAiWorkspaceEffect(effect);
+          return result;
         }
         case 'open_editor': {
           const id = String(args.id), key = id.slice(id.indexOf(':') + 1);
@@ -1558,7 +1575,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   return (
     <main
-      className={`canvas${panning ? ' panning' : ''}${space ? ' hand' : ''}${mode === 'link' ? ' linking' : ''}${mode === 'gateway' ? ' placing' : ''}`}
+      className={`canvas${size.w < 1160 ? ' compact-controls' : ''}${panning ? ' panning' : ''}${space ? ' hand' : ''}${mode === 'link' ? ' linking' : ''}${mode === 'gateway' ? ' placing' : ''}`}
       ref={root}
       style={{
         backgroundSize: `${(cam.k < 0.5 ? 44 : 22) * cam.k}px ${(cam.k < 0.5 ? 44 : 22) * cam.k}px`,
@@ -1577,7 +1594,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         menuAt.current = w;
       }}
     >
-      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} tools={aiTools} />
+      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} tools={aiTools} collapseRequest={chatCollapseRequest} />
       {cardIds.length === 0 && !draftBuilding && (
         <div className="canvas-empty">
           <b>Проект пуст</b>
@@ -1866,7 +1883,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           onJump={(x, y) => setCam({ ...cam, x: size.w / 2 - x * cam.k, y: size.h / 2 - y * cam.k })}
         />
       )}
-      <ZoomControls k={cam.k} onIn={() => zoomCenter(1.25)} onOut={() => zoomCenter(0.8)} onReset={() => setZoom(1)} onFit={fit} />
+      <ZoomControls k={cam.k} onIn={() => zoomCenter(1.25)} onOut={() => zoomCenter(0.8)} onReset={() => setZoom(1)} onFit={() => { void fit(); }} />
 
       {(
         <div className="tools" role="toolbar" aria-label="Режим доски">

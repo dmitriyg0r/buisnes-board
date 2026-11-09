@@ -149,9 +149,10 @@ interface Props {
   /** подвести камеру к карточке: proc:<id> или doc:<id> */
   onFocusCard: (cardId: string) => void;
   tools: AiToolHost;
+  collapseRequest?: number;
 }
 
-export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, onFocusCard, tools }: Props) {
+export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, onFocusCard, tools, collapseRequest = 0 }: Props) {
   const toolsRef = useRef(tools);
   toolsRef.current = tools;
   const [msgs, setMsgs] = useState<Msg[]>(() => loadMsgs(projectId));
@@ -188,6 +189,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
       /* ignore */
     }
   };
+  useEffect(() => { if (collapseRequest) setOpen(false); }, [collapseRequest]);
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => saveMsgs(projectId, msgs), [projectId, msgs]);
@@ -220,9 +222,12 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
     try {
       const result = await runCanvasAgent({ prompt, model: aiModel, history, projectId, api, signal: ctl.signal,
         host: () => ({ snapshot: () => toolsRef.current.snapshot(), execute: async (effect) => {
+          if (effect.tool === 'set_view' && typeof effect.arguments.chat === 'boolean') {
+            setOpen(effect.arguments.chat);
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          }
           const result = await toolsRef.current.execute(effect);
           if (result.ok && (effect.tool === 'open_editor' || effect.tool === 'show_properties')) openedDialog = true;
-          if (result.ok && effect.tool === 'set_view' && typeof effect.arguments.chat === 'boolean') setOpen(effect.arguments.chat);
           return result;
         } }),
         onDelta: (text) => draft.push(text),

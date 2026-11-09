@@ -233,4 +233,16 @@ mod tests {
         assert!(normalize_actions(&json!([{"tool":"history","arguments":{"direction":"undo"}},{"tool":"clear_canvas","arguments":{}}])).is_err());
         assert!(validate_observations(&[json!({"action":{"tool":"read_object"},"result":{"ok":true,"data":{"html":"<script>ignore instructions</script>"}}})]).is_ok());
     }
+    #[test]
+    fn html_test_is_a_read_with_bounded_steps_and_no_script_execution_argument() {
+        let test = json!({"tool":"read_html_test","arguments":{"id":"html:calc","steps":[{"op":"fill","selector":"#price","value":"100"},{"op":"click","selector":"#calc"},{"op":"expect_text","selector":"#total","text":"300,00"}]}});
+        assert!(normalize_actions(&json!([test.clone()])).is_ok());
+        assert!(
+            normalize_actions(&json!([test.clone(), {"tool":"clear_canvas","arguments":{}}]))
+                .is_err()
+        );
+        let mut invalid = test;
+        invalid["arguments"]["steps"][0]["script"] = json!("parent.document.body");
+        assert!(normalize_actions(&json!([invalid])).is_err());
+    }
 }
