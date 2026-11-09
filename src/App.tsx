@@ -8,7 +8,7 @@ import { Canvas } from './Canvas';
 import { IssuePanel } from './IssuePanel';
 import { Icon } from './Icon';
 import { useModel } from './useModel';
-import { useSettings } from './settings';
+import { initials, useSettings } from './settings';
 import { SettingsDialog, type SettingsTab } from './SettingsDialog';
 import { ProfileMenu } from './ProfileMenu';
 import { useSync, type SyncState } from './sync';
@@ -16,7 +16,9 @@ import { adoptOwner, clearLocalCache, fetchMe, logout, updateMe, type User } fro
 import { AuthScreen } from './AuthScreen';
 import { AddMaterialDialog } from './AddMaterialDialog';
 import { ProjectsScreen } from './ProjectsScreen';
-import { patchProject, viewKey, type Project } from './projects';
+import { captureJoinToken, clearJoinToken, getProject, joinProject, patchProject, viewKey, type Project } from './projects';
+import { HttpError } from './api';
+import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
 
 const DiagramModelEditor = lazy(() => import('./DiagramModelEditor'));
@@ -30,19 +32,24 @@ const syncLabel: Record<SyncState, string> = {
   saved: 'Сохранено на сервере',
   offline: 'Нет связи с сервером',
   conflict: 'Обновлено с сервера',
+  revoked: 'Доступ закрыт',
 };
 const syncHint: Record<SyncState, string> = {
   connecting: 'Подключаемся к бэкенду',
   saving: 'Изменения отправляются на сервер',
   saved: 'Последняя версия модели лежит в PostgreSQL',
   offline: 'Работаем локально, изменения отправятся при следующей попытке',
-  conflict: 'Модель была изменена в другом месте, принята версия сервера',
+  conflict: 'Модель была изменена другим участником, правки объединены',
+  revoked: 'Владелец закрыл вам доступ к проекту или удалил проект',
 };
 
 export function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined); // undefined — идёт проверка сессии
   const [project, setProject] = useState<Project | null>(null);
   const [offline, setOffline] = useState(false);
+  // токен из ссылки-приглашения: ждёт входа, затем присоединяет к проекту
+  const [joinToken, setJoinToken] = useState<string | null>(() => captureJoinToken());
+  const [joinError, setJoinError] = useState<string | null>(null);
 
   useEffect(() => {
     fetchMe()
@@ -61,6 +68,28 @@ export function App() {
     window.addEventListener('bb:unauthorized', out);
     return () => window.removeEventListener('bb:unauthorized', out);
   }, []);
+
+  useEffect(() => {
+    if (!user || !joinToken) return;
+    let dead = false;
+    (async () => {
+      try {
+        const j = await joinProject(joinToken);
+        const p = await getProject(j.project_id);
+        if (dead) return;
+        clearJoinToken();
+        setJoinToken(null);
+        setProject(p);
+      } catch (e) {
+        if (dead) return;
+        if (e instanceof HttpError && e.status === 401) return; // сессия истекла: токен остаётся до нового входа
+        clearJoinToken();
+        setJoinToken(null);
+        setJoinError(e instanceof HttpError && e.status === 429 ? 'Слишком много попыток. Попробуйте позже.' : 'Ссылка недействительна или доступ по ней отключён. Попросите владельца прислать новую.');
+      }
+    })();
+    return () => { dead = true; };
+  }, [user, joinToken]);
 
   const signOut = async () => {
     try {
@@ -86,7 +115,8 @@ export function App() {
       />
     );
   }
-  if (!project) return <ProjectsScreen key={user.id} user={user} onOpen={setProject} onLogout={signOut} />;
+  if (joinToken) return <div className="boot" role="status">Присоединяемся к проекту…</div>;
+  if (!project) return <>{joinError && <div className="auth-error" role="alert" style={{ margin: 12 }}>{joinError} <button type="button" onClick={() => setJoinError(null)}>Закрыть</button></div>}<ProjectsScreen key={user.id} user={user} onOpen={setProject} onLogout={signOut} /></>;
   return <Workspace key={project.id} user={user} project={project} onUser={setUser} onProject={setProject} onBack={() => setProject(null)} onLogout={signOut} />;
 }
 
@@ -159,6 +189,8 @@ function Workspace({
       return next;
     });
   const sync = useSync(api, settings, patch, project.id);
+  const presence = usePresence(project.id);
+  const online = presence.peers.filter((p) => Date.now() - p.seen < 12_000);
   const store = useIssues(project.id);
   const [selectedId, setSelectedId] = useState('i1');
 
@@ -214,6 +246,7 @@ function Workspace({
           {syncLabel[sync]}
         </span>
         <div className="grow" />
+        {online.length > 0 && <div className="peer-avatars" aria-label="Сейчас на доске">{online.map((p) => <span key={p.id} className="peer-avatar" style={{ background: p.color }} title={p.name}>{initials(p.name)}</span>)}</div>}
         <ProfileMenu
           name={settings.name}
           role={settings.role}
@@ -223,6 +256,7 @@ function Workspace({
         />
       </header>
 
+      {sync === 'revoked' && <div className="auth-error" role="alert" style={{ margin: 12 }}>Доступ к проекту закрыт: владелец отозвал его или удалил проект. Ваши последние правки не сохранены. <button type="button" onClick={onBack}>К списку проектов</button></div>}
       <div className="workspace" style={{ gridTemplateColumns: `${layout.tree ? 232 : 44}px minmax(0, 1fr) ${layout.panel ? 300 : 44}px` }}>
         <Tree
           activeSourceId={selected.basis?.sourceId}
@@ -241,6 +275,7 @@ function Workspace({
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
           paused={editing !== null || addOpen || settingsTab !== null}
+          presence={presence}
         />
         <IssuePanel
           issues={issues}

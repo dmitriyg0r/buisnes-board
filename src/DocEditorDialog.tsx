@@ -175,7 +175,6 @@ export default function DocEditorDialog({ title, markdown, onSave, onClose }: Pr
           }),
         ]}
       />
-      <p className="md-foot">Заголовки до третьего уровня становятся пунктами документа: к ним привязываются шаги модели.</p>
     </div>
   );
 }

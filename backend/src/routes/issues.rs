@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::auth::AuthUser;
 use crate::error::{AppError, AppResult};
-use super::ensure_project;
+use super::{ensure_project, member_sql};
 use crate::AppState;
 
 const STATUSES: [&str; 5] = ["open", "asked", "answered", "fixed", "closed"];
@@ -104,7 +104,8 @@ pub async fn update(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uu
     sqlx::query_as::<_, Issue>(&format!(
         "UPDATE issues SET title = COALESCE($2, title), status = COALESCE($3, status), \
          data = COALESCE($4, data), updated_at = now() \
-         WHERE id = $1 AND project_id IN (SELECT id FROM projects WHERE owner_id = $5) RETURNING {COLS}"
+         WHERE id = $1 AND project_id IN (SELECT p.id FROM projects p WHERE {}) RETURNING {COLS}",
+        member_sql("$5")
     ))
     .bind(id)
     .bind(title)
@@ -118,7 +119,7 @@ pub async fn update(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uu
 }
 
 pub async fn delete(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>) -> AppResult<StatusCode> {
-    let r = sqlx::query("DELETE FROM issues WHERE id = $1 AND project_id IN (SELECT id FROM projects WHERE owner_id = $2)")
+    let r = sqlx::query(&format!("DELETE FROM issues WHERE id = $1 AND project_id IN (SELECT p.id FROM projects p WHERE {})", member_sql("$2")))
         .bind(id)
         .bind(user.id)
         .execute(&s.db)
