@@ -16,7 +16,7 @@ import { adoptOwner, clearLocalCache, fetchMe, logout, updateMe, type User } fro
 import { AuthScreen } from './AuthScreen';
 import { AddMaterialDialog } from './AddMaterialDialog';
 import { ProjectsScreen } from './ProjectsScreen';
-import { captureJoinToken, clearJoinToken, getProject, joinProject, patchProject, viewKey, type Project } from './projects';
+import { activeProjectId, captureJoinToken, clearActiveProject, clearJoinToken, getProject, joinProject, patchProject, rememberActiveProject, viewKey, type Project } from './projects';
 import { HttpError } from './api';
 import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
@@ -52,22 +52,55 @@ export function App() {
   const [joinError, setJoinError] = useState<string | null>(null);
 
   useEffect(() => {
+    let dead = false;
     fetchMe()
-      .then((u) => {
-        if (u) adoptOwner(u.id);
+      .then(async (u) => {
+        if (dead) return;
+        if (u) {
+          adoptOwner(u.id);
+          const projectId = activeProjectId(u.id);
+          // Приглашение открывает свой проект, а не последний открытый.
+          if (projectId && !joinToken) {
+            try {
+              const restored = await getProject(projectId);
+              if (dead) return;
+              setProject(restored);
+            } catch (e) {
+              if (dead) return;
+              if (e instanceof HttpError && (e.status === 403 || e.status === 404)) clearActiveProject();
+              else if (!(e instanceof HttpError && e.status === 401)) setJoinError('Не удалось восстановить открытый проект. Обновите страницу или откройте проект из списка.');
+            }
+          }
+        } else clearActiveProject();
+        if (dead) return;
         setUser(u);
       })
       .catch(() => {
+        if (dead) return;
         setOffline(true);
         setUser(null);
       });
     const out = () => {
+      dead = true;
+      clearActiveProject();
       setProject(null);
       setUser(null);
     };
     window.addEventListener('bb:unauthorized', out);
-    return () => window.removeEventListener('bb:unauthorized', out);
+    return () => {
+      dead = true;
+      window.removeEventListener('bb:unauthorized', out);
+    };
   }, []);
+
+  const openProject = (p: Project) => {
+    if (user) rememberActiveProject(user.id, p.id);
+    setProject(p);
+  };
+  const closeProject = () => {
+    clearActiveProject();
+    setProject(null);
+  };
 
   useEffect(() => {
     if (!user || !joinToken) return;
@@ -79,7 +112,7 @@ export function App() {
         if (dead) return;
         clearJoinToken();
         setJoinToken(null);
-        setProject(p);
+        openProject(p);
       } catch (e) {
         if (dead) return;
         if (e instanceof HttpError && e.status === 401) return; // сессия истекла: токен остаётся до нового входа
@@ -98,7 +131,7 @@ export function App() {
       /* сессия всё равно будет забыта локально */
     }
     clearLocalCache();
-    setProject(null);
+    closeProject();
     setUser(null);
   };
 
@@ -116,8 +149,8 @@ export function App() {
     );
   }
   if (joinToken) return <div className="boot" role="status">Присоединяемся к проекту…</div>;
-  if (!project) return <>{joinError && <div className="auth-error" role="alert" style={{ margin: 12 }}>{joinError} <button type="button" onClick={() => setJoinError(null)}>Закрыть</button></div>}<ProjectsScreen key={user.id} user={user} onOpen={setProject} onLogout={signOut} /></>;
-  return <Workspace key={project.id} user={user} project={project} onUser={setUser} onProject={setProject} onBack={() => setProject(null)} onLogout={signOut} />;
+  if (!project) return <>{joinError && <div className="auth-error" role="alert" style={{ margin: 12 }}>{joinError} <button type="button" onClick={() => setJoinError(null)}>Закрыть</button></div>}<ProjectsScreen key={user.id} user={user} onOpen={openProject} onLogout={signOut} /></>;
+  return <Workspace key={project.id} user={user} project={project} onUser={setUser} onProject={setProject} onBack={closeProject} onLogout={signOut} />;
 }
 
 function Workspace({
