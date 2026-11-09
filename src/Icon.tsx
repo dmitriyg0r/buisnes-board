@@ -16,6 +16,8 @@ const paths: Record<string, string> = {
   pencil: 'M4 20l4-1 11-11-3-3L5 16z',
   sparkle: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z',
   arrowUp: 'M12 19V5M5 12l7-7 7 7',
+  upload: 'M12 16V3M7 8l5-5 5 5M4 16v5h16v-5',
+  download: 'M12 3v13M7 11l5 5 5-5M4 16v5h16v-5',
   play: 'M8 5l11 7-11 7z',
   minus: 'M5 12h14',
   hand: 'M8 12V6a1.5 1.5 0 0 1 3 0v5M11 11V4.5a1.5 1.5 0 0 1 3 0V11M14 11V6a1.5 1.5 0 0 1 3 0v7a6 6 0 0 1-6 6h-1a5 5 0 0 1-4-2l-2.5-3.5a1.5 1.5 0 0 1 2.4-1.8L8 14',

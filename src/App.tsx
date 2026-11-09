@@ -338,7 +338,6 @@ function Workspace({
                   links: m.links.filter((l) => !gone.has(l.sectionId)),
                 };
               });
-              setEditing(null);
             }}
           />
         </Suspense>
