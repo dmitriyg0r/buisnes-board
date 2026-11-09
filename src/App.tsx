@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { blankXml } from './bpmn';
-import { emptyModel, NO_ISSUE, type IssueStatus } from './data';
+import { emptyModel, NO_ISSUE, type Issue, type IssueStatus } from './data';
 import { reconcileSections, sectionTitles, starterMarkdown } from './markdown';
 import { autoIssues, coverage } from './coverage';
 import { Tree } from './Tree';
@@ -16,13 +16,16 @@ import { adoptOwner, clearLocalCache, fetchMe, logout, updateMe, type User } fro
 import { AuthScreen } from './AuthScreen';
 import { AddMaterialDialog } from './AddMaterialDialog';
 import { ProjectsScreen } from './ProjectsScreen';
-import { captureJoinToken, clearJoinToken, getProject, joinProject, patchProject, viewKey, type Project } from './projects';
+import { activeProjectId, captureJoinToken, clearActiveProject, clearJoinToken, getProject, joinProject, patchProject, rememberActiveProject, viewKey, type Project } from './projects';
 import { HttpError } from './api';
 import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
+import { starterHtml } from './html';
+import type { AiEffect, AiToolResult } from './aiToolContract';
 
 const DiagramModelEditor = lazy(() => import('./DiagramModelEditor'));
 const DocEditorDialog = lazy(() => import('./DocEditorDialog'));
+const HtmlEditorDialog = lazy(() => import('./HtmlEditorDialog'));
 
 const rid = (p: string) => p + Math.random().toString(36).slice(2, 8);
 
@@ -52,22 +55,55 @@ export function App() {
   const [joinError, setJoinError] = useState<string | null>(null);
 
   useEffect(() => {
+    let dead = false;
     fetchMe()
-      .then((u) => {
-        if (u) adoptOwner(u.id);
+      .then(async (u) => {
+        if (dead) return;
+        if (u) {
+          adoptOwner(u.id);
+          const projectId = activeProjectId(u.id);
+          // Приглашение открывает свой проект, а не последний открытый.
+          if (projectId && !joinToken) {
+            try {
+              const restored = await getProject(projectId);
+              if (dead) return;
+              setProject(restored);
+            } catch (e) {
+              if (dead) return;
+              if (e instanceof HttpError && (e.status === 403 || e.status === 404)) clearActiveProject();
+              else if (!(e instanceof HttpError && e.status === 401)) setJoinError('Не удалось восстановить открытый проект. Обновите страницу или откройте проект из списка.');
+            }
+          }
+        } else clearActiveProject();
+        if (dead) return;
         setUser(u);
       })
       .catch(() => {
+        if (dead) return;
         setOffline(true);
         setUser(null);
       });
     const out = () => {
+      dead = true;
+      clearActiveProject();
       setProject(null);
       setUser(null);
     };
     window.addEventListener('bb:unauthorized', out);
-    return () => window.removeEventListener('bb:unauthorized', out);
+    return () => {
+      dead = true;
+      window.removeEventListener('bb:unauthorized', out);
+    };
   }, []);
+
+  const openProject = (p: Project) => {
+    if (user) rememberActiveProject(user.id, p.id);
+    setProject(p);
+  };
+  const closeProject = () => {
+    clearActiveProject();
+    setProject(null);
+  };
 
   useEffect(() => {
     if (!user || !joinToken) return;
@@ -79,7 +115,7 @@ export function App() {
         if (dead) return;
         clearJoinToken();
         setJoinToken(null);
-        setProject(p);
+        openProject(p);
       } catch (e) {
         if (dead) return;
         if (e instanceof HttpError && e.status === 401) return; // сессия истекла: токен остаётся до нового входа
@@ -98,7 +134,7 @@ export function App() {
       /* сессия всё равно будет забыта локально */
     }
     clearLocalCache();
-    setProject(null);
+    closeProject();
     setUser(null);
   };
 
@@ -116,8 +152,8 @@ export function App() {
     );
   }
   if (joinToken) return <div className="boot" role="status">Присоединяемся к проекту…</div>;
-  if (!project) return <>{joinError && <div className="auth-error" role="alert" style={{ margin: 12 }}>{joinError} <button type="button" onClick={() => setJoinError(null)}>Закрыть</button></div>}<ProjectsScreen key={user.id} user={user} onOpen={setProject} onLogout={signOut} /></>;
-  return <Workspace key={project.id} user={user} project={project} onUser={setUser} onProject={setProject} onBack={() => setProject(null)} onLogout={signOut} />;
+  if (!project) return <>{joinError && <div className="auth-error" role="alert" style={{ margin: 12 }}>{joinError} <button type="button" onClick={() => setJoinError(null)}>Закрыть</button></div>}<ProjectsScreen key={user.id} user={user} onOpen={openProject} onLogout={signOut} /></>;
+  return <Workspace key={project.id} user={user} project={project} onUser={setUser} onProject={setProject} onBack={closeProject} onLogout={signOut} />;
 }
 
 function Workspace({
@@ -168,7 +204,7 @@ function Workspace({
   const [selCards, setSelCards] = useState<string[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
-  const [editing, setEditing] = useState<{ type: 'process' | 'doc'; id: string } | null>(null);
+  const [editing, setEditing] = useState<{ type: 'process' | 'doc' | 'html'; id: string } | null>(null);
   // свёрнутые боковые панели запоминаются в браузере
   const [layout, setLayout] = useState<{ tree: boolean; panel: boolean }>(() => {
     try {
@@ -221,6 +257,31 @@ function Workspace({
     if (issue) store.update(issue, status, fields);
   };
 
+  const aiWorkspaceEffect = async (effect: AiEffect): Promise<AiToolResult> => {
+    if (effect.tool === 'set_view') {
+      const values = effect.arguments;
+      const preferences: Partial<typeof settings> = {};
+      for (const key of ['grid', 'snap', 'minimap', 'wheelZoom'] as const) if (typeof values[key] === 'boolean') preferences[key] = values[key];
+      if (Object.keys(preferences).length) patchSettings(preferences);
+      if (typeof values.tree === 'boolean' || typeof values.panel === 'boolean') setLayout((old) => {
+        const next = { ...old, ...(typeof values.tree === 'boolean' ? { tree: values.tree } : {}), ...(typeof values.panel === 'boolean' ? { panel: values.panel } : {}) };
+        try { localStorage.setItem('bb.layout.v2', JSON.stringify(next)); } catch { /* хранилище недоступно */ }
+        return next;
+      });
+      return { ok: true, summary: 'Вид доски настроен' };
+    }
+    const issue = effect.arguments.issue as Issue;
+    if (effect.tool === 'delete_issue' && !effect.arguments.closeAuto) {
+      await store.removeAi(issue);
+      return { ok: true, summary: `Удалено замечание «${issue.title}»`, data: { id: issue.id } };
+    }
+    if (['create_issue', 'update_issue', 'delete_issue'].includes(effect.tool)) {
+      await store.saveAi(issue);
+      return { ok: true, summary: `Сохранено замечание «${issue.title}»: ${issue.status}`, data: { id: issue.id, status: issue.status } };
+    }
+    throw new Error(`Неизвестное действие проекта ${effect.tool}`);
+  };
+
   return (
     <div className="app">
       <header className="topbar">
@@ -263,6 +324,8 @@ function Workspace({
           sources={api.model.sources}
           docs={api.model.docs}
           processes={api.model.processes}
+          htmlObjects={api.model.htmlObjects}
+          onEditHtml={(id) => setEditing({ type: 'html', id })}
           selectedCards={selCards}
           onAddMaterial={() => setAddOpen(true)}
           collapsed={!layout.tree}
@@ -274,8 +337,11 @@ function Workspace({
           onAddMaterial={() => setAddOpen(true)}
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
+          onEditHtml={(id) => setEditing({ type: 'html', id })}
           paused={editing !== null || addOpen || settingsTab !== null}
           presence={presence}
+          aiPanels={layout}
+          onAiWorkspaceEffect={aiWorkspaceEffect}
         />
         <IssuePanel
           issues={issues}
@@ -338,15 +404,26 @@ function Workspace({
                   links: m.links.filter((l) => !gone.has(l.sectionId)),
                 };
               });
-              setEditing(null);
             }}
+          />
+        </Suspense>
+      )}
+
+      {editing?.type === 'html' && api.model.htmlObjects.find((h) => h.id === editing.id) && (
+        <Suspense fallback={<div className="html-editor boot" role="status">Загрузка редактора…</div>}>
+          <HtmlEditorDialog
+            key={editing.id}
+            object={api.model.htmlObjects.find((h) => h.id === editing.id)!}
+            onCheckpoint={api.checkpoint}
+            onChange={(title, html) => api.applyLive((m) => ({ ...m, htmlObjects: m.htmlObjects.map((h) => h.id === editing.id ? { ...h, title, html } : h) }))}
+            onClose={() => setEditing(null)}
           />
         </Suspense>
       )}
 
       {addOpen && (
         <AddMaterialDialog
-          counts={{ processes: api.model.processes.length, docs: api.model.docs.length }}
+          counts={{ processes: api.model.processes.length, docs: api.model.docs.length, htmlObjects: api.model.htmlObjects.length }}
           onAddModel={(title) => {
             const id = rid('p');
             api.apply((m) => ({ ...m, processes: [...m.processes, { id, title, xml: blankXml(title) }] }));
@@ -357,6 +434,11 @@ function Workspace({
             const id = rid('d');
             api.apply((m) => ({ ...m, docs: [...m.docs, { id, title, markdown: starterMarkdown(title), sections: [] }] }));
             setEditing({ type: 'doc', id });
+          }}
+          onAddHtml={(title) => {
+            const id = rid('h');
+            api.apply((m) => ({ ...m, htmlObjects: [...m.htmlObjects, { id, title, html: starterHtml(title) }] }));
+            setEditing({ type: 'html', id });
           }}
           onAddSource={(s) => api.apply((m) => ({ ...m, sources: [...m.sources, { ...s, id: rid('f') }] }))}
         />

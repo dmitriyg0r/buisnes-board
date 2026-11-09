@@ -16,6 +16,30 @@ export const deleteProject = (id: string) => http<void>('DELETE', `/projects/${i
 export const modelKey = (id: string) => `bb.model.v2.${id}`;
 export const viewKey = (id: string) => `bb.view.v1.${id}`;
 
+// Выбор принадлежит вкладке и аккаунту: соседние вкладки могут открыть другие проекты.
+const ACTIVE_PROJECT_KEY = 'bb.active-project.v1';
+
+export function activeProjectId(userId: string): string | null {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(ACTIVE_PROJECT_KEY) ?? 'null');
+    return saved?.userId === userId && typeof saved.projectId === 'string' ? saved.projectId : null;
+  } catch {
+    return null;
+  }
+}
+
+export function rememberActiveProject(userId: string, projectId: string) {
+  try {
+    sessionStorage.setItem(ACTIVE_PROJECT_KEY, JSON.stringify({ userId, projectId }));
+  } catch {
+    /* хранилище может быть недоступно */
+  }
+}
+
+export function clearActiveProject() {
+  try { sessionStorage.removeItem(ACTIVE_PROJECT_KEY); } catch { /* хранилище недоступно */ }
+}
+
 export function forgetProject(id: string) {
   try {
     localStorage.removeItem(modelKey(id));

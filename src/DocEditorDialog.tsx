@@ -62,18 +62,21 @@ const codeBlocks: CodeBlockEditorDescriptor[] = [{ priority: -10, match: () => t
 export default function DocEditorDialog({ title, markdown, onSave, onClose }: Props) {
   const editor = useRef<MDXEditorMethods>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const initialMarkdown = useRef(markdown);
+  const draft = useRef({ title, markdown });
+  const saved = useRef({ title, markdown });
   const [name, setName] = useState(title);
-  const [text, setText] = useState(markdown);
-  // редактор приводит текст к своему виду при открытии; это не правка, поэтому сравниваем с таким видом
-  const [baseline, setBaseline] = useState(markdown);
-  const [confirmClose, setConfirmClose] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const dirty = name !== title || text !== baseline;
 
-  const save = () => onSave(name.trim() || 'Документ', text);
+  const save = () => {
+    const next = { title: draft.current.title.trim() || 'Документ', markdown: draft.current.markdown };
+    if (next.title === saved.current.title && next.markdown === saved.current.markdown) return;
+    onSave(next.title, next.markdown);
+    saved.current = next;
+  };
 
   const exportFile = () => {
-    const url = URL.createObjectURL(new Blob([text], { type: 'text/markdown;charset=utf-8' }));
+    const url = URL.createObjectURL(new Blob([draft.current.markdown], { type: 'text/markdown;charset=utf-8' }));
     const a = document.createElement('a');
     a.href = url;
     a.download = `${name.trim() || 'document'}.md`;
@@ -89,13 +92,9 @@ export default function DocEditorDialog({ title, markdown, onSave, onClose }: Pr
     }
     setError(null);
     const content = await file.text();
+    draft.current.markdown = content;
     editor.current?.setMarkdown(content);
-    setText(content);
-  };
-
-  const close = () => {
-    if (dirty && !confirmClose) setConfirmClose(true);
-    else onClose();
+    save();
   };
 
   return (
@@ -113,36 +112,30 @@ export default function DocEditorDialog({ title, markdown, onSave, onClose }: Pr
     >
       <header className="bpmn-head">
         <span className="dlg-icon"><Icon name="file" size={18} /></span>
-        <input className="bpmn-title" value={name} aria-label="Название документа" onChange={(e) => setName(e.target.value)} />
+        <input className="bpmn-title" value={name} aria-label="Название документа" onChange={(e) => {
+          setName(e.target.value);
+          draft.current.title = e.target.value;
+          save();
+        }} />
         <div className="grow" />
         {error && <span className="bpmn-error" role="alert">{error}</span>}
         <input ref={fileInput} type="file" accept=".md,.markdown,.txt,text/markdown,text/plain" hidden onChange={(e) => { void importFile(e.target.files?.[0]); e.target.value = ''; }} />
-        <button type="button" className="btn" onClick={() => fileInput.current?.click()}>Импорт .md</button>
-        <button type="button" className="btn" onClick={exportFile}>Экспорт .md</button>
-        {confirmClose ? (
-          <>
-            <span className="bpmn-warn">Есть несохранённые изменения</span>
-            <button type="button" className="btn btn-danger" onClick={onClose}>Закрыть без сохранения</button>
-            <button type="button" className="btn" onClick={() => setConfirmClose(false)}>Продолжить правку</button>
-          </>
-        ) : (
-          <>
-            <button type="button" className="btn" onClick={close}>Закрыть</button>
-            <button type="button" className="btn btn-dark" disabled={!dirty} onClick={save}>Сохранить</button>
-          </>
-        )}
+        <button type="button" className="icon-btn" title="Импорт .md" aria-label="Импорт .md" onClick={() => fileInput.current?.click()}><Icon name="upload" size={18} /></button>
+        <button type="button" className="icon-btn" title="Экспорт .md" aria-label="Экспорт .md" onClick={exportFile}><Icon name="download" size={18} /></button>
+        <button type="button" className="icon-btn" title="Закрыть" aria-label="Закрыть" onClick={onClose}><Icon name="close" size={18} /></button>
       </header>
 
       <MDXEditor
         ref={editor}
         className="mdx-root"
         contentEditableClassName="md md-live"
-        markdown={markdown}
+        markdown={initialMarkdown.current}
         translation={ru}
         placeholder="Начните писать. «# » в начале строки делает заголовок, «- » список, «**текст**» жирный."
         onChange={(md, initial) => {
-          setText(md);
-          if (initial) setBaseline(md);
+          draft.current.markdown = md;
+          // Нормализация при открытии не считается пользовательской правкой.
+          if (!initial) save();
         }}
         onError={() => setError('В тексте есть разметка, которую редактор не понимает. Откройте «Исходный текст» и поправьте её.')}
         plugins={[

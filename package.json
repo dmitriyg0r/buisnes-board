@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test:html": "esbuild tests/html-objects.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/html-objects-test.mjs && node node_modules/.cache/html-objects-test.mjs",
+    "test:ai": "esbuild tests/ai-tools-node.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-tools-test.mjs && node node_modules/.cache/ai-tools-test.mjs",
     "preview": "vite preview",
     "setup": "node scripts/setup.mjs",
     "dev:db": "docker compose up -d db",
@@ -16,6 +18,12 @@
     "fmt": "cargo fmt --manifest-path backend/Cargo.toml"
   },
   "dependencies": {
+    "@codemirror/commands": "6.11.1",
+    "@codemirror/lang-html": "6.4.12",
+    "@codemirror/language": "6.13.1",
+    "@codemirror/state": "6.7.6",
+    "@codemirror/view": "6.43.15",
+    "@lezer/highlight": "1.2.5",
     "@mdxeditor/editor": "^4.5.0",
     "bpmn-visualization": "^0.48.0",
     "react": "^18.3.1",

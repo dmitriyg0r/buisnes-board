@@ -33,6 +33,9 @@ export interface IssueStore {
   /** перевести замечание в новый статус; ответ и решение записываются вместе с историей */
   update: (issue: Issue, status: IssueStatus, fields?: IssueFields) => void;
   clear: () => void;
+  /** Команды ИИ дожидаются подтверждения записи и возвращают ошибки в чат. */
+  saveAi: (issue: Issue) => Promise<void>;
+  removeAi: (issue: Issue) => Promise<void>;
 }
 
 /**
@@ -98,5 +101,33 @@ export function useIssues(projectId: string | null): IssueStore {
     if (p) void http('DELETE', `/projects/${p}/issues`).catch(() => undefined);
   }, []);
 
-  return { manual, autoState, update, clear };
+  const saveAi = useCallback(async (issue: Issue) => {
+    const project = pid.current;
+    if (!project) throw new Error('Проект не открыт');
+    const old = rowsRef.current.find((r) => (r.ref ?? r.id) === issue.id);
+    const { id: _id, title, status, ...body } = issue;
+    const data = { ...body, auto: !!issue.auto };
+    const saved = old && !old.ref
+      ? await http<Row>('PATCH', `/issues/${old.id}`, { title, status, data })
+      : await http<Row>('PUT', `/projects/${project}/issues/by-ref/${encodeURIComponent(old?.ref ?? issue.id)}`, { title, status, data });
+    if (pid.current !== project) return;
+    setRows((previous) => {
+      const next = previous.some((r) => r.id === saved.id || (r.ref && r.ref === saved.ref))
+        ? previous.map((r) => r.id === saved.id || (r.ref && r.ref === saved.ref) ? saved : r)
+        : [...previous, saved];
+      rowsRef.current = next;
+      return next;
+    });
+  }, []);
+  const removeAi = useCallback(async (issue: Issue) => {
+    if (issue.auto) throw new Error('Автозамечание нужно закрыть или устранить его причину');
+    const row = rowsRef.current.find((r) => (r.ref ?? r.id) === issue.id);
+    if (!row) throw new Error('Замечание не найдено');
+    const project = pid.current;
+    await http<void>('DELETE', `/issues/${row.id}`);
+    if (pid.current !== project) return;
+    setRows((previous) => { const next = previous.filter((r) => r.id !== row.id); rowsRef.current = next; return next; });
+  }, []);
+
+  return { manual, autoState, update, clear, saveAi, removeAi };
 }

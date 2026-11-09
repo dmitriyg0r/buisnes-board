@@ -16,7 +16,7 @@ interface ModelDto {
 const normalize = (m: Partial<Model>): Model => normalizeModel(m);
 
 const hasContent = (m: Model) =>
-  m.processes.length > 0 || m.docs.length > 0 || m.links.length > 0 || m.cardLinks.length > 0 || m.sources.length > 0 || Object.keys(m.meta).length > 0;
+  m.processes.length > 0 || m.docs.length > 0 || m.htmlObjects.length > 0 || m.links.length > 0 || m.cardLinks.length > 0 || m.sources.length > 0 || Object.keys(m.meta).length > 0;
 
 type Prefs = Pick<Settings, 'grid' | 'snap' | 'minimap' | 'wheelZoom'>;
 const pickPrefs = (s: Partial<Settings>): Partial<Prefs> => {

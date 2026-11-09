@@ -1,6 +1,6 @@
-import { lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { isLinkable, projectNodes, splitRef } from './bpmn';
-import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source } from './data';
+import { DOC_SIZE, GATEWAY_SIZE, HTML_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source, type Model } from './data';
 import { splitMarkdown } from './markdown';
 import type { AiModel, Settings } from './settings';
 import { AiChat } from './AiChat';
@@ -8,7 +8,9 @@ import { rectOf, routeAround, routeHits } from './linkRoute';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
-import { connectionPortCount } from './connectionPorts';
+import { HtmlPreview } from './HtmlPreview';
+import { exportCanvasObject } from './aiCanvasTools';
+import type { AiEffect, AiToolHost, AiToolResult } from './aiToolContract';
 
 const MarkdownView = lazy(() => import('./MarkdownView'));
 import { ContextMenu, type ContextOpener, type MenuItem, type MenuTarget } from './ContextMenu';
@@ -17,6 +19,9 @@ import type { ModelApi } from './useModel';
 import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
 import { loadView, saveView, type CardSizes } from './viewState';
 import type { Presence } from './presence';
+
+/** карточки, которые коллега тащит прямо сейчас: их движение сглаживается */
+const LiveCtx = createContext<Set<string>>(new Set());
 
 /* Положение и размер карточек лежат в общей модели (meta), чтобы коллеги видели перемещения. */
 const POS_KEY = 'layout:pos';
@@ -51,10 +56,13 @@ interface Props {
   onEditProcess: (id: string) => void;
   /** открыть редактор документа */
   onEditDoc: (id: string) => void;
+  onEditHtml: (id: string) => void;
   /** редактор или другой диалог открыт: горячие клавиши полотна не работают */
   paused: boolean;
   /** курсоры коллег и отправка своего */
   presence?: Presence;
+  aiPanels: { tree: boolean; panel: boolean };
+  onAiWorkspaceEffect: (effect: AiEffect) => Promise<AiToolResult>;
 }
 
 /* ---------- перетаскиваемая карточка ---------- */
@@ -77,7 +85,6 @@ function DragCard({
   snapPort,
   linkLabel,
   linkSource,
-  portSize,
   className,
   style,
   onEdit,
@@ -103,7 +110,6 @@ function DragCard({
   snapPort?: CardAnchor | null;
   linkLabel: string;
   linkSource: boolean;
-  portSize: { w: number; h: number };
   className: string;
   style?: React.CSSProperties;
   onEdit?: () => void;
@@ -114,6 +120,7 @@ function DragCard({
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
   const moved = useRef(false);
   const k = useContext(ZoomCtx);
+  const live = useContext(LiveCtx).has(id);
 
   return (
     <div
@@ -122,7 +129,7 @@ function DragCard({
       role="group"
       aria-label={linkLabel}
       className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}${linkTarget && draggingLink ? ' link-target' : ''}`}
-      style={{ left: pos.x, top: pos.y, ...style }}
+      style={{ left: pos.x, top: pos.y, ...(live ? { transition: 'left .08s linear, top .08s linear' } : null), ...style }}
       onContextMenu={(e) => onContext({ type: 'card', id }, e)}
       onFocus={(e) => { if (e.target === e.currentTarget) onGrab(id, false); }}
       onKeyDown={(e) => { if (e.target === e.currentTarget && e.key === 'Enter' && !linking && onEdit) { e.preventDefault(); e.stopPropagation(); onEdit(); } }}
@@ -166,7 +173,8 @@ function DragCard({
       <span className="pin" />
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
-        const count = connectionPortCount(side === 'top' || side === 'bottom' ? portSize.w : portSize.h, id.startsWith('gw:'));
+        // У всех объектов три точки на каждой стороне независимо от типа и размера.
+        const count = 3;
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const anchor = { side, offset };
@@ -356,9 +364,10 @@ function Minimap({
 
 type Box = Pos & { w: number; h: number };
 
-const cardIdsOf = (m: { processes: { id: string }[]; docs: { id: string }[]; sources: { id: string }[]; gateways: { id: string }[] }) => [
+const cardIdsOf = (m: Model) => [
   ...m.processes.map((p) => `proc:${p.id}`),
   ...m.docs.map((d) => `doc:${d.id}`),
+  ...m.htmlObjects.map((h) => `html:${h.id}`),
   ...m.sources.map((s) => `src:${s.id}`),
   ...m.gateways.map((g) => `gw:${g.id}`),
 ];
@@ -501,9 +510,9 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, paused, presence }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
   const saved = useRef(loadView(projectId)).current;
-  const { sources, docs, processes, gateways } = api.model;
+  const { sources, docs, processes, gateways, htmlObjects } = api.model;
   const pnodes = projectNodes(processes);
 
   /** документы раскладываются сеткой в три столбца справа от моделей: их может быть много */
@@ -524,6 +533,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       const i = Math.max(0, gateways.findIndex((g) => g.id === key));
       return { x: 232 + (i % 4) * (GATEWAY_SIZE.w + 24), y: 20 };
     }
+    if (kind === 'html') {
+      const i = Math.max(0, htmlObjects.findIndex((h) => h.id === key));
+      return { x: 232 + (i % 3) * (HTML_SIZE.w + 24), y: 120 + processes.length * (MODEL_SIZE.h + 48) + Math.ceil(docs.length / 3) * (DOC_SIZE.h + 48) + Math.floor(i / 3) * (HTML_SIZE.h + 48) };
+    }
     const i = Math.max(0, sources.findIndex((s) => s.id === key));
     return { x: 16 + (i % 2) * 12, y: 120 + i * (SOURCE_SIZE.h + 74) };
   };
@@ -539,12 +552,31 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     for (const [id, v] of Object.entries(api.model.meta[SIZE_KEY] ?? {})) { const n = nums(v); if (n) shared[id] = { w: n[0], h: n[1] }; }
     return { ...(saved?.sizes ?? {}), ...shared };
   });
-  const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
+  const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('html:') ? HTML_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
   const MIN_CARD = (id: string) => (id.startsWith('proc:') ? { w: 320, h: 240 } : id.startsWith('gw:') ? { w: 96, h: 96 } : { w: 240, h: 200 });
   const MAX_CARD = 2400;
   // положение и размеры карточек входят в общую историю «назад / вперёд» вместе с моделью
   const layoutRef = useRef({ pos, sizes });
   layoutRef.current = { pos, sizes };
+  // перетаскивание в реальном времени: свои позиции уходят сразу, чужие применяются без ожидания записи в модель
+  const sentDrag = useRef<Record<string, string>>({});
+  const [liveIds, setLiveIds] = useState<Set<string>>(new Set());
+  const liveTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => {
+    if (!presence || !gestureCk.current) return;
+    const items = Object.entries(pos).filter(([id, p]) => fmtPos(p) !== sentDrag.current[id]).map(([id, p]) => ({ id, x: Math.round(p.x), y: Math.round(p.y) }));
+    if (!items.length) return;
+    for (const i of items) sentDrag.current[i.id] = `${i.x},${i.y}`;
+    presence.sendDrag(items);
+  }, [pos]);
+  useEffect(() => presence?.onDrag((items) => {
+    if (gestureCk.current) return; // свою карточку не дёргаем
+    for (const i of items) sentDrag.current[i.id] = `${Math.round(i.x)},${Math.round(i.y)}`;
+    setPos((s) => { const n = { ...s }; for (const i of items) n[i.id] = { x: i.x, y: i.y }; return n; });
+    setLiveIds(new Set(items.map((i) => i.id)));
+    clearTimeout(liveTimer.current);
+    liveTimer.current = setTimeout(() => setLiveIds(new Set()), 250);
+  }), [presence?.onDrag]);
   // чужие перемещения и размеры: применяем только записи, которые изменились в модели (свои незаписанные правки не трогаем)
   const prevMeta = useRef(api.model.meta);
   useEffect(() => {
@@ -996,7 +1028,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel, portSize: boxForLink(id) });
+  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFrom(null);
@@ -1279,6 +1311,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           const secs = new Set(next.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
           next = { ...next, docs: next.docs.filter((d) => d.id !== key), links: next.links.filter((l) => !secs.has(l.sectionId)) };
         } else if (kind === 'gw') next = { ...next, gateways: next.gateways.filter((g) => g.id !== key) };
+        else if (kind === 'html') next = { ...next, htmlObjects: next.htmlObjects.filter((h) => h.id !== key) };
         else next = { ...next, sources: next.sources.filter((s) => s.id !== key) };
       }
       return { ...next, cardLinks: next.cardLinks.filter((l) => !gone.has(l.from) && !gone.has(l.to)) };
@@ -1306,6 +1339,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const items: MenuItem[] = [{ label: 'Свойства…', icon: 'sliders', onClick: () => setProps({ type: t.type as PropTarget['type'], id: t.id }) }];
     if (t.type === 'card' && t.id.startsWith('proc:')) items.push({ label: 'Редактировать модель', icon: 'pencil', onClick: () => onEditProcess(t.id.slice(5)) });
     if (t.type === 'card' && t.id.startsWith('doc:')) items.push({ label: 'Редактировать документ', icon: 'pencil', onClick: () => onEditDoc(t.id.slice(4)) });
+    if (t.type === 'card' && t.id.startsWith('html:')) items.push({ label: 'Редактировать HTML', icon: 'pencil', onClick: () => onEditHtml(t.id.slice(5)) });
     if (t.type === 'card') items.push({ sep: true }, { label: 'Удалить с полотна', icon: 'trash', danger: true, onClick: () => removeCard(t.id) });
     return items;
   };
@@ -1415,6 +1449,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const cardLabel = (id: string) => {
     if (id.startsWith('proc:')) return processes.find((item) => `proc:${item.id}` === id)?.title ?? id;
     if (id.startsWith('doc:')) return docs.find((item) => `doc:${item.id}` === id)?.title ?? id;
+    if (id.startsWith('html:')) return htmlObjects.find((item) => `html:${item.id}` === id)?.title ?? id;
     if (id.startsWith('src:')) return sources.find((item) => `src:${item.id}` === id)?.name ?? id;
     return gateways.find((item) => `gw:${item.id}` === id)?.label || 'Шлюз';
   };
@@ -1434,6 +1469,47 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       obstaclesFor(preview.from, attached ? preview.target : null),
     );
   })();
+
+  const aiTools: AiToolHost = {
+    snapshot: () => ({
+      issues, settings: { grid: settings.grid, snap: settings.snap, minimap: settings.minimap, wheelZoom: settings.wheelZoom, aiModel: settings.aiModel },
+      view: { x: camRef.current.x, y: camRef.current.y, zoom: camRef.current.k, width: size.w, height: size.h, selectedIds: selCards, selectedLinkId: selLink ?? undefined, ...aiPanels, mode },
+      canUndo: api.canUndo, canRedo: api.canRedo,
+    }),
+    execute: async (effect) => {
+      const args = effect.arguments;
+      switch (effect.tool) {
+        case 'set_view': {
+          if (args.x !== undefined || args.y !== undefined || args.zoom !== undefined) setCam({ x: Number(args.x ?? camRef.current.x), y: Number(args.y ?? camRef.current.y), k: Number(args.zoom ?? camRef.current.k) });
+          if (args.fit) fit();
+          if (typeof args.focusId === 'string') focusCard(args.focusId);
+          if (Array.isArray(args.selectedIds)) { setSelCards(args.selectedIds as string[]); setSelLink(null); }
+          if (args.mode) switchMode(args.mode as 'select' | 'link' | 'gateway');
+          if (args.aiModel === '6.1-sol' || args.aiModel === '6.1-terra') onModel(args.aiModel);
+          return onAiWorkspaceEffect(effect);
+        }
+        case 'open_editor': {
+          const id = String(args.id), key = id.slice(id.indexOf(':') + 1);
+          if (id.startsWith('proc:')) onEditProcess(key); else if (id.startsWith('doc:')) onEditDoc(key); else onEditHtml(key);
+          return { ok: true, summary: 'Редактор объекта открыт', data: { id } };
+        }
+        case 'show_properties': setProps({ type: args.targetType as PropTarget['type'], id: String(args.id) }); return { ok: true, summary: 'Свойства открыты' };
+        case 'select_issue': onSelect(String(args.id)); return { ok: true, summary: 'Замечание показано' };
+        case 'history': {
+          const restored = args.direction === 'undo' ? api.undo() : api.redo();
+          if (!restored) return { ok: false, summary: 'Нет изменения для отмены или повтора', error: 'История содержит только пустые точки фокуса; данные не изменились' };
+          return { ok: true, summary: args.direction === 'undo' ? 'Изменение отменено' : 'Изменение возвращено' };
+        }
+        case 'export_object': {
+          const exported = exportCanvasObject(api.getModel(), String(args.id));
+          const url = URL.createObjectURL(new Blob([exported.content], { type: `${exported.mime};charset=utf-8` }));
+          const link = document.createElement('a'); link.href = url; link.download = exported.filename; link.click(); URL.revokeObjectURL(url);
+          return { ok: true, summary: `Скачан файл «${exported.filename}»` };
+        }
+        default: return onAiWorkspaceEffect(effect);
+      }
+    },
+  };
 
   return (
     <main
@@ -1456,15 +1532,15 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         menuAt.current = w;
       }}
     >
-      <AiChat projectId={projectId} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} />
+      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} tools={aiTools} />
       {cardIds.length === 0 && !draftBuilding && (
         <div className="canvas-empty">
           <b>Проект пуст</b>
-          <span>Добавьте модель процесса, документ или источник — они появятся на доске.</span>
+          <span>Добавьте модель процесса, документ, HTML-объект или источник — они появятся на доске.</span>
           <button type="button" className="btn btn-dark" onClick={onAddMaterial}>Добавить объект</button>
         </div>
       )}
-      <ZoomCtx.Provider value={cam.k}>
+      <ZoomCtx.Provider value={cam.k}><LiveCtx.Provider value={liveIds}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
           <AiDraftLayer procPos={procPos} docPos={docPos} />
           {presence?.peers.filter((p) => p.x !== null && p.y !== null).map((p) => (
@@ -1548,6 +1624,17 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                 <DocCard doc={d} issue={issue} issues={issues} onSelect={onSelect} onContext={openMenu} onEdit={() => onEditDoc(d.id)} meta={api.model.meta} />
               </DragCard>
             );
+          })}
+
+          {htmlObjects.map((h) => {
+            const id = `html:${h.id}`;
+            return <DragCard key={h.id} id={id} pos={posOf(id)} onMove={move} onGrab={grab} onContext={openMenu} selected={selCards.includes(id)} {...linkProps(id, h.title)} className="html-card" style={{ width: cardSize(id).w, height: cardSize(id).h }} onEdit={() => onEditHtml(h.id)} onResizeStart={startResize}>
+              <div className="model-head">
+                <Icon name="code" size={18} /><b>{h.title}</b><span className="tag">HTML</span><div className="grow" />
+                <button type="button" className="icon-btn edit-btn" title="Редактировать HTML" aria-label={`Редактировать HTML: ${h.title}`} onClick={() => onEditHtml(h.id)}><Icon name="pencil" size={17} /></button>
+              </div>
+              <HtmlPreview html={h.html} title={h.title} />
+            </DragCard>;
           })}
 
           {gateways.map((g) => {
@@ -1716,7 +1803,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             <div className="marquee" style={{ left: marquee.x, top: marquee.y, width: marquee.w, height: marquee.h, borderWidth: 1 / cam.k }} />
           )}
         </div>
-      </ZoomCtx.Provider>
+      </LiveCtx.Provider></ZoomCtx.Provider>
 
       {settings.minimap && (
         <Minimap

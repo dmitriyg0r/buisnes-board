@@ -47,6 +47,13 @@ export interface Doc {
   sections: DocSection[];
 }
 
+/** Самостоятельный интерактивный HTML-документ на доске. */
+export interface HtmlObject {
+  id: string;
+  title: string;
+  html: string;
+}
+
 /** Связь «Описывает»: шаг модели ↔ пункт документа. nodeId составной: «<id модели>:<id элемента BPMN>». */
 export interface DocLink {
   id: string;
@@ -66,7 +73,7 @@ export type CardSide = 'top' | 'right' | 'bottom' | 'left';
 /** Связь между карточками на доске: источник → документ, модель → документ и т. п. */
 export interface CardLink {
   id: string;
-  /** id карточки: proc:<id>, doc:<id> или src:<id> */
+  /** id карточки: proc:<id>, doc:<id>, html:<id> или src:<id> */
   from: string;
   to: string;
   label: string;
@@ -96,6 +103,7 @@ export interface Model {
   processes: Process[];
   /** документы проекта */
   docs: Doc[];
+  htmlObjects: HtmlObject[];
   /** источники проекта */
   sources: Source[];
   /** произвольные атрибуты объектов: ключ вида node:id, edge:id, section:id, card:id */
@@ -105,12 +113,13 @@ export interface Model {
 /** Короткая ссылка на пункт: «§ 4.2». */
 export const sectionRef = (title: string) => title.match(/^§\s*\d+(?:\.\d+)*/)?.[0] ?? title;
 
-export const emptyModel: Model = { gateways: [], links: [], cardLinks: [], processes: [], docs: [], sources: [], meta: {} };
+export const emptyModel: Model = { gateways: [], links: [], cardLinks: [], processes: [], docs: [], htmlObjects: [], sources: [], meta: {} };
 
 /** Заглушка, когда замечаний нет: ничего не подсвечивает. */
 export const NO_ISSUE: Issue = { id: '', title: '', status: 'open', summary: '', question: '' };
 
 export const MODEL_SIZE = { w: 540, h: 692 };
 export const DOC_SIZE = { w: 340, h: 460 };
+export const HTML_SIZE = { w: 480, h: 380 };
 export const SOURCE_SIZE = { w: 168, h: 216 };
 export const GATEWAY_SIZE = { w: 132, h: 132 };

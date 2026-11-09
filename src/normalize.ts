@@ -1,5 +1,5 @@
 import { blankXml } from './bpmn';
-import type { CardLink, Doc, Gateway, DocLink, Model, Process } from './data';
+import type { CardLink, Doc, Gateway, DocLink, HtmlObject, Model, Process } from './data';
 import { sectionTitles } from './markdown';
 
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -41,12 +41,20 @@ export function normalizeModel(m: Partial<Model> | Raw): Model {
   const gateways: Gateway[] = Array.isArray(raw.gateways)
     ? raw.gateways.map((g: Raw) => ({ id: g.id || rid('g'), label: typeof g.label === 'string' ? g.label : '' }))
     : [];
+  const htmlObjects: HtmlObject[] = Array.isArray(raw.htmlObjects)
+    ? raw.htmlObjects.filter((h: unknown) => h && typeof h === 'object').map((h: Raw) => ({
+        id: typeof h.id === 'string' && h.id ? h.id : rid('h'),
+        title: typeof h.title === 'string' && h.title ? h.title : 'HTML-объект',
+        html: typeof h.html === 'string' ? h.html : '',
+      }))
+    : [];
   return {
     gateways,
     links: ((Array.isArray(raw.links) ? raw.links : []) as DocLink[]).map((l) => (legacyProcess && !String(l.nodeId).includes(':') ? { ...l, nodeId: `main:${l.nodeId}` } : l)),
     cardLinks: ((Array.isArray(raw.cardLinks) ? raw.cardLinks : []) as CardLink[]).map((l) => ({ ...l, from: rename(l.from), to: rename(l.to) })),
     processes,
     docs,
+    htmlObjects,
     sources: Array.isArray(raw.sources) ? raw.sources : [],
     meta: raw.meta && typeof raw.meta === 'object' ? raw.meta : {},
   };

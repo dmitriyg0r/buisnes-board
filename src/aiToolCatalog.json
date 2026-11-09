@@ -1,0 +1,995 @@
+{
+  "version": 1,
+  "tools": [
+    {
+      "name": "read_canvas",
+      "description": "Прочитать актуальный обзор канваса: объекты, связи, свойства, замечания, выделение, вид и доступные символы BPMN. При truncated=true продолжай с nextOffset; limit задаёт число записей (по умолчанию 40).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "offset": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1000000
+          },
+          "limit": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_object",
+      "description": "Прочитать объект полностью или частями. Для процесса возвращает XML и подробную диаграмму с ID узлов, дорожек и связей. offset — смещение в тексте; продолжай чтение, пока truncated=true.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "offset": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 10000000
+          },
+          "limit": {
+            "type": "number",
+            "minimum": 100,
+            "maximum": 20000
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "read_issue",
+      "description": "Прочитать полное замечание: вопрос, ответ, решение, привязки и историю статусов.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_object",
+      "description": "Создать объект любого типа на канвасе. Укажи уникальный key действия. HTML — полный автономный код с inline CSS/JS; без внешних ресурсов. Для пустого процесса XML не нужен. Для документа пункты образуются из Markdown-заголовков.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "process",
+              "document",
+              "html",
+              "source",
+              "gateway"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "markdown": {
+            "type": "string",
+            "maxLength": 120000
+          },
+          "html": {
+            "type": "string",
+            "maxLength": 120000
+          },
+          "xml": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "ext": {
+            "type": "string",
+            "enum": [
+              "PDF",
+              "DOCX"
+            ]
+          },
+          "pages": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "sectionMode": {
+            "type": "string",
+            "enum": [
+              "reference",
+              "process"
+            ]
+          }
+        },
+        "required": [
+          "kind",
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_object",
+      "description": "Изменить существующий объект: название, полный Markdown/HTML/XML, источник или подпись шлюза. append дописывает Markdown. XML целиком заменяй только по явной просьбе заменить/импортировать схему; обычные правки BPMN делай edit_bpmn.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "markdown": {
+            "type": "string",
+            "maxLength": 120000
+          },
+          "html": {
+            "type": "string",
+            "maxLength": 120000
+          },
+          "xml": {
+            "type": "string",
+            "maxLength": 200000
+          },
+          "ext": {
+            "type": "string",
+            "enum": [
+              "PDF",
+              "DOCX"
+            ]
+          },
+          "pages": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "sectionMode": {
+            "type": "string",
+            "enum": [
+              "reference",
+              "process"
+            ]
+          },
+          "append": {
+            "type": "string",
+            "maxLength": 120000
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_objects",
+      "description": "Удалить перечисленные карточки вместе с относящимися к ним связями и атрибутами. Изменение отменяется историей доски.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1
+            },
+            "maxItems": 100,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_layout",
+      "description": "Переместить или изменить размер карточек. Координаты в системе канваса, не экрана; x/y и width/height указывай парами.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "objects": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "width": {
+                  "type": "number",
+                  "minimum": 96,
+                  "maximum": 2400
+                },
+                "height": {
+                  "type": "number",
+                  "minimum": 96,
+                  "maximum": 2400
+                }
+              },
+              "required": [
+                "id"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "objects"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_properties",
+      "description": "Изменить атрибуты карточки, узла BPMN или пункта документа. Имена полей бери из read_canvas.propertyFields. null удаляет атрибут. Для узла id=processId:elementId, для карточки proc:/doc:/html:/src:.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "targetType": {
+            "type": "string",
+            "enum": [
+              "card",
+              "node",
+              "section"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "values": {
+            "type": "object",
+            "maxProperties": 30,
+            "additionalProperties": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 8000
+            }
+          }
+        },
+        "required": [
+          "targetType",
+          "id",
+          "values"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "connect_cards",
+      "description": "Соединить две разные карточки; у каждой стороны точки 0.25/0.5/0.75. Можно задать подпись, стороны и маршрут.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "fromSide": {
+            "type": "string",
+            "enum": [
+              "top",
+              "right",
+              "bottom",
+              "left"
+            ]
+          },
+          "toSide": {
+            "type": "string",
+            "enum": [
+              "top",
+              "right",
+              "bottom",
+              "left"
+            ]
+          },
+          "fromOffset": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "toOffset": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "routePoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100,
+            "minItems": 2
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_card_link",
+      "description": "Изменить подпись, концы, точки крепления или маршрут связи карточек. resetRoute=true возвращает автоматический маршрут.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "from": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "to": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "fromSide": {
+            "type": "string",
+            "enum": [
+              "top",
+              "right",
+              "bottom",
+              "left"
+            ]
+          },
+          "toSide": {
+            "type": "string",
+            "enum": [
+              "top",
+              "right",
+              "bottom",
+              "left"
+            ]
+          },
+          "fromOffset": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "toOffset": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "routePoints": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "x": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                }
+              },
+              "required": [
+                "x",
+                "y"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 100,
+            "minItems": 2
+          },
+          "resetRoute": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_card_links",
+      "description": "Удалить связи карточек по ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1
+            },
+            "maxItems": 100,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "ids"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "link_section",
+      "description": "Связать шаг/шлюз BPMN с пунктом документа: nodeId=processId:elementId, sectionId — ID пункта. Для нового документа можно использовать $key/section/1 (нумерация с 1).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "nodeId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "sectionId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "nodeId",
+          "sectionId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "unlink_section",
+      "description": "Удалить связь «шаг — пункт» по ID.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "edit_bpmn",
+      "description": "Редактировать процесс теми же функциями, что и редактор BPMN: все символы палитры, дорожки, пулы, связи, геометрия, подписи, удаление. У add_node/add_region/add_pool/connect можно задать key и далее обращаться к созданному элементу как $key. add_node требует type,x,y; rename — id,name; move — id,x,y; resize — id,width,height; connect — from,to,type; set_region_rows — id,count; edit_edge — id,from,to,points; set_label_bounds — id,x,y,width,height; remove/reset_edge — id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "processId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "enum": [
+                    "add_node",
+                    "add_region",
+                    "add_pool",
+                    "rename",
+                    "move_node",
+                    "resize_node",
+                    "move_region",
+                    "resize_region",
+                    "set_region_rows",
+                    "connect",
+                    "edit_edge",
+                    "reset_edge",
+                    "set_label_bounds",
+                    "remove"
+                  ]
+                },
+                "key": {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                "id": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "type": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "width": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "height": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "count": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 20
+                },
+                "from": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "to": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 100,
+                  "minItems": 2
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 120,
+            "minItems": 1
+          }
+        },
+        "required": [
+          "processId",
+          "operations"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_issue",
+      "description": "Создать ручное замечание. Укажи key; опционально привяжи к узлу, пункту или источнику.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "asked",
+              "answered",
+              "fixed",
+              "closed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "question": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "answer": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "resolution": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "nodeId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "sectionId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "sourceId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "update_issue",
+      "description": "Изменить замечание: статус, вопрос, ответ, решение, заголовок и описание. ID бери из read_canvas. История статусов сохраняется.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 500
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "open",
+              "asked",
+              "answered",
+              "fixed",
+              "closed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "question": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "answer": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "resolution": {
+            "type": "string",
+            "maxLength": 8000
+          },
+          "nodeId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "sectionId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "sourceId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "delete_issue",
+      "description": "Удалить ручное замечание. Автозамечания вместо удаления закрываются; их причина устраняется связью или правкой содержания.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "set_view",
+      "description": "Настроить вид доски: камера x/y/zoom, fit=true вписывает всё, focusId показывает карточку, selectedIds выделяет карточки. tree/panel разворачивают или сворачивают боковые панели. Настройки grid/snap/minimap/wheelZoom и режим select/link/gateway доступны как в интерфейсе. aiModel переключает модель чата, chat разворачивает/сворачивает чат.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "x": {
+            "type": "number",
+            "minimum": -1000000,
+            "maximum": 1000000
+          },
+          "y": {
+            "type": "number",
+            "minimum": -1000000,
+            "maximum": 1000000
+          },
+          "zoom": {
+            "type": "number",
+            "minimum": 0.25,
+            "maximum": 2
+          },
+          "fit": {
+            "type": "boolean"
+          },
+          "focusId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          },
+          "selectedIds": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 240,
+              "minLength": 1
+            },
+            "maxItems": 100,
+            "minItems": 0
+          },
+          "grid": {
+            "type": "boolean"
+          },
+          "snap": {
+            "type": "boolean"
+          },
+          "minimap": {
+            "type": "boolean"
+          },
+          "wheelZoom": {
+            "type": "boolean"
+          },
+          "tree": {
+            "type": "boolean"
+          },
+          "panel": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "select",
+              "link",
+              "gateway"
+            ]
+          },
+          "aiModel": {
+            "type": "string",
+            "enum": [
+              "6.1-sol",
+              "6.1-terra"
+            ]
+          },
+          "chat": {
+            "type": "boolean"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "open_editor",
+      "description": "Открыть редактор процесса, Markdown-документа или HTML-объекта.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "show_properties",
+      "description": "Открыть свойства карточки, узла BPMN или пункта документа.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "targetType": {
+            "type": "string",
+            "enum": [
+              "card",
+              "node",
+              "section"
+            ]
+          },
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "targetType",
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "select_issue",
+      "description": "Показать замечание в правой панели.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "history",
+      "description": "Отменить или вернуть последнее изменение доски. Выполняй отдельным ответом без других команд; замечания, уже сохранённые в их журнале, имеют отдельную историю статусов.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "direction": {
+            "type": "string",
+            "enum": [
+              "undo",
+              "redo"
+            ]
+          }
+        },
+        "required": [
+          "direction"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "export_object",
+      "description": "Скачать объект: процесс .bpmn, документ .md, HTML .html, источник/шлюз .json. Внешние файлы источников не загружены в проект — доступны только их карточки.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "clear_canvas",
+      "description": "Очистить объекты, связи и свойства канваса. Применять только по прямой просьбе очистить всю доску; отменяется историей.",
+      "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

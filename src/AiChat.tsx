@@ -1,10 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { applyGenerated, buildContext, GenError, streamGenerate, type Applied, type Created, type Turn } from './ai';
+import { GenError, type Created, type Turn } from './ai';
+import { runCanvasAgent } from './aiCanvasAgent';
+import type { AiToolHost } from './aiToolContract';
 import { HttpError } from './api';
 import { AiProgress, beginDraft, useDraft } from './AiDraft';
 import { Icon } from './Icon';
 import { aiModels, type AiModel } from './settings';
 import type { ModelApi } from './useModel';
+import type { Presence } from './presence';
 
 /** Что ИИ сделал на доске: созданное и изменённое. */
 interface Refs {
@@ -23,11 +26,12 @@ interface Msg {
   /** error: сбой генерации; note: служебная пометка (например, отмена). В историю для модели не попадают. */
   tone?: 'error' | 'note';
   refs?: Refs;
+  tools?: { ok: boolean; summary: string }[];
 }
 
 const MAX_MSGS = 100;
 const HISTORY_TURNS = 10;
-const SUGGEST = ['Согласование договора с юристом и финансами', 'Приём нового сотрудника на работу', 'Обработка обращения клиента в поддержку'];
+const SUGGEST = ['Создай процесс согласования договора и регламент', 'Создай интерактивный HTML-калькулятор стоимости', 'Проверь связи шагов с документами и замечания'];
 
 /* История чата хранится в браузере: она нужна только тому, кто её ведёт. Хранилище может быть недоступно. */
 const msgKey = (projectId: string) => `bb.chat.${projectId}`;
@@ -104,13 +108,14 @@ function Bubble({ m, onFocus }: { m: Msg; onFocus: (cardId: string) => void }) {
         <div className="ai-chips">
           {items.slice(0, CHIPS_SHOWN).map((c) => (
             <button key={`${c.kind}:${c.id}`} type="button" className="ai-chip" onClick={() => onFocus(`${c.kind}:${c.id}`)} title="Показать на доске">
-              <Icon name={c.kind === 'proc' ? 'model' : 'file'} size={13} />
+              <Icon name={c.kind === 'proc' ? 'model' : c.kind === 'html' ? 'code' : c.kind === 'gw' ? 'gateway' : 'file'} size={13} />
               <span>{c.title}</span>
             </button>
           ))}
           {items.length > CHIPS_SHOWN && <span className="ai-more">и ещё {items.length - CHIPS_SHOWN}</span>}
         </div>
       )}
+      {!!m.tools?.length && <details className="ai-tool-log"><summary>Действия на доске · {m.tools.length}</summary><ul>{m.tools.map((tool, i) => <li key={i} className={tool.ok ? '' : 'failed'}><Icon name={tool.ok ? 'check' : 'close'} size={12} /><span>{tool.summary}</span></li>)}</ul></details>}
     </div>
   );
 }
@@ -134,6 +139,8 @@ function LiveBubble({ onCancel }: { onCancel: () => void }) {
 
 interface Props {
   projectId: string;
+  /** ИИ-генерация коллег показывается на доске как собственная */
+  presence?: Presence;
   api: ModelApi;
   aiModel: AiModel;
   onModel: (m: AiModel) => void;
@@ -141,12 +148,33 @@ interface Props {
   onReveal: () => void;
   /** подвести камеру к карточке: proc:<id> или doc:<id> */
   onFocusCard: (cardId: string) => void;
+  tools: AiToolHost;
 }
 
-export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard }: Props) {
+export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, onFocusCard, tools }: Props) {
+  const toolsRef = useRef(tools);
+  toolsRef.current = tools;
   const [msgs, setMsgs] = useState<Msg[]>(() => loadMsgs(projectId));
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+  // коллега просит ИИ построить процесс: его черновик растёт и у нас (если мы сами не генерируем)
+  useEffect(() => {
+    let draft: ReturnType<typeof beginDraft> | null = null;
+    let guard: ReturnType<typeof setTimeout> | undefined;
+    const stop = () => { clearTimeout(guard); draft?.end(); draft = null; };
+    const off = presence?.onAi((e) => {
+      if (busyRef.current) return;
+      if (e.k === 'end') { stop(); return; }
+      if (!draft) draft = beginDraft(e.name);
+      if (e.k === 'delta') draft.push(e.text);
+      // если поток оборвался без «конца», черновик не должен висеть вечно
+      clearTimeout(guard);
+      guard = setTimeout(stop, 60_000);
+    });
+    return () => { off?.(); stop(); };
+  }, [presence?.onAi]);
   const [open, setOpenState] = useState(loadOpen);
   const abort = useRef<AbortController | null>(null);
   const field = useRef<HTMLTextAreaElement>(null);
@@ -185,28 +213,31 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
     setBusy(true);
     const ctl = new AbortController();
     abort.current = ctl;
-    const draft = beginDraft(aiModels.find((m) => m.id === aiModel)?.label ?? 'ИИ', onReveal);
+    const label = aiModels.find((m) => m.id === aiModel)?.label ?? 'ИИ';
+    let draft = beginDraft(label, onReveal);
+    let applied = false;
+    let openedDialog = false;
     try {
-      const r = await streamGenerate(prompt, aiModel, buildContext(api.model), history, (ev) => ev.type === 'delta' && draft.push(ev.text), ctl.signal);
-      let applied = null as Applied | null;
-      if (r.processes?.length || r.documents?.length || r.updates?.length) {
-        api.apply((m) => {
-          applied = applyGenerated(m, r);
-          return applied.model;
-        });
-      }
-      const a = applied as Applied | null;
-      const refs: Refs | undefined = a && (a.procs.length || a.docs.length || a.updated.length) ? { procs: a.procs, docs: a.docs, updated: a.updated } : undefined;
-      let reply = r.reply.trim() || (refs ? 'Готово.' : 'Ответа нет, попробуйте переформулировать.');
-      if (a?.missing) reply += `\n(Не нашёл на доске ${a.missing} объект(ов), которые нужно было изменить.)`;
-      setMsgs((m) => [...m, mk('assistant', reply, { refs })]);
+      const result = await runCanvasAgent({ prompt, model: aiModel, history, projectId, api, signal: ctl.signal,
+        host: () => ({ snapshot: () => toolsRef.current.snapshot(), execute: async (effect) => {
+          const result = await toolsRef.current.execute(effect);
+          if (result.ok && (effect.tool === 'open_editor' || effect.tool === 'show_properties')) openedDialog = true;
+          if (result.ok && effect.tool === 'set_view' && typeof effect.arguments.chat === 'boolean') setOpen(effect.arguments.chat);
+          return result;
+        } }),
+        onDelta: (text) => draft.push(text),
+        onRound: (round) => { if (round) { draft.end(); draft = beginDraft(label, onReveal); } },
+        onApplied: () => { applied = true; },
+      });
+      const refs = result.refs.procs.length || result.refs.docs.length || result.refs.updated.length ? result.refs : undefined;
+      setMsgs((m) => [...m, mk('assistant', result.reply, { refs, tools: result.observations.filter((o) => o.action.tool !== 'validation').map((o) => ({ ok: o.result.ok, summary: o.result.ok ? o.result.summary : o.result.error ?? o.result.summary })) })]);
     } catch (err) {
-      setMsgs((m) => [...m, ctl.signal.aborted ? mk('assistant', 'Генерация отменена.', { tone: 'note' }) : mk('assistant', errText(err), { tone: 'error' })]);
+      setMsgs((m) => [...m, ctl.signal.aborted ? mk('assistant', applied ? 'Остановлено. Уже выполненные действия остаются на доске.' : 'Генерация отменена.', { tone: 'note' }) : mk('assistant', errText(err) + (applied ? ' Уже выполненные действия остаются на доске.' : ''), { tone: 'error' })]);
     }
     draft.end();
     abort.current = null;
     setBusy(false);
-    field.current?.focus();
+    if (!openedDialog) field.current?.focus();
   };
 
   const clear = () => {
@@ -233,7 +264,7 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
           <div className="ai-log" ref={log} role="log" aria-label="История чата с ИИ" aria-live="polite">
             {msgs.length === 0 && !busy && (
               <div className="ai-empty">
-                <p>Опишите процесс, и я построю схему и регламент. Можно задавать вопросы и уточнять сказанное.</p>
+                <p>Работаю со всеми объектами канваса: BPMN, документами, HTML, источниками, связями, свойствами, замечаниями и видом доски. Опишите, что нужно сделать.</p>
                 <div className="ai-chips">
                   {SUGGEST.map((s) => (
                     <button key={s} type="button" className="ai-chip" onClick={() => void send(s)}>
@@ -272,7 +303,7 @@ export function AiChat({ projectId, api, aiModel, onModel, onReveal, onFocusCard
               void send();
             }
           }}
-          placeholder="Опишите процесс или задайте вопрос"
+          placeholder="Что сделать на доске?"
           aria-label="Сообщение ИИ"
           maxLength={4000}
         />

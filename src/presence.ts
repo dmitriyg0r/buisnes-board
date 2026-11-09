@@ -10,10 +10,21 @@ export interface Peer {
   seen: number;
 }
 
+export interface DragItem { id: string; x: number; y: number }
+
+/** Чужая ИИ-генерация: начало, кусочки текста модели и конец. */
+export interface AiEvent { k: 'start' | 'delta' | 'end'; user: string; name: string; text: string }
+
 export interface Presence {
   peers: Peer[];
   /** сообщить своё положение (координаты доски) или null, если курсор ушёл */
   send: (x: number | null, y: number | null) => void;
+  /** сообщить положение карточек, которые тащим прямо сейчас */
+  sendDrag: (items: DragItem[]) => void;
+  /** подписка на чужие перетаскивания; возвращает отписку */
+  onDrag: (fn: (items: DragItem[]) => void) => () => void;
+  /** подписка на ИИ-генерацию коллег; возвращает отписку */
+  onAi: (fn: (e: AiEvent) => void) => () => void;
 }
 
 const COLORS = ['#e5484d', '#f76b15', '#30a46c', '#0091ff', '#8e4ec6', '#d6409f', '#12a594', '#978365'];
@@ -26,6 +37,7 @@ export const peerColor = (id: string) => {
 const STALE_MS = 12_000;
 const HEARTBEAT_MS = 5_000;
 const MIN_GAP_MS = 80;
+const DRAG_GAP_MS = 40;
 
 /**
  * Присутствие на доске: поток событий проекта (SSE) и отправка своего курсора.
@@ -37,6 +49,44 @@ export function usePresence(projectId: string): Presence {
   const last = useRef<{ x: number | null; y: number | null }>({ x: null, y: null });
   const lastSent = useRef(0);
   const trailing = useRef<ReturnType<typeof setTimeout>>();
+  const dragListeners = useRef(new Set<(items: DragItem[]) => void>());
+  const aiListeners = useRef(new Set<(e: AiEvent) => void>());
+  const dragPending = useRef<Record<string, DragItem>>({});
+  const dragSent = useRef(0);
+  const dragTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const flushDrag = useCallback(() => {
+    dragTimer.current = undefined;
+    const items = Object.values(dragPending.current);
+    dragPending.current = {};
+    if (!items.length) return;
+    dragSent.current = Date.now();
+    void fetch(`/api/projects/${encodeURIComponent(projectId)}/presence`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ drag: items }),
+    }).catch(() => undefined);
+  }, [projectId]);
+
+  const sendDrag = useCallback(
+    (items: DragItem[]) => {
+      for (const i of items) dragPending.current[i.id] = i;
+      const wait = DRAG_GAP_MS - (Date.now() - dragSent.current);
+      if (wait <= 0) { clearTimeout(dragTimer.current); flushDrag(); }
+      else if (!dragTimer.current) dragTimer.current = setTimeout(flushDrag, wait);
+    },
+    [flushDrag],
+  );
+
+  const onAi = useCallback((fn: (e: AiEvent) => void) => {
+    aiListeners.current.add(fn);
+    return () => { aiListeners.current.delete(fn); };
+  }, []);
+
+  const onDrag = useCallback((fn: (items: DragItem[]) => void) => {
+    dragListeners.current.add(fn);
+    return () => { dragListeners.current.delete(fn); };
+  }, []);
 
   const post = useCallback(
     (x: number | null, y: number | null) => {
@@ -77,9 +127,14 @@ export function usePresence(projectId: string): Presence {
     const connect = () => {
       es = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/events`);
       es.onmessage = (m) => {
-        let ev: { t: string; u?: string; n?: string; x?: number | null; y?: number | null };
+        let ev: { t: string; u?: string; n?: string; x?: number | null; y?: number | null; d?: DragItem[] | string; k?: string };
         try { ev = JSON.parse(m.data); } catch { return; }
-        if (ev.t === 'model') window.dispatchEvent(new Event('bb:model-hint'));
+        if (ev.t === 'drag' && Array.isArray(ev.d)) dragListeners.current.forEach((fn) => fn(ev.d as DragItem[]));
+        else if (ev.t === 'ai' && ev.u && (ev.k === 'start' || ev.k === 'delta' || ev.k === 'end')) {
+          const e: AiEvent = { k: ev.k, user: ev.u, name: ev.n ?? 'Коллега', text: typeof ev.d === 'string' ? ev.d : '' };
+          aiListeners.current.forEach((fn) => fn(e));
+        }
+        else if (ev.t === 'model') window.dispatchEvent(new Event('bb:model-hint'));
         else if (ev.t === 'cursor' && ev.u) {
           const id = ev.u;
           setPeers((p) => ({ ...p, [id]: { id, name: ev.n ?? 'Участник', x: ev.x ?? null, y: ev.y ?? null, color: peerColor(id), seen: Date.now() } }));
@@ -120,5 +175,5 @@ export function usePresence(projectId: string): Presence {
     };
   }, [projectId, post]);
 
-  return { peers: Object.values(peers), send };
+  return { peers: Object.values(peers), send, sendDrag, onDrag, onAi };
 }
