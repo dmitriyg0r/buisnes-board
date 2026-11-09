@@ -1059,7 +1059,12 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     return { x: 40, y: 56, w: Math.max(1, el.clientWidth - 80), h: Math.max(1, bottom - 56) };
   };
 
-  const fit = () => {
+  const [chatCollapseRequest, setChatCollapseRequest] = useState(0);
+  const fit = async (collapseChat = true) => {
+    if (collapseChat && root.current?.querySelector('.ai-bar.open')) {
+      setChatCollapseRequest((count) => count + 1);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    }
     const el = root.current;
     if (!el) return;
     const area = availableArea();
@@ -1493,7 +1498,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           const result = await onAiWorkspaceEffect(effect);
           await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
           if (args.x !== undefined || args.y !== undefined || args.zoom !== undefined) setCam({ x: Number(args.x ?? camRef.current.x), y: Number(args.y ?? camRef.current.y), k: Number(args.zoom ?? camRef.current.k) });
-          if (args.fit) fit();
+          if (args.fit) await fit(args.chat !== true);
           if (typeof args.focusId === 'string') focusCard(args.focusId);
           if (Array.isArray(args.selectedIds)) { setSelCards(args.selectedIds as string[]); setSelLink(null); }
           if (args.mode) switchMode(args.mode as 'select' | 'link' | 'gateway');
@@ -1525,7 +1530,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   return (
     <main
-      className={`canvas${panning ? ' panning' : ''}${space ? ' hand' : ''}${mode === 'link' ? ' linking' : ''}${mode === 'gateway' ? ' placing' : ''}`}
+      className={`canvas${size.w < 1160 ? ' compact-controls' : ''}${panning ? ' panning' : ''}${space ? ' hand' : ''}${mode === 'link' ? ' linking' : ''}${mode === 'gateway' ? ' placing' : ''}`}
       ref={root}
       style={{
         backgroundSize: `${(cam.k < 0.5 ? 44 : 22) * cam.k}px ${(cam.k < 0.5 ? 44 : 22) * cam.k}px`,
@@ -1544,7 +1549,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         menuAt.current = w;
       }}
     >
-      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} tools={aiTools} />
+      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} tools={aiTools} collapseRequest={chatCollapseRequest} />
       {cardIds.length === 0 && !draftBuilding && (
         <div className="canvas-empty">
           <b>Проект пуст</b>
@@ -1826,7 +1831,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           onJump={(x, y) => setCam({ ...cam, x: size.w / 2 - x * cam.k, y: size.h / 2 - y * cam.k })}
         />
       )}
-      <ZoomControls k={cam.k} onIn={() => zoomCenter(1.25)} onOut={() => zoomCenter(0.8)} onReset={() => setZoom(1)} onFit={fit} />
+      <ZoomControls k={cam.k} onIn={() => zoomCenter(1.25)} onOut={() => zoomCenter(0.8)} onReset={() => setZoom(1)} onFit={() => { void fit(); }} />
 
       {(
         <div className="tools" role="toolbar" aria-label="Режим доски">

@@ -149,9 +149,10 @@ interface Props {
   /** подвести камеру к карточке: proc:<id> или doc:<id> */
   onFocusCard: (cardId: string) => void;
   tools: AiToolHost;
+  collapseRequest?: number;
 }
 
-export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, onFocusCard, tools }: Props) {
+export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, onFocusCard, tools, collapseRequest = 0 }: Props) {
   const toolsRef = useRef(tools);
   toolsRef.current = tools;
   const [msgs, setMsgs] = useState<Msg[]>(() => loadMsgs(projectId));
@@ -188,6 +189,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
       /* ignore */
     }
   };
+  useEffect(() => { if (collapseRequest) setOpen(false); }, [collapseRequest]);
 
   useEffect(() => () => abort.current?.abort(), []);
   useEffect(() => saveMsgs(projectId, msgs), [projectId, msgs]);

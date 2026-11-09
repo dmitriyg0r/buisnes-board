@@ -955,6 +955,8 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 
 /* ---------- чат с ИИ ---------- */
 .ai-bar.open { gap: 6px; }
+.canvas.compact-controls .ai-bar { bottom: 124px; }
+.canvas.compact-controls .ai-log { max-height: min(32vh, 220px); }
 .ai-head { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 0 4px; }
 .ai-head-title { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
 .ai-head-title svg { color: #7c5cff; }
