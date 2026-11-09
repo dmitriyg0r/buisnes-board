@@ -1,3 +1,5 @@
+import { endpointsFaceOutward, routeBetweenNodes, segmentCrossesNode } from './diagramRouting';
+import { hasSelfIntersections } from './orthogonalRouting';
 import { inspectDataModel, addDataStore, addDataAssociation, editDataAssociation, removeDataAssociation, removeDataConnectionsForNode } from './bpmnData';
 import { createElement } from 'react';
 import { BpmnEventGlyph } from './BpmnEventGlyph';
@@ -19,7 +21,7 @@ const markerTitles: Record<string, string> = { message: 'сообщение', ti
 const availableEvents = bpmnEventSymbols.filter((event) => event.contexts.includes('process') && !['conditional', 'link', 'multiple'].includes(event.marker));
 const eventKey = (type: string, marker: string) => marker === 'none' ? type : `${type}:${marker}`;
 const symbols: DiagramSymbol[] = [
-  ...bpmnCatalog.filter((symbol) => !eventKinds.has(symbol.type)).map((symbol) => ({ ...symbol, group: groupNames[symbol.group], glyph: symbol.marker === 'none' ? undefined : symbol.marker === 'user' ? 'person' as const : symbol.marker === 'exclusive' ? 'cross' as const : symbol.marker === 'parallel' ? 'plus' as const : symbol.marker })),
+  ...bpmnCatalog.filter((symbol) => !eventKinds.has(symbol.type)).map((symbol) => ({ ...symbol, group: groupNames[symbol.group], singleConnectionPortPerSide: symbol.group === 'gateways', glyph: symbol.marker === 'none' ? undefined : symbol.marker === 'user' ? 'person' as const : symbol.marker === 'exclusive' ? 'cross' as const : symbol.marker === 'parallel' ? 'plus' as const : symbol.marker })),
   ...availableEvents.map((event): DiagramSymbol => ({ type: eventKey(event.type, event.marker), title: `${eventTitles[event.type]}${event.marker === 'none' ? '' : `: ${markerTitles[event.marker]}`}`, group: groupNames.events, shape: event.outline === 'double' ? 'double-circle' : 'circle', outline: event.outline, width: 36, height: 36, detail: { marker: event.marker, filled: event.filled } })),
 ];
 const nodeTypes = new Set([...bpmnCatalog.map((symbol) => symbol.type), ...eventKinds]);
@@ -34,9 +36,13 @@ const all = (doc: Document, ns: string, name: string) => Array.from(doc.getEleme
 const byId = (doc: Document, id: string) => Array.from(doc.getElementsByTagName('*')).find((item) => item.getAttribute('id') === id);
 const ref = (doc: Document, tag: string, id: string) => all(doc, BPMNDI, tag).find((item) => item.getAttribute('bpmnElement') === id);
 const number = (item: Element, key: string) => Number(item.getAttribute(key));
+const childrenNamed = (item: Element, ns: string, name: string) => Array.from(item.children).filter((child) => child.namespaceURI === ns && child.localName === name);
+const validNumber = (item: Element, key: string) => { const value = item.getAttribute(key); return value !== null && /^[+-]?(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)$/.test(value.trim()) && Number.isFinite(Number(value)); };
+const validBounds = (bounds: Element) => ['x', 'y', 'width', 'height'].every((key) => validNumber(bounds, key)) && number(bounds, 'width') > 0 && number(bounds, 'height') > 0;
 function labelBounds(di: Element | null | undefined) {
-  const bounds = di?.getElementsByTagNameNS(BPMNDI, 'BPMNLabel')[0]?.getElementsByTagNameNS(DC, 'Bounds')[0];
-  return bounds && ['x', 'y', 'width', 'height'].every((key) => bounds.hasAttribute(key) && Number.isFinite(number(bounds, key))) ? { x: number(bounds, 'x'), y: number(bounds, 'y'), width: number(bounds, 'width'), height: number(bounds, 'height') } : undefined;
+  const label = di && childrenNamed(di, BPMNDI, 'BPMNLabel')[0];
+  const bounds = label && childrenNamed(label, DC, 'Bounds')[0];
+  return bounds && validBounds(bounds) ? { x: number(bounds, 'x'), y: number(bounds, 'y'), width: number(bounds, 'width'), height: number(bounds, 'height') } : undefined;
 }
 const idFor = (doc: Document, prefix: string) => {
   let id = '';
@@ -77,8 +83,9 @@ function inspect(doc: Document): { diagram: Diagram; readOnlyReason?: string } {
   for (const item of elements) {
     if (!nodeTypes.has(item.localName)) continue;
     const id = item.getAttribute('id');
-    const bounds = id ? ref(doc, 'BPMNShape', id)?.getElementsByTagNameNS(DC, 'Bounds')[0] : null;
-    if (!id || !bounds || !['x', 'y', 'width', 'height'].every((key) => bounds.hasAttribute(key) && Number.isFinite(number(bounds, key)))) { invalid = true; continue; }
+    const shape = id ? ref(doc, 'BPMNShape', id) : undefined;
+    const bounds = shape && childrenNamed(shape, DC, 'Bounds')[0];
+    if (!id || !bounds || !validBounds(bounds)) { invalid = true; continue; }
     const label = labelBounds(ref(doc, 'BPMNShape', id));
     const event = eventInspections.find((entry) => entry.item === item)?.inspection.symbol;
     const displayType = event && availableEvents.includes(event) ? eventKey(event.type, event.marker) : item.localName;
@@ -112,7 +119,14 @@ function inspect(doc: Document): { diagram: Diagram; readOnlyReason?: string } {
   const foreignContent = Array.from(doc.getElementsByTagName('*')).some((item) => !item.namespaceURI || !namespaces.has(item.namespaceURI) || Array.from(item.attributes).some((attr) => attr.namespaceURI && attr.namespaceURI !== 'http://www.w3.org/2000/xmlns/' && !namespaces.has(attr.namespaceURI)));
   const safeDiagramElements: Record<string, string[]> = { [BPMNDI]: ['BPMNDiagram', 'BPMNPlane', 'BPMNShape', 'BPMNEdge', 'BPMNLabel'], [DC]: ['Bounds'], [DI]: ['waypoint'] };
   const unknownDiagramContent = Array.from(doc.getElementsByTagName('*')).some((item) => item.namespaceURI !== BPMN && (!item.namespaceURI || !safeDiagramElements[item.namespaceURI]?.includes(item.localName)));
-  const invalidLabels = all(doc, BPMNDI, 'BPMNLabel').some((label) => Array.from(label.getElementsByTagNameNS(DC, 'Bounds')).some((bounds) => !['x', 'y', 'width', 'height'].every((key) => bounds.hasAttribute(key) && Number.isFinite(number(bounds, key)))));
+  const invalidLabels = all(doc, BPMNDI, 'BPMNLabel').some((label) => {
+    const parent = label.parentElement;
+    const boxes = childrenNamed(label, DC, 'Bounds');
+    return !parent || parent.namespaceURI !== BPMNDI || !['BPMNShape', 'BPMNEdge'].includes(parent.localName) || childrenNamed(parent, BPMNDI, 'BPMNLabel').length !== 1 || label.children.length !== boxes.length || boxes.length > 1 || boxes.some((box) => !validBounds(box));
+  }) || all(doc, BPMNDI, 'BPMNShape').some((shape) => {
+    const boxes = childrenNamed(shape, DC, 'Bounds'); const label = childrenNamed(shape, BPMNDI, 'BPMNLabel')[0];
+    return boxes.length !== 1 || !validBounds(boxes[0]) || (!!label && Array.from(shape.children).indexOf(label) < Array.from(shape.children).indexOf(boxes[0]));
+  });
   const duplicateReferences = ['BPMNShape', 'BPMNEdge'].some((tag) => { const refs = all(doc, BPMNDI, tag).map((item) => item.getAttribute('bpmnElement')); return new Set(refs).size !== refs.length; });
   const planeMismatch = planes[0]?.getAttribute('bpmnElement') !== process.getAttribute('id');
   const expandedSubprocess = all(doc, BPMN, 'subProcess').some((item) => ref(doc, 'BPMNShape', item.getAttribute('id') ?? '')?.getAttribute('isExpanded') !== 'false');
@@ -163,21 +177,38 @@ function shapeNode(doc: Document, id: string): DiagramNode {
   if (!found) throw new Error('Элемент диаграммы не найден.');
   return found;
 }
-function connectionPoints(a: DiagramNode, b: DiagramNode): DiagramPoint[] {
-  const ac = { x: a.x + a.width / 2, y: a.y + a.height / 2 };
-  const bc = { x: b.x + b.width / 2, y: b.y + b.height / 2 };
-  if (Math.abs(bc.x - ac.x) >= Math.abs(bc.y - ac.y)) {
-    const start = { x: ac.x + (bc.x >= ac.x ? a.width / 2 : -a.width / 2), y: ac.y };
-    const end = { x: bc.x + (bc.x >= ac.x ? -b.width / 2 : b.width / 2), y: bc.y };
-    if (start.y === end.y) return [start, end];
-    const mid = (start.x + end.x) / 2;
-    return [start, { x: mid, y: start.y }, { x: mid, y: end.y }, end];
+function connectionPoints(nodes: DiagramNode[], a: DiagramNode, b: DiagramNode): DiagramPoint[] {
+  const points = routeBetweenNodes(nodes, a, b, undefined, undefined, n => symbols.find(symbol => symbol.type === n.type)?.shape);
+  if (!points) throw new Error('Не удалось построить маршрут связи без пересечений.');
+  return points;
+}
+/** Сохраняем ручной маршрут, пока его геометрия остаётся допустимой. */
+function updateRoutes(doc: Document, before: Diagram, id: string | ReadonlySet<string>, transform: (flow: DiagramEdge) => DiagramPoint[]) {
+  const after = inspect(doc).diagram;
+  const intersects = (points: DiagramPoint[], nodes: DiagramNode[], flow: DiagramEdge) => points.slice(1).some((p, i) => nodes.some(n => {
+    if ((n.id === flow.from && i === 0) || (n.id === flow.to && i === points.length - 2)) return false;
+    return segmentCrossesNode(points[i], p, n);
+  }));
+  for (const flow of before.edges) {
+    const incident = typeof id === 'string' ? flow.from === id || flow.to === id : id.has(flow.from) || id.has(flow.to);
+    const diagonal = flow.points.slice(1).some((p, i) => p.x !== flow.points[i].x && p.y !== flow.points[i].y);
+    const points = incident ? transform(flow) : flow.points;
+    const newCollision = after.nodes.some(n => intersects(points, [n], flow) && !intersects(flow.points, before.nodes.filter(old => old.id === n.id), flow));
+    if (diagonal) {
+      // Импортированные диагонали не преобразуем в ортогональные автоматически.
+      if (newCollision) throw new Error('Перемещение пересекает импортированную диагональную связь.');
+      if (incident) setWaypoints(doc, ref(doc, 'BPMNEdge', flow.id)!, points);
+      continue;
+    }
+    const from = after.nodes.find(n => n.id === flow.from)!; const to = after.nodes.find(n => n.id === flow.to)!;
+    const oldFrom = before.nodes.find(n => n.id === flow.from)!, oldTo = before.nodes.find(n => n.id === flow.to)!;
+    const invalid = newCollision || (incident && ((hasSelfIntersections(points) && !hasSelfIntersections(flow.points)) || (!endpointsFaceOutward(points, from, to) && endpointsFaceOutward(flow.points, oldFrom, oldTo))));
+    if (invalid) {
+      const anchored = routeBetweenNodes(after.nodes, from, to, points[0], points[points.length - 1], n => symbols.find(symbol => symbol.type === n.type)?.shape);
+      // Если места не хватает, не переносим точки привязки и не блокируем перемещение.
+      setWaypoints(doc, ref(doc, 'BPMNEdge', flow.id)!, anchored ?? points);
+    } else if (incident) setWaypoints(doc, ref(doc, 'BPMNEdge', flow.id)!, points);
   }
-  const start = { x: ac.x, y: ac.y + (bc.y >= ac.y ? a.height / 2 : -a.height / 2) };
-  const end = { x: bc.x, y: bc.y + (bc.y >= ac.y ? -b.height / 2 : b.height / 2) };
-  if (start.x === end.x) return [start, end];
-  const mid = (start.y + end.y) / 2;
-  return [start, { x: start.x, y: mid }, { x: end.x, y: mid }, end];
 }
 function setWaypoints(doc: Document, edge: Element, points: DiagramPoint[]) {
   const old = Array.from(edge.getElementsByTagNameNS(DI, 'waypoint'));
@@ -268,19 +299,20 @@ export const bpmnNotation: DiagramNotation = {
       if (label) moveBounds(label);
     }
     const ids = new Set(moved.map((node) => node.id));
-    for (const flow of diagram.edges) {
+    updateRoutes(doc, diagram, ids, (flow) => {
       const from = ids.has(flow.from); const to = ids.has(flow.to);
-      if (!from && !to) continue;
-      const edge = ref(doc, 'BPMNEdge', flow.id)!;
       const points = flow.points.map((point, index) => from && to || (from && index === 0) || (to && index === flow.points.length - 1) ? { x: point.x + dx, y: point.y + dy } : { ...point });
       if (from !== to && points.length > 2) {
         const end = from ? 0 : points.length - 1; const adjacent = from ? 1 : points.length - 2;
         if (flow.points[end].x === flow.points[adjacent].x) points[adjacent].x = points[end].x;
         else if (flow.points[end].y === flow.points[adjacent].y) points[adjacent].y = points[end].y;
       }
-      setWaypoints(doc, edge, points);
+      return points;
+    });
+    for (const flow of diagram.edges.filter(flow => ids.has(flow.from) && ids.has(flow.to))) {
+      const edge = ref(doc, 'BPMNEdge', flow.id)!;
       const label = edge.getElementsByTagNameNS(BPMNDI, 'BPMNLabel')[0]?.getElementsByTagNameNS(DC, 'Bounds')[0];
-      if (label && from && to) moveBounds(label);
+      if (label) moveBounds(label);
     }
     if (inspect(doc).readOnlyReason) throw new Error('Перемещение нарушает принадлежность элементов дорожкам.');
     return serialize(doc);
@@ -323,12 +355,24 @@ export const bpmnNotation: DiagramNotation = {
   },
   resizeNode: (source, id, width, height) => {
     const doc = writable(source); const diagram = inspect(doc).diagram; const node = diagram.nodes.find((item) => item.id === id);
-    if (!node || node.type !== 'textAnnotation') throw new Error('Изменять размер можно только у текстовой аннотации.');
-    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 40 || height < 30 || node.width <= 0 || node.height <= 0) throw new Error('Минимальный размер аннотации: 40 × 30.');
+    if (!node) throw new Error('Элемент диаграммы не найден.');
+    const symbol = symbols.find((item) => item.type === node.type);
+    if (!symbol) throw new Error('Неизвестный тип элемента.');
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width < 40 || height < 30 || node.width <= 0 || node.height <= 0) throw new Error('Минимальный размер элемента: 40 × 30.');
     width = Math.round(width); height = Math.round(height);
-    const bounds = ref(doc, 'BPMNShape', id)!.getElementsByTagNameNS(DC, 'Bounds')[0];
+    if (['circle', 'double-circle', 'diamond'].includes(symbol.shape) && width !== height) throw new Error('Событие или шлюз должны иметь одинаковые ширину и высоту.');
+    const bounds = childrenNamed(ref(doc, 'BPMNShape', id)!, DC, 'Bounds')[0];
     bounds.setAttribute('width', String(width)); bounds.setAttribute('height', String(height));
-    for (const flow of diagram.edges.filter((edge) => edge.from === id || edge.to === id)) {
+    const label = childrenNamed(ref(doc, 'BPMNShape', id)!, BPMNDI, 'BPMNLabel')[0];
+    const labelRect = label && childrenNamed(label, DC, 'Bounds')[0];
+    if (labelRect && node.labelBounds) {
+      const scaleX = width / node.width, scaleY = height / node.height;
+      labelRect.setAttribute('x', String(node.x + (node.labelBounds.x - node.x) * scaleX));
+      labelRect.setAttribute('y', String(node.y + (node.labelBounds.y - node.y) * scaleY));
+      labelRect.setAttribute('width', String(node.labelBounds.width * scaleX));
+      labelRect.setAttribute('height', String(node.labelBounds.height * scaleY));
+    }
+    updateRoutes(doc, diagram, id, (flow) => {
       const points = flow.points.map((point) => ({ ...point }));
       for (const end of [flow.from === id ? 0 : -1, flow.to === id ? points.length - 1 : -1]) {
         if (end < 0) continue;
@@ -339,8 +383,12 @@ export const bpmnNotation: DiagramNotation = {
           else if (old.y === flow.points[adjacent].y) points[adjacent].y = points[end].y;
         }
       }
-      setWaypoints(doc, ref(doc, 'BPMNEdge', flow.id)!, points);
-    }
+      if (points.some((point) => !Number.isFinite(point.x) || !Number.isFinite(point.y))) throw new Error('Некорректная геометрия связи.');
+      return points;
+    });
+    const resized = { ...node, width, height };
+    if ((diagram.regions ?? []).some((lane) => insideRegion(node, lane) !== insideRegion(resized, lane))) assignLane(doc, resized);
+    if (inspect(doc).readOnlyReason) throw new Error('Изменение размера нарушает структуру модели.');
     return serialize(doc);
   },
   setLabelBounds: (source, id, bounds) => {
@@ -382,6 +430,7 @@ export const bpmnNotation: DiagramNotation = {
   moveNode: (source, id, at) => {
     if (!Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new Error('Некорректное положение элемента.');
     const doc = writable(source);
+    const before = inspect(doc).diagram;
     const shape = ref(doc, 'BPMNShape', id);
     const bounds = shape?.getElementsByTagNameNS(DC, 'Bounds')[0];
     if (!bounds) throw new Error('Элемент диаграммы не найден.');
@@ -391,23 +440,19 @@ export const bpmnNotation: DiagramNotation = {
     if (labelBounds) { labelBounds.setAttribute('x', String(number(labelBounds, 'x') + dx)); labelBounds.setAttribute('y', String(number(labelBounds, 'y') + dy)); }
     bounds.setAttribute('x', String(x)); bounds.setAttribute('y', String(y));
     assignLane(doc, shapeNode(doc, id));
-    const diagram = inspect(doc).diagram;
-    for (const flow of diagram.edges.filter((edge) => edge.from === id || edge.to === id)) {
-      const edge = ref(doc, 'BPMNEdge', flow.id); const from = diagram.nodes.find((n) => n.id === flow.from); const to = diagram.nodes.find((n) => n.id === flow.to);
-      if (edge && from && to) {
-        const points = flow.points.map((point, index) => (index === 0 && flow.from === id) || (index === flow.points.length - 1 && flow.to === id) ? { x: point.x + dx, y: point.y + dy } : { ...point });
-        if (points.length > 2) {
-          const adjust = (end: number, adjacent: number) => {
-            const before = flow.points[end]; const next = flow.points[adjacent];
-            if (before.x === next.x) points[adjacent].x = points[end].x;
-            else if (before.y === next.y) points[adjacent].y = points[end].y;
-          };
-          if (flow.from === id) adjust(0, 1);
-          if (flow.to === id) adjust(points.length - 1, points.length - 2);
-        }
-        setWaypoints(doc, edge, points);
+    updateRoutes(doc, before, id, (flow) => {
+      const points = flow.points.map((point, index) => (index === 0 && flow.from === id) || (index === flow.points.length - 1 && flow.to === id) ? { x: point.x + dx, y: point.y + dy } : { ...point });
+      if (points.length > 2) {
+        const adjust = (end: number, adjacent: number) => {
+          const old = flow.points[end], next = flow.points[adjacent];
+          if (old.x === next.x) points[adjacent].x = points[end].x;
+          else if (old.y === next.y) points[adjacent].y = points[end].y;
+        };
+        if (flow.from === id) adjust(0, 1);
+        if (flow.to === id) adjust(points.length - 1, points.length - 2);
       }
-    }
+      return points;
+    });
     return serialize(doc);
   },
   rename: (source, id, name) => {
@@ -422,7 +467,7 @@ export const bpmnNotation: DiagramNotation = {
     const dataTypes = ['dataObjectReference', 'dataStoreReference'];
     const activityTypes = ['task', 'userTask', 'serviceTask', 'manualTask', 'sendTask', 'receiveTask', 'businessRuleTask', 'scriptTask', 'subProcess'];
     const inferred = dataTypes.includes(a.type) && activityTypes.includes(b.type) ? 'dataInputAssociation' : activityTypes.includes(a.type) && dataTypes.includes(b.type) ? 'dataOutputAssociation' : undefined;
-    if (type === 'dataInputAssociation' || type === 'dataOutputAssociation' || (!type && inferred)) { requireDataCompatibility(source); return addDataAssociation(source, (type || inferred) as 'dataInputAssociation' | 'dataOutputAssociation', from, to, connectionPoints(a, b)).xml; }
+    if (type === 'dataInputAssociation' || type === 'dataOutputAssociation' || (!type && inferred)) { requireDataCompatibility(source); return addDataAssociation(source, (type || inferred) as 'dataInputAssociation' | 'dataOutputAssociation', from, to, connectionPoints(inspect(doc).diagram.nodes, a, b)).xml; }
     if (type && !['sequenceFlow', 'association', 'directedAssociation'].includes(type)) throw new Error('Неизвестный тип связи.');
     const artifacts = [a.type, b.type].some((nodeType) => ['dataObjectReference', 'dataStoreReference', 'textAnnotation'].includes(nodeType));
     const association = type ? type !== 'sequenceFlow' : artifacts;
@@ -435,7 +480,7 @@ export const bpmnNotation: DiagramNotation = {
     process.insertBefore(flow, association ? null : Array.from(process.children).find((child) => ['association', 'textAnnotation'].includes(child.localName)) ?? null);
     if (!association) for (const [nodeId, tag] of [[from, 'outgoing'], [to, 'incoming']]) { const item = element(doc, BPMN, `bpmn:${tag}`); item.textContent = id; const node = byId(doc, nodeId)!; insertFlowRef(node, item, tag); }
     const edge = element(doc, BPMNDI, 'bpmndi:BPMNEdge'); edge.setAttribute('id', `${id}_di`); edge.setAttribute('bpmnElement', id);
-    setWaypoints(doc, edge, connectionPoints(a, b)); all(doc, BPMNDI, 'BPMNPlane')[0].appendChild(edge);
+    setWaypoints(doc, edge, connectionPoints(inspect(doc).diagram.nodes, a, b)); all(doc, BPMNDI, 'BPMNPlane')[0].appendChild(edge);
     return serialize(doc);
   },
   editEdge: (source, id, from, to, points) => {
@@ -467,7 +512,10 @@ export const bpmnNotation: DiagramNotation = {
     const doc = writable(source); const edge = inspect(doc).diagram.edges.find((item) => item.id === id);
     const di = ref(doc, 'BPMNEdge', id);
     if (!edge || !di) throw new Error('Связь не найдена.');
-    setWaypoints(doc, di, connectionPoints(shapeNode(doc, edge.from), shapeNode(doc, edge.to)));
+    const diagram = inspect(doc).diagram;
+    const points = routeBetweenNodes(diagram.nodes, shapeNode(doc, edge.from), shapeNode(doc, edge.to), edge.points[0], edge.points[edge.points.length - 1], n => symbols.find(symbol => symbol.type === n.type)?.shape);
+    if (!points) throw new Error('Не удалось построить маршрут, сохранив точки привязки связи. Освободите место или измените маршрут вручную.');
+    setWaypoints(doc, di, points);
     return serialize(doc);
   },
   remove: (source, id) => {

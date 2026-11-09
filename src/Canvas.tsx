@@ -7,6 +7,7 @@ import { AiChat } from './AiChat';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
+import { connectionPortCount } from './connectionPorts';
 
 const MarkdownView = lazy(() => import('./MarkdownView'));
 import { ContextMenu, type ContextOpener, type MenuItem, type MenuTarget } from './ContextMenu';
@@ -148,7 +149,7 @@ function DragCard({
       <span className="pin" />
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
-        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(12, Math.floor((side === 'top' || side === 'bottom' ? portSize.w : portSize.h) / 100)));
+        const count = connectionPortCount(side === 'top' || side === 'bottom' ? portSize.w : portSize.h, id.startsWith('gw:'));
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const anchor = { side, offset };
