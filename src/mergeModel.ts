@@ -49,6 +49,7 @@ export function mergeModel(base: Model, local: Model, remote: Model): Model {
     cardLinks: mergeList(base.cardLinks, local.cardLinks, remote.cardLinks),
     processes: mergeList(base.processes, local.processes, remote.processes),
     docs: mergeList(base.docs, local.docs, remote.docs),
+    htmlObjects: mergeList(base.htmlObjects, local.htmlObjects, remote.htmlObjects),
     sources: mergeList(base.sources, local.sources, remote.sources),
     meta: mergeRecord(base.meta, local.meta, remote.meta, (b, l, r) => mergeRecord(b ?? {}, l, r)),
   };

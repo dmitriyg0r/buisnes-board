@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { Doc, Process, Source } from './data';
+import type { Doc, HtmlObject, Process, Source } from './data';
 import { Icon } from './Icon';
 import { objectCatalog } from './objectCatalog';
 
@@ -8,6 +8,8 @@ interface Props {
   sources: Source[];
   docs: Doc[];
   processes: Process[];
+  htmlObjects: HtmlObject[];
+  onEditHtml: (id: string) => void;
   /** карточки, выделенные на полотне: их строки подсвечиваются */
   selectedCards: string[];
   onAddMaterial: () => void;
@@ -28,9 +30,9 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
   );
 }
 
-export function Tree({ activeSourceId, sources, docs, processes, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
+export function Tree({ activeSourceId, sources, docs, processes, htmlObjects, onEditHtml, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
   const isSel = (id: string) => selectedCards.includes(id);
-  const [open, setOpen] = useState({ src: true, mod: true, proc: true, doc: true });
+  const [open, setOpen] = useState({ src: true, mod: true, proc: true, doc: true, html: true });
   const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   if (collapsed) {
@@ -86,6 +88,13 @@ export function Tree({ activeSourceId, sources, docs, processes, selectedCards, 
             </span>
           </div>
         ))}
+      </Group>
+
+      <Group title="HTML-объекты" open={open.html} onToggle={() => toggle('html')}>
+        {htmlObjects.length === 0 && <div className="tree-empty">Нет HTML-объектов</div>}
+        {htmlObjects.map((h) => <div key={h.id} className={`tree-row${isSel(`html:${h.id}`) ? ' sel' : ''}`} role="button" tabIndex={0} aria-label={`Редактировать HTML: ${h.title}`} onDoubleClick={() => onEditHtml(h.id)} onKeyDown={(event) => { if (event.key === 'Enter') onEditHtml(h.id); }}>
+          <Icon name="code" /><span>{h.title}</span>
+        </div>)}
       </Group>
 
       <div className="grow" />

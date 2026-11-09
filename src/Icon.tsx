@@ -8,6 +8,7 @@ const paths: Record<string, string> = {
   close: 'M6 6l12 12M18 6L6 18',
   check: 'M5 12.5l4.5 4.5L19 7.5',
   file: 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5',
+  code: 'M8 6l-6 6 6 6M16 6l6 6-6 6M14 3l-4 18',
   folder: 'M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
   gridLayout: 'M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z',
   freeLayout: 'M3 5h6v6H3zM15 3h6v6h-6zM5 15h6v6H5zM15 13h6v6h-6z',

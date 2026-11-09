@@ -20,9 +20,11 @@ import { activeProjectId, captureJoinToken, clearActiveProject, clearJoinToken, 
 import { HttpError } from './api';
 import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
+import { starterHtml } from './html';
 
 const DiagramModelEditor = lazy(() => import('./DiagramModelEditor'));
 const DocEditorDialog = lazy(() => import('./DocEditorDialog'));
+const HtmlEditorDialog = lazy(() => import('./HtmlEditorDialog'));
 
 const rid = (p: string) => p + Math.random().toString(36).slice(2, 8);
 
@@ -201,7 +203,7 @@ function Workspace({
   const [selCards, setSelCards] = useState<string[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
-  const [editing, setEditing] = useState<{ type: 'process' | 'doc'; id: string } | null>(null);
+  const [editing, setEditing] = useState<{ type: 'process' | 'doc' | 'html'; id: string } | null>(null);
   // свёрнутые боковые панели запоминаются в браузере
   const [layout, setLayout] = useState<{ tree: boolean; panel: boolean }>(() => {
     try {
@@ -296,6 +298,8 @@ function Workspace({
           sources={api.model.sources}
           docs={api.model.docs}
           processes={api.model.processes}
+          htmlObjects={api.model.htmlObjects}
+          onEditHtml={(id) => setEditing({ type: 'html', id })}
           selectedCards={selCards}
           onAddMaterial={() => setAddOpen(true)}
           collapsed={!layout.tree}
@@ -307,6 +311,7 @@ function Workspace({
           onAddMaterial={() => setAddOpen(true)}
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
+          onEditHtml={(id) => setEditing({ type: 'html', id })}
           paused={editing !== null || addOpen || settingsTab !== null}
           presence={presence}
         />
@@ -376,9 +381,21 @@ function Workspace({
         </Suspense>
       )}
 
+      {editing?.type === 'html' && api.model.htmlObjects.find((h) => h.id === editing.id) && (
+        <Suspense fallback={<div className="html-editor boot" role="status">Загрузка редактора…</div>}>
+          <HtmlEditorDialog
+            key={editing.id}
+            object={api.model.htmlObjects.find((h) => h.id === editing.id)!}
+            onCheckpoint={api.checkpoint}
+            onChange={(title, html) => api.applyLive((m) => ({ ...m, htmlObjects: m.htmlObjects.map((h) => h.id === editing.id ? { ...h, title, html } : h) }))}
+            onClose={() => setEditing(null)}
+          />
+        </Suspense>
+      )}
+
       {addOpen && (
         <AddMaterialDialog
-          counts={{ processes: api.model.processes.length, docs: api.model.docs.length }}
+          counts={{ processes: api.model.processes.length, docs: api.model.docs.length, htmlObjects: api.model.htmlObjects.length }}
           onAddModel={(title) => {
             const id = rid('p');
             api.apply((m) => ({ ...m, processes: [...m.processes, { id, title, xml: blankXml(title) }] }));
@@ -389,6 +406,11 @@ function Workspace({
             const id = rid('d');
             api.apply((m) => ({ ...m, docs: [...m.docs, { id, title, markdown: starterMarkdown(title), sections: [] }] }));
             setEditing({ type: 'doc', id });
+          }}
+          onAddHtml={(title) => {
+            const id = rid('h');
+            api.apply((m) => ({ ...m, htmlObjects: [...m.htmlObjects, { id, title, html: starterHtml(title) }] }));
+            setEditing({ type: 'html', id });
           }}
           onAddSource={(s) => api.apply((m) => ({ ...m, sources: [...m.sources, { ...s, id: rid('f') }] }))}
         />

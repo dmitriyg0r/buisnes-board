@@ -4,25 +4,27 @@ import { Icon } from './Icon';
 import { objectCatalog, type ObjectCategoryId, type ObjectTypeId } from './objectCatalog';
 
 interface Props {
-  counts: { processes: number; docs: number };
+  counts: { processes: number; docs: number; htmlObjects: number };
   onAddModel: (title: string) => void;
   onAddDoc: (title: string) => void;
+  onAddHtml: (title: string) => void;
   onAddSource: (s: Omit<Source, 'id'>) => void;
   onClose: () => void;
 }
 
-export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddSource, onClose }: Props) {
+export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddHtml, onAddSource, onClose }: Props) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [categoryId, setCategoryId] = useState<ObjectCategoryId>('processes');
   const [typeId, setTypeId] = useState<ObjectTypeId>(objectCatalog[0].types[0].id);
   const [modelName, setModelName] = useState(counts.processes ? `Модель процесса ${counts.processes + 1}` : 'Модель процесса');
   const [title, setTitle] = useState(counts.docs ? `Документ ${counts.docs + 1}` : 'Регламент');
+  const [htmlName, setHtmlName] = useState(counts.htmlObjects ? `HTML-объект ${counts.htmlObjects + 1}` : 'HTML-объект');
   const [name, setName] = useState('');
   const [ext, setExt] = useState<Source['ext']>('DOCX');
   const [pages, setPages] = useState(1);
   const category = objectCatalog.find((item) => item.id === categoryId)!;
   const type = category.types.find((item) => item.id === typeId) ?? category.types[0];
-  const value = type.kind === 'process' ? modelName : type.kind === 'document' ? title : name;
+  const value = type.kind === 'process' ? modelName : type.kind === 'document' ? title : type.kind === 'html' ? htmlName : name;
   const valid = value.trim().length > 0;
 
   useEffect(() => {
@@ -43,6 +45,7 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddSource, o
     switch (type.id) {
       case 'bpmn': onAddModel(modelName.trim()); break;
       case 'markdown': onAddDoc(title.trim()); break;
+      case 'interactive-html': onAddHtml(htmlName.trim()); break;
       case 'source-reference': onAddSource({ name: name.trim(), ext, pages: Math.max(1, Math.round(pages) || 1) }); break;
       default: { const unsupported: never = type.id; return unsupported; }
     }
@@ -79,9 +82,10 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddSource, o
               </label>)}
             </fieldset>
             <div className="create-object-fields">
-              <label className="create-object-field"><span>{type.kind === 'process' ? 'Название модели' : type.kind === 'document' ? 'Название документа' : 'Название источника'}</span>
-                <input className="pinput" value={value} onChange={(event) => type.kind === 'process' ? setModelName(event.target.value) : type.kind === 'document' ? setTitle(event.target.value) : setName(event.target.value)} placeholder={type.kind === 'source' ? 'Название файла' : undefined} required />
+              <label className="create-object-field"><span>{type.kind === 'process' ? 'Название модели' : type.kind === 'document' ? 'Название документа' : type.kind === 'html' ? 'Название HTML-объекта' : 'Название источника'}</span>
+                <input className="pinput" value={value} onChange={(event) => type.kind === 'process' ? setModelName(event.target.value) : type.kind === 'document' ? setTitle(event.target.value) : type.kind === 'html' ? setHtmlName(event.target.value) : setName(event.target.value)} placeholder={type.kind === 'source' ? 'Название файла' : undefined} required />
               </label>
+              {type.kind === 'html' && <p className="pnote">Откроется редактор кода с интерактивным предпросмотром. Можно вставить готовый HTML или импортировать файл .html.</p>}
               {type.kind === 'source' && <>
                 <div className="create-object-source-fields">
                   <label className="create-object-field"><span>Формат</span><select className="pinput" value={ext} onChange={(event) => setExt(event.target.value as Source['ext'])}><option>DOCX</option><option>PDF</option></select></label>

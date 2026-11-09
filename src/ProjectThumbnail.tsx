@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DOC_SIZE, GATEWAY_SIZE, MODEL_SIZE, SOURCE_SIZE, type Model } from './data';
+import { DOC_SIZE, GATEWAY_SIZE, HTML_SIZE, MODEL_SIZE, SOURCE_SIZE, type Model } from './data';
 import { normalizeModel } from './normalize';
 import { loadView } from './viewState';
 
-type Card = { id: string; title: string; kind: 'src' | 'proc' | 'doc' | 'gw'; x: number; y: number; w: number; h: number; details: string[]; xml?: string };
+type Card = { id: string; title: string; kind: 'src' | 'proc' | 'doc' | 'html' | 'gw'; x: number; y: number; w: number; h: number; details: string[]; xml?: string };
 type Result = { projectId: string; model?: Model; error?: boolean };
 
 /** Миниатюра доски проекта. Размер задаётся родительским контейнером. */
@@ -33,9 +33,10 @@ export function ProjectThumbnail({ projectId, className }: { projectId: string; 
     const out: Card[] = [];
     const add = (id: string, title: string, kind: Card['kind'], index: number, details: string[], xml?: string) => {
       if (out.length >= 80) return;
-      const size = kind === 'proc' ? MODEL_SIZE : kind === 'doc' ? DOC_SIZE : kind === 'gw' ? GATEWAY_SIZE : SOURCE_SIZE;
+      const size = kind === 'proc' ? MODEL_SIZE : kind === 'doc' ? DOC_SIZE : kind === 'html' ? HTML_SIZE : kind === 'gw' ? GATEWAY_SIZE : SOURCE_SIZE;
       const fallback = kind === 'proc' ? { x: 232, y: 60 + index * (MODEL_SIZE.h + 48) }
         : kind === 'doc' ? { x: 232 + MODEL_SIZE.w + 48, y: 120 + index * (DOC_SIZE.h + 48) }
+        : kind === 'html' ? { x: 232, y: 120 + model.processes.length * (MODEL_SIZE.h + 48) + Math.ceil(model.docs.length / 3) * (DOC_SIZE.h + 48) + index * (HTML_SIZE.h + 48) }
         : kind === 'gw' ? { x: 232 + (index % 4) * (GATEWAY_SIZE.w + 24), y: 20 }
         : { x: 16 + (index % 2) * 12, y: 120 + index * (SOURCE_SIZE.h + 74) };
       const saved = view?.pos[id];
@@ -50,6 +51,7 @@ export function ProjectThumbnail({ projectId, className }: { projectId: string; 
     model.sources.slice(0, 80).forEach((s, i) => add(`src:${s.id}`, s.name, 'src', i, [s.ext]));
     model.processes.slice(0, 80).forEach((p, i) => add(`proc:${p.id}`, p.title, 'proc', i, [], p.xml));
     model.docs.slice(0, 80).forEach((d, i) => add(`doc:${d.id}`, d.title, 'doc', i, d.sections.slice(0, 5).map((s) => String(s.title || '').slice(0, 50))));
+    model.htmlObjects.slice(0, 80).forEach((h, i) => add(`html:${h.id}`, h.title, 'html', i, ['HTML · CSS · JavaScript']));
     model.gateways.slice(0, 80).forEach((g, i) => add(`gw:${g.id}`, g.label, 'gw', i, []));
     return out;
   }, [model, projectId]);
@@ -71,7 +73,7 @@ export function ProjectThumbnail({ projectId, className }: { projectId: string; 
       {c.kind !== 'gw' && <rect x="1" y="1" width={c.w - 2} height="36" rx="8" fill={c.kind === 'proc' ? '#e9f1ff' : c.kind === 'doc' ? '#edf6f1' : '#f5f0e6'} />}
       {c.kind !== 'gw' && <text x="14" y="24" fontSize="16" fontWeight="600" fill="#34445a">{c.title.slice(0, Math.max(8, Math.floor(c.w / 10)))}</text>}
       {c.kind === 'doc' && c.details.map((line, i) => <text key={i} x="16" y={70 + i * 30} fontSize="13" fill="#79889a">{line.slice(0, Math.max(8, Math.floor(c.w / 9)))}</text>)}
-      {c.kind === 'src' && <text x="14" y="70" fontSize="15" fill="#9a845d">{c.details[0]}</text>}
+      {(c.kind === 'src' || c.kind === 'html') && <text x="14" y="70" fontSize="15" fill="#9a845d">{c.details[0]}</text>}
       {c.kind === 'proc' && c.xml && <BpmnPreview xml={c.xml} width={c.w} height={c.h} />}
     </g>)}
   </svg>;

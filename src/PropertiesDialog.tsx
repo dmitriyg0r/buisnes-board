@@ -56,8 +56,9 @@ export function PropertiesDialog({ target, api, issues, onClose, onSelectIssue }
   const cardId = target.type === 'card' ? target.id.slice(target.id.indexOf(':') + 1) : '';
   const proc = cardKind === 'proc' ? model.processes.find((p) => p.id === cardId) : undefined;
   const doc = cardKind === 'doc' ? model.docs.find((d) => d.id === cardId) : undefined;
+  const htmlObject = cardKind === 'html' ? model.htmlObjects.find((h) => h.id === cardId) : undefined;
   const source: Source | undefined = cardKind === 'src' ? model.sources.find((s) => s.id === cardId) : undefined;
-  const exists = node || section || proc || doc || source;
+  const exists = node || section || proc || doc || htmlObject || source;
 
   useEffect(() => {
     if (!exists) onClose();
@@ -92,6 +93,10 @@ export function PropertiesDialog({ target, api, issues, onClose, onSelectIssue }
   } else if (doc) {
     title = doc.title;
     typeLabel = 'Документ · Markdown';
+    fields = docFields;
+  } else if (htmlObject) {
+    title = htmlObject.title;
+    typeLabel = 'Интерактивный HTML';
     fields = docFields;
   } else {
     title = source!.name;
@@ -166,6 +171,9 @@ export function PropertiesDialog({ target, api, issues, onClose, onSelectIssue }
           />
         </Row>
       )}
+      {htmlObject && <Row label="Название HTML-объекта">
+        <input className="pinput" value={htmlObject.title} onFocus={() => api.checkpoint()} onChange={(event) => api.applyLive((m) => ({ ...m, htmlObjects: m.htmlObjects.map((h) => h.id === htmlObject.id ? { ...h, title: event.target.value } : h) }))} />
+      </Row>}
       {source && (
         <>
           <Row label="Название файла">

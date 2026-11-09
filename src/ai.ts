@@ -264,6 +264,7 @@ export function buildContext(m: Model): string {
     const text = d.markdown.length > DOC_CHARS ? d.markdown.slice(0, DOC_CHARS) + '\n…' : d.markdown;
     parts.push(`Документ «${d.title}» [id: ${d.id}]\n${text}`);
   }
+  if (m.htmlObjects.length) parts.push('HTML-объекты на доске:\n' + m.htmlObjects.map((h) => `«${h.title}» [id: ${h.id}]`).join('\n'));
   if (m.sources.length) parts.push('Источники (только названия):\n' + m.sources.map((s) => `${s.name}.${s.ext.toLowerCase()}, ${s.pages} стр.`).join('\n'));
   return parts.join('\n\n').slice(0, CONTEXT_CHARS);
 }
