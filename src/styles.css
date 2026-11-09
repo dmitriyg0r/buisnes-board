@@ -536,6 +536,11 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .diagram-notation { padding: 4px 8px; border-radius: 6px; background: var(--blue-soft); color: var(--blue-ink); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .diagram-experimental { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .diagram-alert { flex: none; padding: 10px 18px; background: #fff4d9; color: #694509; font-size: 13px; line-height: 20px; }
+.diagram-validation { flex: none; padding: 6px 18px; background: #fff4d9; color: #694509; font-size: 13px; line-height: 20px; max-height: 180px; overflow: auto; }
+.diagram-validation summary { cursor: pointer; font-weight: 600; }
+.diagram-validation ul { margin: 6px 0; padding-left: 20px; }
+.diagram-validation li button { border: 0; padding: 2px 0; background: transparent; color: inherit; text-align: left; cursor: pointer; text-decoration: underline; }
+.diagram-validation small { font-size: 12px; }
 .diagram-workspace { display: grid; grid-template-columns: 208px minmax(0, 1fr); flex: 1; min-height: 0; }
 .diagram-sidebar, .diagram-properties { display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: auto; padding: 16px 10px; background: var(--panel); }
 .diagram-sidebar { border-right: 1px solid var(--line); }
@@ -558,7 +563,10 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .diagram-palette-icon.rounded-rectangle { width: 18px; height: 14px; border-radius: 4px; }
 .diagram-palette-icon.diamond { width: 12px; height: 12px; margin: 2px; border-radius: 0; transform: rotate(45deg); }
 .diagram-palette-svg { flex: none; width: 22px; height: 22px; overflow: visible; }
-.diagram-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; background-color: var(--bg); background-image: radial-gradient(circle, #d3d0c5 1.1px, transparent 1.3px); background-size: 22px 22px; }
+.diagram-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; background-color: var(--bg); }
+.diagram-grid-dot { fill: #c4c1b7; }
+.diagram-alignment-guide line { stroke: #db4761; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.diagram-alignment-guide.alignment line { stroke-dasharray: 4 3; }
 .diagram-surface { flex: 1; width: 100%; min-height: 0; touch-action: none; user-select: none; outline: none; }
 .diagram-surface:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
 .diagram-selection-marquee { fill: rgba(37, 99, 235, .12); stroke: var(--blue); stroke-width: 1; stroke-dasharray: 5 3; vector-effect: non-scaling-stroke; }
@@ -571,9 +579,13 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .diagram-node:active { cursor: grabbing; }
 .diagram-node:focus { outline: none; }
 .diagram-node:focus-visible .diagram-shape { stroke: var(--blue); stroke-width: 3; }
-.diagram-shape { fill: #fff; stroke: #424858; stroke-width: 1.5; }
+.diagram-shape { fill: var(--diagram-fill, #fff); stroke: var(--diagram-stroke, #424858); stroke-width: 1.5; }
 .diagram-shape.double-circle { stroke-width: 3; }
 .diagram-shape.selected { stroke: var(--blue); stroke-width: 3; }
+.diagram-solid-node { fill: #424858; }
+.diagram-lifeline { fill: none; stroke: #424858; stroke-width: 1.5; stroke-dasharray: 6 4; pointer-events: none; }
+.diagram-class-member { fill: var(--ink); font: 11px Inter, system-ui, sans-serif; pointer-events: none; }
+.diagram-compartment-input { min-height: 72px; resize: vertical; }
 .diagram-glyph, .diagram-kind { fill: none; stroke: #424858; stroke-width: 1.8; pointer-events: none; }
 .diagram-inner-outline { fill: none; stroke: #424858; stroke-width: 1.5; pointer-events: none; }
 .diagram-envelope-filled { fill: #424858; stroke: #424858; stroke-width: 1.5; }

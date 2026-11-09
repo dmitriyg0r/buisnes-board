@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import { epcNotation } from '../src/modeling/epc';
+import { projectEpcEventEndpoints } from '../src/modeling/epcProjection';
+import type { Diagram } from '../src/modeling/types';
+
+const event = { id: 'e', type: 'event', label: 'Событие', x: 0, y: 0, width: 150, height: 60 };
+const fn = { id: 'f', type: 'function', label: 'Действие', x: 300, y: 0, width: 150, height: 60 };
+const diagram: Diagram = { nodes: [event, fn], edges: [{ id: 'l', type: 'flow', label: '', from: 'e', to: 'f', points: [{ x: 150, y: 15 }, { x: 220, y: 15 }, { x: 220, y: 30 }, { x: 300, y: 30 }] }] };
+const untouched = JSON.stringify(diagram);
+assert.deepEqual(projectEpcEventEndpoints(diagram).edges[0].points, [{ x: 135, y: 15 }, { x: 220, y: 15 }, { x: 220, y: 30 }, { x: 300, y: 30 }]);
+assert.equal(JSON.stringify(diagram), untouched);
+const old = JSON.stringify({ format: 'business-board-graph', version: 1, notation: 'epc', ...diagram });
+assert.deepEqual(epcNotation.read(old).diagram.edges[0].points[0], { x: 135, y: 15 });
+const saved = epcNotation.rename(old, 'f', 'Новое имя');
+assert.deepEqual(JSON.parse(saved).edges, diagram.edges, 'При переименовании исходный маршрут не должен меняться');
+assert.deepEqual(epcNotation.read(saved).diagram.edges[0].points[0], { x: 135, y: 15 });
+const vertical: Diagram = { nodes: [event, fn], edges: [{ id: 'l', type: 'flow', label: '', from: 'e', to: 'f', points: [{ x: 135, y: 0 }, { x: 135, y: -30 }, { x: 260, y: -30 }, { x: 260, y: 30 }, { x: 300, y: 30 }] }] };
+const top = projectEpcEventEndpoints(vertical).edges[0].points[0];
+assert.equal(top.x, 135);
+assert.ok(Math.abs(top.y - 15) < 1e-6);
+const verticalSource = JSON.stringify({ format: 'business-board-graph', version: 1, notation: 'epc', ...vertical });
+const verticalProjected = epcNotation.read(verticalSource).diagram.edges[0].points;
+assert.doesNotThrow(() => epcNotation.editEdge(verticalSource, 'l', 'e', 'f', verticalProjected));
+const incoming: Diagram = { nodes: [event, fn], edges: [{ id: 'l', type: 'flow', label: '', from: 'f', to: 'e', points: [{ x: 300, y: 15 }, { x: 150, y: 15 }] }] };
+assert.deepEqual(projectEpcEventEndpoints(incoming).edges[0].points[1], { x: 135, y: 15 });
+console.log('EPC: отображение старых ручных маршрутов без изменения источника — OK');

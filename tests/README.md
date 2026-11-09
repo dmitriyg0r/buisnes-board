@@ -11,3 +11,5 @@
 Маршрутизация связей: `/tests/routing-regression.html` — обход объектов и перемещение; `/tests/edge-constraints.html` — ограничения ручного маршрута; `/tests/connection-magnet.html` — привязки, предпросмотр и история с синтетическими событиями. Геометрию можно проверить командой `node --experimental-strip-types tests/orthogonal-routing.ts`.
 
 Управление редактором: `/tests/inline-label.html` — ввод в текстовом блоке; `/tests/selection-editor.html` — групповое выделение, перемещение и панорамирование с синтетическими pointer-событиями.
+
+Выравнивание: `/tests/modeling-grid.html` проверяет сетку, её настройки и размещение; `/tests/modeling-guides.html` — направляющие и равные интервалы. Чистые геометрические проверки: `node --experimental-strip-types tests/diagram-alignment.ts`.

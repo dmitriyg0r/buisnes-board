@@ -1,3 +1,4 @@
+import { NodeShape, nodeLabelBounds, labelLines } from './modeling/DiagramEditor';
 import { createContext, lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, HTML_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source, type Model } from './data';
@@ -9,6 +10,8 @@ import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
 import { HtmlPreview } from './HtmlPreview';
+import { getModelNotation } from './modeling/registry';
+import type { IndependentModel } from './data';
 import { exportCanvasObject } from './aiCanvasTools';
 import type { AiEffect, AiToolHost, AiToolResult } from './aiToolContract';
 
@@ -57,12 +60,49 @@ interface Props {
   /** открыть редактор документа */
   onEditDoc: (id: string) => void;
   onEditHtml: (id: string) => void;
+  onEditModel: (id: string) => void;
   /** редактор или другой диалог открыт: горячие клавиши полотна не работают */
   paused: boolean;
   /** курсоры коллег и отправка своего */
   presence?: Presence;
   aiPanels: { tree: boolean; panel: boolean };
   onAiWorkspaceEffect: (effect: AiEffect) => Promise<AiToolResult>;
+}
+
+/** Только чтение: адаптер не изменяет исходные данные карточки. */
+export function IndependentModelPreview({ model }: { model: IndependentModel }) {
+  try {
+    const notation = getModelNotation(model.notation);
+    if (!notation) return <p className="pnote" style={{ padding: 20 }}>Неизвестная нотация: предпросмотр недоступен.</p>;
+    const result = notation.read(model.source);
+    if (result.readOnlyReason) return <p className="pnote" style={{ padding: 20 }}>Предпросмотр недоступен: {result.readOnlyReason}</p>;
+    const { nodes, edges, regions = [] } = result.diagram;
+    const timeline = notation.timeline?.project(model.source);
+    const finite = (n: number) => Number.isFinite(n);
+    if (!Array.isArray(nodes) || !Array.isArray(edges) || !Array.isArray(regions) ||
+      nodes.some(n => ![n.x, n.y, n.width, n.height].every(finite) || n.width <= 0 || n.height <= 0) ||
+      regions.some(r => ![r.x, r.y, r.width, r.height].every(finite) || r.width <= 0 || r.height <= 0) ||
+      edges.some(e => !Array.isArray(e.points) || e.points.some(p => !finite(p.x) || !finite(p.y)))) throw new Error('Некорректная геометрия');
+    const xs = [...nodes.flatMap(n => [n.x, n.x + n.width]), ...regions.flatMap(r => [r.x, r.x + r.width]), ...edges.flatMap(e => e.points.map(p => p.x)), ...(timeline?.lifelines.flatMap(line => [line.lineStart.x, line.lineEnd.x]) ?? []), ...(timeline?.messages.flatMap(message => message.points.map(p => p.x)) ?? [])];
+    const ys = [...nodes.flatMap(n => [n.y, n.y + n.height]), ...regions.flatMap(r => [r.y, r.y + r.height]), ...edges.flatMap(e => e.points.map(p => p.y)), ...(timeline?.lifelines.flatMap(line => [line.lineStart.y, line.lineEnd.y]) ?? []), ...(timeline?.messages.flatMap(message => message.points.map(p => p.y)) ?? [])];
+    if (!xs.length || !ys.length) return <p className="pnote" style={{ padding: 20 }}>Диаграмма пуста.</p>;
+    const minX = Math.min(...xs) - 20, minY = Math.min(...ys) - 20;
+    const width = Math.max(40, Math.max(...xs) - minX + 20), height = Math.max(40, Math.max(...ys) - minY + 20);
+    return <svg role="img" aria-label={`Предпросмотр модели: ${model.title}`} viewBox={`${minX} ${minY} ${width} ${height}`} preserveAspectRatio="xMidYMid meet" style={{ position: 'absolute', top: 54, left: 4, width: 'calc(100% - 8px)', height: 'calc(100% - 58px)', pointerEvents: 'none' }}>
+      {regions.map(r => <g key={r.id}><rect x={r.x} y={r.y} width={r.width} height={r.height} fill="#f8fafc" stroke="#94a3b8" /><text x={r.x + 8} y={r.y + 18} fontSize="13" fill="#334155">{r.label}</text></g>)}
+      {timeline?.lifelines.map(line => <line key={line.id} x1={line.lineStart.x} y1={line.lineStart.y} x2={line.lineEnd.x} y2={line.lineEnd.y} stroke="#475569" strokeDasharray="6 4" />)}
+      {timeline?.messages.map(message => <polyline key={message.id} points={message.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={message.lineStyle === 'dashed' ? '8 5' : undefined} />)}
+      {edges.map(e => <polyline key={e.id} points={e.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={e.lineStyle === 'dashed' ? '8 5' : e.lineStyle === 'dotted' ? '2 4' : undefined} />)}
+      {nodes.map(n => {
+        const symbol = notation.symbols.find(s => s.type === n.type);
+        const bounds = nodeLabelBounds(n, symbol);
+        const lines = labelLines(n.label || symbol?.appearance?.emptyLabel || '', bounds.width, Math.max(1, Math.floor(bounds.height / 14)));
+        return <g key={n.id} transform={`translate(${n.x} ${n.y})`}><NodeShape node={n} symbol={symbol} selected={false} detail={symbol && notation.renderSymbolDetail?.(symbol)} /><text x={bounds.x - n.x + bounds.width / 2} y={bounds.y - n.y + Math.max(12, (bounds.height - lines.length * 14) / 2 + 11)} textAnchor="middle" fontSize="12" fill={symbol?.appearance?.textColor ?? "#0f172a"}>{lines.map((line, i) => <tspan key={i} x={bounds.x - n.x + bounds.width / 2} dy={i ? 14 : 0}>{line}</tspan>)}</text></g>;
+      })}
+    </svg>;
+  } catch {
+    return <p className="pnote" style={{ padding: 20 }}>Не удалось прочитать диаграмму. Исходные данные не изменены.</p>;
+  }
 }
 
 /* ---------- перетаскиваемая карточка ---------- */
@@ -365,6 +405,7 @@ function Minimap({
 type Box = Pos & { w: number; h: number };
 
 const cardIdsOf = (m: Model) => [
+  ...m.models.map((m) => `model:${m.id}`),
   ...m.processes.map((p) => `proc:${p.id}`),
   ...m.docs.map((d) => `doc:${d.id}`),
   ...m.htmlObjects.map((h) => `html:${h.id}`),
@@ -510,9 +551,9 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, onEditModel, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
   const saved = useRef(loadView(projectId)).current;
-  const { sources, docs, processes, gateways, htmlObjects } = api.model;
+  const { sources, docs, processes, gateways, htmlObjects, models } = api.model;
   const pnodes = projectNodes(processes);
 
   /** документы раскладываются сеткой в три столбца справа от моделей: их может быть много */
@@ -525,6 +566,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       const i = Math.max(0, processes.findIndex((p) => p.id === key));
       return { x: 232, y: 60 + i * (MODEL_SIZE.h + 48) };
     }
+    if (kind === 'model') { const i = Math.max(0, models.findIndex((m) => m.id === key)); return { x: 232, y: 60 + (processes.length + i) * (MODEL_SIZE.h + 48) }; }
     if (kind === 'doc') {
       const i = Math.max(0, docs.findIndex((d) => d.id === key));
       return docCell(i);
@@ -552,7 +594,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     for (const [id, v] of Object.entries(api.model.meta[SIZE_KEY] ?? {})) { const n = nums(v); if (n) shared[id] = { w: n[0], h: n[1] }; }
     return { ...(saved?.sizes ?? {}), ...shared };
   });
-  const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('html:') ? HTML_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
+  const cardSize = (id: string) => sizes[id] ?? (id.startsWith('proc:') || id.startsWith('model:') ? MODEL_SIZE : id.startsWith('doc:') ? DOC_SIZE : id.startsWith('html:') ? HTML_SIZE : id.startsWith('gw:') ? GATEWAY_SIZE : SOURCE_SIZE);
   const MIN_CARD = (id: string) => (id.startsWith('proc:') ? { w: 320, h: 240 } : id.startsWith('gw:') ? { w: 96, h: 96 } : { w: 240, h: 200 });
   const MAX_CARD = 2400;
   // положение и размеры карточек входят в общую историю «назад / вперёд» вместе с моделью
@@ -1311,6 +1353,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           const secs = new Set(next.docs.find((d) => d.id === key)?.sections.map((s) => s.id));
           next = { ...next, docs: next.docs.filter((d) => d.id !== key), links: next.links.filter((l) => !secs.has(l.sectionId)) };
         } else if (kind === 'gw') next = { ...next, gateways: next.gateways.filter((g) => g.id !== key) };
+        else if (kind === 'model') next = { ...next, models: next.models.filter((m) => m.id !== key) };
         else if (kind === 'html') next = { ...next, htmlObjects: next.htmlObjects.filter((h) => h.id !== key) };
         else next = { ...next, sources: next.sources.filter((s) => s.id !== key) };
       }
@@ -1336,7 +1379,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         },
       ];
     if (t.type === 'card' && t.id.startsWith('gw:')) return [{ label: 'Удалить с полотна', icon: 'trash', danger: true, onClick: () => removeCard(t.id) }];
-    const items: MenuItem[] = [{ label: 'Свойства…', icon: 'sliders', onClick: () => setProps({ type: t.type as PropTarget['type'], id: t.id }) }];
+    const items: MenuItem[] = t.type === 'card' && t.id.startsWith('model:') ? [] : [{ label: 'Свойства…', icon: 'sliders', onClick: () => setProps({ type: t.type as PropTarget['type'], id: t.id }) }];
+    if (t.type === 'card' && t.id.startsWith('model:')) items.push({ label: 'Редактировать модель', icon: 'pencil', onClick: () => onEditModel(t.id.slice(6)) });
     if (t.type === 'card' && t.id.startsWith('proc:')) items.push({ label: 'Редактировать модель', icon: 'pencil', onClick: () => onEditProcess(t.id.slice(5)) });
     if (t.type === 'card' && t.id.startsWith('doc:')) items.push({ label: 'Редактировать документ', icon: 'pencil', onClick: () => onEditDoc(t.id.slice(4)) });
     if (t.type === 'card' && t.id.startsWith('html:')) items.push({ label: 'Редактировать HTML', icon: 'pencil', onClick: () => onEditHtml(t.id.slice(5)) });
@@ -1447,6 +1491,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const issueNodeIds = issues.flatMap((i) => (i.model ? [i.model.nodeId] : []));
   const selectedLink = cardLinks.find((item) => item.id === selLink);
   const cardLabel = (id: string) => {
+    if (id.startsWith('model:')) return models.find((item) => `model:${item.id}` === id)?.title ?? id;
     if (id.startsWith('proc:')) return processes.find((item) => `proc:${item.id}` === id)?.title ?? id;
     if (id.startsWith('doc:')) return docs.find((item) => `doc:${item.id}` === id)?.title ?? id;
     if (id.startsWith('html:')) return htmlObjects.find((item) => `html:${item.id}` === id)?.title ?? id;
@@ -1490,7 +1535,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         }
         case 'open_editor': {
           const id = String(args.id), key = id.slice(id.indexOf(':') + 1);
-          if (id.startsWith('proc:')) onEditProcess(key); else if (id.startsWith('doc:')) onEditDoc(key); else onEditHtml(key);
+          if (id.startsWith('model:')) onEditModel(key); else if (id.startsWith('proc:')) onEditProcess(key); else if (id.startsWith('doc:')) onEditDoc(key); else onEditHtml(key);
           return { ok: true, summary: 'Редактор объекта открыт', data: { id } };
         }
         case 'show_properties': setProps({ type: args.targetType as PropTarget['type'], id: String(args.id) }); return { ok: true, summary: 'Свойства открыты' };
@@ -1604,6 +1649,13 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
             );
           })}
 
+          {models.map((m) => {
+            const id = `model:${m.id}`;
+            return <DragCard key={id} id={id} pos={posOf(id)} onMove={move} onGrab={grab} onContext={openMenu} selected={selCards.includes(id)} {...linkProps(id, m.title)} className="model-card" style={{ width: cardSize(id).w, height: cardSize(id).h }} onEdit={() => onEditModel(m.id)} onResizeStart={startResize}>
+              <div className="model-head"><Icon name="model" size={18} /><b>{m.title}</b><span className="tag">{m.notation}</span><div className="grow" /><button type="button" className="icon-btn edit-btn" aria-label={`Редактировать модель: ${m.title}`} onClick={() => onEditModel(m.id)}><Icon name="pencil" size={17} /></button></div>
+              <IndependentModelPreview model={m} />
+            </DragCard>;
+          })}
           {docs.map((d) => {
             const id = `doc:${d.id}`;
             return (

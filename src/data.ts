@@ -54,6 +54,14 @@ export interface HtmlObject {
   html: string;
 }
 
+/** Независимая диаграмма; тип и исходный формат не связаны с BPMN. */
+export interface IndependentModel {
+  id: string;
+  title: string;
+  notation: string;
+  source: string;
+}
+
 /** Связь «Описывает»: шаг модели ↔ пункт документа. nodeId составной: «<id модели>:<id элемента BPMN>». */
 export interface DocLink {
   id: string;
@@ -101,6 +109,8 @@ export interface Model {
   cardLinks: CardLink[];
   /** модели процессов на доске */
   processes: Process[];
+  /** независимые диаграммы */
+  models: IndependentModel[];
   /** документы проекта */
   docs: Doc[];
   htmlObjects: HtmlObject[];
@@ -113,7 +123,7 @@ export interface Model {
 /** Короткая ссылка на пункт: «§ 4.2». */
 export const sectionRef = (title: string) => title.match(/^§\s*\d+(?:\.\d+)*/)?.[0] ?? title;
 
-export const emptyModel: Model = { gateways: [], links: [], cardLinks: [], processes: [], docs: [], htmlObjects: [], sources: [], meta: {} };
+export const emptyModel: Model = { gateways: [], links: [], cardLinks: [], processes: [], models: [], docs: [], htmlObjects: [], sources: [], meta: {} };
 
 /** Заглушка, когда замечаний нет: ничего не подсвечивает. */
 export const NO_ISSUE: Issue = { id: '', title: '', status: 'open', summary: '', question: '' };

@@ -1,7 +1,9 @@
+import { modelDefinitions } from './modeling/registry';
+
 /** Каталог доступных типов отделён от реализации редакторов и хранения проекта. */
 export type ObjectKind = 'process' | 'document' | 'html' | 'source';
-export type ObjectCategoryId = 'processes' | 'documents' | 'html' | 'sources';
-export type ObjectTypeId = 'bpmn' | 'markdown' | 'interactive-html' | 'source-reference';
+export type ObjectCategoryId = 'processes' | 'uml' | 'epc' | 'documents' | 'html' | 'sources';
+export type ObjectTypeId = string;
 
 interface ObjectType {
   id: ObjectTypeId;
@@ -26,6 +28,18 @@ export const objectCatalog: ObjectCategory[] = [
     title: 'Модели процессов',
     description: 'Диаграммы процессов и взаимодействий',
     types: [{ id: 'bpmn', kind: 'process', title: 'Модель процесса', description: 'Процесс с дорожками, событиями, действиями и переходами.', icon: 'model', format: 'BPMN' }],
+  },
+  {
+    id: 'uml',
+    title: 'UML',
+    description: 'Отдельные диаграммы классов, вариантов использования, деятельности и последовательности',
+    types: modelDefinitions.filter((definition) => definition.id.startsWith('uml-')).map((definition) => ({ ...definition, kind: 'process' as const, icon: 'model' as const })),
+  },
+  {
+    id: 'epc',
+    title: 'EPC',
+    description: 'Диаграммы событийных цепочек процессов',
+    types: modelDefinitions.filter((definition) => definition.id === 'epc').map((definition) => ({ ...definition, kind: 'process' as const, icon: 'model' as const })),
   },
   {
     id: 'documents',

@@ -2,6 +2,8 @@ import { blankXml } from './bpmn';
 import type { CardLink, Doc, Gateway, DocLink, HtmlObject, Model, Process } from './data';
 import { sectionTitles } from './markdown';
 
+export class InvalidModelsError extends Error {}
+
 type Raw = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const rid = (p: string) => p + Math.random().toString(36).slice(2, 8);
@@ -48,7 +50,14 @@ export function normalizeModel(m: Partial<Model> | Raw): Model {
         html: typeof h.html === 'string' ? h.html : '',
       }))
     : [];
+  if (raw.models !== undefined && (!Array.isArray(raw.models) || raw.models.some((m: unknown) => {
+    if (!m || typeof m !== 'object') return true;
+    const item = m as Raw;
+    return typeof item.id !== 'string' || !item.id || typeof item.title !== 'string' || typeof item.notation !== 'string' || !item.notation || typeof item.source !== 'string';
+  }))) throw new InvalidModelsError('Некорректные независимые модели: сохранение остановлено');
+  if (raw.models && new Set(raw.models.map((m: Raw) => m.id)).size !== raw.models.length) throw new InvalidModelsError('Повторный ID независимой модели: сохранение остановлено');
   return {
+    models: raw.models ?? [],
     gateways,
     links: ((Array.isArray(raw.links) ? raw.links : []) as DocLink[]).map((l) => (legacyProcess && !String(l.nodeId).includes(':') ? { ...l, nodeId: `main:${l.nodeId}` } : l)),
     cardLinks: ((Array.isArray(raw.cardLinks) ? raw.cardLinks : []) as CardLink[]).map((l) => ({ ...l, from: rename(l.from), to: rename(l.to) })),
