@@ -1,0 +1,44 @@
+const result = document.querySelector<HTMLElement>('#result')!;
+const pause = () => new Promise(resolve => setTimeout(resolve, 180));
+const assert = (v: unknown, message: string) => { if (!v) throw new Error(message); };
+const frame = document.createElement('iframe'); frame.style.cssText = 'width:1000px;height:700px'; document.body.append(frame);
+try {
+  frame.src = '/tests/editor.html'; await new Promise<void>(resolve => { frame.onload = () => resolve(); }); await pause();
+  const win = frame.contentWindow! as Window & typeof globalThis, doc = win.document;
+  const pointer = (target: Element, type: string, x: number, y: number) => target.dispatchEvent(new win.PointerEvent(type, { bubbles: true, clientX: x, clientY: y, pointerId: 42, button: 0 }));
+  const rect = (el: Element) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; };
+  const src = doc.querySelector<SVGGElement>('[data-diagram-node][aria-label*="Комментарий"]')!, dst = doc.querySelector<SVGGElement>('[data-diagram-node][aria-label*="Проверить заявку"]')!;
+  const p = rect(src.querySelector('.diagram-shape')!); pointer(src, 'pointermove', p.x, p.y); await pause();
+  const port = src.querySelector<SVGGElement>('[data-port-side="left"]')!; assert(port, 'Нет порта при наведении');
+  port.setPointerCapture = () => {}; port.hasPointerCapture = () => false;
+  const start = rect(port), before = doc.querySelectorAll('[data-diagram-edge]').length;
+  pointer(port, 'pointerdown', start.x, start.y); pointer(port, 'pointerup', start.x, start.y); await pause();
+  const targetPort = dst.querySelector<SVGGElement>('[data-port-side="top"]')!, target = rect(targetPort), surface = doc.querySelector<SVGSVGElement>('.diagram-surface')!;
+  const scale = Math.abs(targetPort.getScreenCTM()!.a), near = { x: target.x, y: target.y - 7 * scale - 17 };
+  pointer(surface, 'pointermove', near.x, near.y); await pause();
+  const preview = doc.querySelector('[data-connection-preview]')?.getAttribute('points'); assert(preview, 'Нет предпросмотра у цели');
+  pointer(surface, 'pointerdown', near.x, near.y); await pause();
+  const paths = Array.from(doc.querySelectorAll('[data-diagram-edge] > .diagram-edge')).map(el => el.getAttribute('points'));
+  assert(paths.length === before + 1 && paths.includes(preview!), `Связь не совпадает с предпросмотром: ${preview} / ${paths.join('; ')}`);
+  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, bubbles: true })); await pause();
+  assert(doc.querySelectorAll('[data-diagram-edge]').length === before, 'Undo не отменил создание');
+  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, shiftKey: true, bubbles: true })); await pause();
+  assert(doc.querySelectorAll('[data-diagram-edge]').length === before + 1, 'Redo не восстановил создание');
+  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, bubbles: true })); await pause();
+  src.setPointerCapture = () => {}; src.hasPointerCapture = () => false;
+  pointer(src, 'pointerdown', p.x, p.y); pointer(src, 'pointerup', p.x, p.y); await pause();
+  const first = src.querySelector<SVGGElement>('[data-port-side="bottom"]')!;
+  const local = (el: SVGGElement) => { const matrix = el.ownerSVGElement!.getCTM()!.inverse().multiply(el.getCTM()!); return { x: matrix.e, y: matrix.f }; };
+  const a = local(first);
+  first.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await pause();
+  const last = dst.querySelector<SVGGElement>('[data-port-side="top"]')!;
+  const b = local(last);
+  last.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', bubbles: true })); await pause();
+  const keyboard = Array.from(doc.querySelectorAll('[data-diagram-edge] > .diagram-edge')).map(el => el.getAttribute('points')!).find(line => !paths.includes(line));
+  assert(keyboard, 'Связь с клавиатуры не создана');
+  const line = keyboard!.split(' ').map(item => item.split(',').map(Number));
+
+  assert(Math.abs(line[0][0] - a.x) < .01 && Math.abs(line[0][1] - (a.y - 14)) < .01 && Math.abs(line[line.length - 1][0] - b.x) < .01 && Math.abs(line[line.length - 1][1] - (b.y + 14)) < .01, 'Клавиатура не сохранила выбранные точки');
+  result.textContent = 'Успешно: наведение, магнит, предпросмотр, привязки с клавиатуры и Undo/Redo (синтетические pointer-события).'; result.dataset.status = 'passed';
+} catch (e) { result.textContent = `Ошибка: ${e instanceof Error ? e.message : String(e)}`; result.dataset.status = 'failed'; }
+export {};

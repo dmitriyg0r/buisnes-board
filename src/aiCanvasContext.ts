@@ -34,7 +34,7 @@ export function canvasOverview(model: Model, env?: AiEnvironment) {
     propertyFields: { process: modelFields, document: docFields, html: docFields, source: fileFields, node: nodeFields, section: sectionFields },
     bpmnSymbols: bpmn.symbols.map(({ type, title, width, height }) => ({ type, title, width, height })),
     bpmnConnections: bpmn.connectionTypes,
-    bpmnCapabilities: { resizeNode: 'только textAnnotation', messageFlow: 'между двумя разными пулами', readOnly: 'Если адаптер вернул readOnlyReason, правки этой схемы запрещены', content: 'Существующие элементы меняются через edit_bpmn без пересоздания схемы' },
+    bpmnCapabilities: { resizeNode: 'все элементы палитры; минимум 40 × 30; события и шлюзы — равные ширина и высота', messageFlow: 'между двумя разными пулами', readOnly: 'Если адаптер вернул readOnlyReason, правки этой схемы запрещены', content: 'Существующие элементы меняются через edit_bpmn без пересоздания схемы' },
     tools: aiToolCatalog.map(({ name }) => name),
   };
 }

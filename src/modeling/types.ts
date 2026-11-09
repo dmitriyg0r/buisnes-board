@@ -44,6 +44,8 @@ export interface DiagramSymbol {
   group?: string;
   width: number;
   height: number;
+  /** Для фигур с ограниченным числом точек на каждой стороне. */
+  singleConnectionPortPerSide?: boolean;
 }
 /** Нотация отвечает за формат и правила, движок — за взаимодействие и отрисовку. */
 export interface DiagramNotation {

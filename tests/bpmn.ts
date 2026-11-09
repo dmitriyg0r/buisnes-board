@@ -222,7 +222,7 @@ check('Размер аннотации и концы связей сохраня
   assert(saved.width === annotation.width * 2 && saved.height === annotation.height * 2, 'Размер аннотации не сохранился');
   assert(savedEdge.points[0].x === annotation.x + (edge.points[0].x - annotation.x) * 2 && savedEdge.points[0].y === annotation.y + (edge.points[0].y - annotation.y) * 2, 'Конец связи не масштабирован');
   assert(JSON.stringify(savedEdge.points[savedEdge.points.length - 1]) === JSON.stringify(edge.points[edge.points.length - 1]), 'Противоположный конец связи изменился');
-  assertThrows(() => bpmnNotation.resizeNode!(xml, 'StartEvent_1', 100, 100), 'Разрешено изменять размер события');
+  assertThrows(() => bpmnNotation.resizeNode!(xml, 'StartEvent_1', 100, 80), 'Разрешена некруглая форма события');
   assertThrows(() => bpmnNotation.resizeNode!(xml, annotation.id, 39, 30), 'Разрешён слишком малый размер');
   assertThrows(() => bpmnNotation.resizeNode!(xml, annotation.id, Infinity, 50), 'Разрешён бесконечный размер');
 });
@@ -419,6 +419,73 @@ check('Все поддерживаемые события совместимы �
     xml = bpmnNotation.addNode(xml, symbol.type, { x: 300 + i * 50, y: 300 });
     assert(!bpmnNotation.read(xml).readOnlyReason, `Событие ${symbol.type} заблокировало модель данных`);
   }
+});
+
+check('Независимые размеры узлов и текста сохраняют связи и ID', () => {
+  let xml = bpmnNotation.addNode(blankXml('Размеры'), 'task', { x: 350, y: 150 });
+  xml = bpmnNotation.addNode(xml, 'exclusiveGateway', { x: 600, y: 150 });
+  const task = bpmnNotation.read(xml).diagram.nodes.find(n => n.type === 'task')!;
+  const gateway = bpmnNotation.read(xml).diagram.nodes.find(n => n.type === 'exclusiveGateway')!;
+  xml = bpmnNotation.connect(xml, task.id, gateway.id);
+  const edge = bpmnNotation.read(xml).diagram.edges[0];
+  const label = { x: 340, y: 120, width: 130, height: 28 };
+  xml = bpmnNotation.setLabelBounds!(xml, task.id, label);
+  xml = bpmnNotation.resizeNode!(xml, task.id, 200, 120);
+  xml = bpmnNotation.resizeNode!(xml, gateway.id, 80, 80);
+  const result = bpmnNotation.read(xml); const saved = result.diagram.nodes.find(n => n.id === task.id)!;
+  const flow = result.diagram.edges.find(e => e.id === edge.id)!;
+  assert(!result.readOnlyReason && saved.width === 200 && saved.height === 120, 'Фигура не сохранена');
+  const scaledLabel = { x: task.x + (label.x - task.x) * 200 / task.width, y: task.y + (label.y - task.y) * 120 / task.height, width: label.width * 200 / task.width, height: label.height * 120 / task.height };
+  assert(JSON.stringify(saved.labelBounds) === JSON.stringify(scaledLabel), 'Размер текста не изменился вместе с фигурой');
+  assert(flow.from === task.id && flow.to === gateway.id && xml.includes(`>${edge.id}</bpmn:outgoing>`) && xml.includes(`>${edge.id}</bpmn:incoming>`), 'Связи или ID повреждены');
+  assert(flow.points[0].x === task.x + (edge.points[0].x - task.x) * 200 / task.width, 'Начало связи не масштабировано');
+  assertThrows(() => bpmnNotation.resizeNode!(xml, gateway.id, 80, 60), 'Неквадратный шлюз принят');
+  xml = bpmnNotation.moveNode(xml, task.id, { x: 400, y: 180 });
+  assert(bpmnNotation.read(xml).diagram.nodes.find(n => n.id === task.id)?.labelBounds?.x === scaledLabel.x + 50, 'Подпись не перемещена с узлом');
+});
+
+check('Подписи и размеры всех символов сохраняются с профилем данных', () => {
+  let xml = bpmnNotation.addNode(blankXml('Каталог'), 'dataStoreReference', { x: 50, y: 50 });
+  for (const [index, symbol] of bpmnNotation.symbols.entries()) {
+    xml = bpmnNotation.addNode(xml, symbol.type, { x: 300 + index * 150, y: 300 });
+    const node = bpmnNotation.read(xml).diagram.nodes.find(n => n.type === symbol.type && n.x === 300 + index * 150)!;
+    const label = { x: node.x + 1, y: node.y - 20, width: 35, height: 19 };
+    xml = bpmnNotation.setLabelBounds!(xml, node.id, label);
+    const square = ['circle', 'double-circle', 'diamond'].includes(symbol.shape);
+    xml = bpmnNotation.resizeNode!(xml, node.id, 80, square ? 80 : 60);
+    const result = bpmnNotation.read(xml); const saved = result.diagram.nodes.find(n => n.id === node.id)!;
+    assert(!result.readOnlyReason && saved.width === 80 && saved.height === (square ? 80 : 60), `Размер ${symbol.type} не сохранился`);
+    const height = square ? 80 : 60;
+    const sx = 80 / node.width, sy = height / node.height;
+    const scaled = { x: node.x + (label.x - node.x) * sx, y: node.y + (label.y - node.y) * sy, width: label.width * sx, height: label.height * sy };
+    assert(JSON.stringify(saved.labelBounds) === JSON.stringify(scaled), `Подпись ${symbol.type} не масштабирована`);
+  }
+});
+
+check('Размер задачи сохраняет ассоциацию данных и обновляет дорожку', () => {
+  let xml = bpmnNotation.addRegion!(blankXml('Данные'), { x: 120, y: 120 });
+  xml = bpmnNotation.addNode(xml, 'task', { x: 850, y: 150 });
+  xml = bpmnNotation.addNode(xml, 'dataObjectReference', { x: 600, y: 150 });
+  const diagram = bpmnNotation.read(xml).diagram;
+  const task = diagram.nodes.find(n => n.type === 'task')!;
+  const data = diagram.nodes.find(n => n.type === 'dataObjectReference')!;
+  xml = bpmnNotation.connect(xml, data.id, task.id);
+  const edge = bpmnNotation.read(xml).diagram.edges[0];
+  assert(xml.includes(`>${task.id}</bpmn:flowNodeRef>`), 'Задача не назначена дорожке');
+  xml = bpmnNotation.resizeNode!(xml, task.id, 200, 100);
+  const result = bpmnNotation.read(xml);
+  assert(!result.readOnlyReason && !xml.includes(`>${task.id}</bpmn:flowNodeRef>`), 'Принадлежность дорожке не обновлена');
+  assert(result.diagram.edges.some(e => e.id === edge.id && e.from === data.id && e.to === task.id), 'Ассоциация данных утрачена');
+});
+
+check('Повреждённые границы подписи и фигуры блокируют запись без потери XML', () => {
+  const base = bpmnNotation.setLabelBounds!(blankXml('Защита'), 'StartEvent_1', { x: 180, y: 200, width: 80, height: 20 });
+  for (const bad of [base.replace('width="80"', 'width="0"'), base.replace('width="80"', 'width=" "'), base.replace('</bpmndi:BPMNLabel>', '<dc:Bounds x="0" y="0" width="1" height="1"/></bpmndi:BPMNLabel>')]) {
+    assert(bad !== base && bpmnNotation.read(bad).readOnlyReason, 'Повреждённая подпись доступна для записи');
+    assertThrows(() => bpmnNotation.resizeNode!(bad, 'StartEvent_1', 60, 60), 'Повреждённая модель изменена');
+  }
+  const missingShapeBounds = base.replace(/<dc:Bounds x="182" y="162" width="36" height="36"\s*\/>/, '');
+  assert(missingShapeBounds !== base && bpmnNotation.read(missingShapeBounds).readOnlyReason, 'Подпись ошибочно принята за фигуру');
 });
 
 const target = document.getElementById('results');
