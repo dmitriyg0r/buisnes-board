@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
 import type { HtmlObject } from './data';
 import { HtmlPreview } from './HtmlPreview';
+import { HtmlCodeEditor } from './HtmlCodeEditor';
 import { Icon } from './Icon';
 
 interface Props {
@@ -10,14 +11,48 @@ interface Props {
   onClose: () => void;
 }
 
+const LAYOUT_KEY = 'bb.html-editor-layout.v1';
+function loadLayout() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? 'null');
+    return { split: typeof saved?.split === 'number' && Number.isFinite(saved.split) ? Math.max(0.2, Math.min(0.8, saved.split)) : 0.5, codeCollapsed: saved?.codeCollapsed === true, previewCollapsed: saved?.previewCollapsed === true && saved?.codeCollapsed !== true };
+  } catch { return { split: 0.5, codeCollapsed: false, previewCollapsed: false }; }
+}
+
 export default function HtmlEditorDialog({ object, onChange, onCheckpoint, onClose }: Props) {
   const [name, setName] = useState(object.title);
   const [html, setHtml] = useState(object.html);
   const [revision, setRevision] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [layout, setLayout] = useState(loadLayout);
+  const [stacked, setStacked] = useState(() => window.matchMedia('(max-width: 760px)').matches);
+  const [resizing, setResizing] = useState(false);
+  const panes = useRef<HTMLDivElement>(null);
+  const resizePointer = useRef<number | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const nameRef = useRef(name);
   nameRef.current = name;
+
+  useEffect(() => {
+    try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* хранилище недоступно */ }
+  }, [layout]);
+  useEffect(() => {
+    const media = window.matchMedia('(max-width: 760px)');
+    const update = () => setStacked(media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+  const togglePane = (pane: 'code' | 'preview') => setLayout((old) => {
+    if (pane === 'code') return { ...old, codeCollapsed: !old.codeCollapsed, previewCollapsed: old.codeCollapsed ? old.previewCollapsed : false };
+    return { ...old, previewCollapsed: !old.previewCollapsed, codeCollapsed: old.previewCollapsed ? old.codeCollapsed : false };
+  });
+  const resizeTo = (split: number) => setLayout((old) => ({ ...old, split: Math.max(0.2, Math.min(0.8, split)) }));
+  const finishResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (resizePointer.current !== event.pointerId) return;
+    resizePointer.current = null;
+    setResizing(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  };
 
   const update = (code: string) => {
     setHtml(code);
@@ -59,23 +94,40 @@ export default function HtmlEditorDialog({ object, onChange, onCheckpoint, onClo
       <button type="button" className="icon-btn" title="Экспорт .html" aria-label="Экспорт .html" onClick={exportFile}><Icon name="download" size={18} /></button>
       <button type="button" className="icon-btn" title="Закрыть" aria-label="Закрыть" onClick={onClose}><Icon name="close" size={18} /></button>
     </header>
-    <div className="html-editor-panes">
+    <div ref={panes} className={`html-editor-panes${layout.codeCollapsed ? ' code-collapsed' : ''}${layout.previewCollapsed ? ' preview-collapsed' : ''}${resizing ? ' resizing' : ''}`} style={{ '--html-code-size': `${layout.split}fr`, '--html-preview-size': `${1 - layout.split}fr` } as CSSProperties}>
       <section className="html-source-pane" aria-label="Код HTML">
-        <div className="html-pane-head"><b>Код</b><span>HTML · CSS · JavaScript</span></div>
-        <textarea className="html-code" aria-label="HTML-код" value={html} autoFocus spellCheck={false} autoCapitalize="off" autoCorrect="off" onFocus={onCheckpoint} onChange={(event) => update(event.target.value)} onKeyDown={(event) => {
-          if (event.key !== 'Tab' || event.shiftKey) return;
-          event.preventDefault();
-          const input = event.currentTarget;
-          const start = input.selectionStart, end = input.selectionEnd;
-          update(html.slice(0, start) + '  ' + html.slice(end));
-          requestAnimationFrame(() => input.setSelectionRange(start + 2, start + 2));
-        }} />
+        <button type="button" className="html-pane-rail" hidden={!layout.codeCollapsed} title="Развернуть код" aria-label="Развернуть код" aria-expanded={false} onClick={() => togglePane('code')}><Icon name={stacked ? 'chevronDown' : 'chevronRight'} /><span>Код</span></button>
+        <div className="html-pane-expanded" hidden={layout.codeCollapsed}>
+          <div className="html-pane-head"><b>Код</b><div className="grow" /><span>HTML · CSS · JavaScript</span><button type="button" className="icon-btn" title="Свернуть код" aria-label="Свернуть код" aria-expanded onClick={() => togglePane('code')}><Icon name={stacked ? 'chevronUp' : 'chevronLeft'} /></button></div>
+          <HtmlCodeEditor value={html} onFocus={onCheckpoint} onChange={update} />
+        </div>
       </section>
+      <div className="html-pane-divider" role="separator" aria-label="Размер панелей кода и предпросмотра" aria-orientation={stacked ? 'horizontal' : 'vertical'} aria-valuemin={20} aria-valuemax={80} aria-valuenow={Math.round(layout.split * 100)} aria-valuetext={`Код ${Math.round(layout.split * 100)}%, предпросмотр ${Math.round((1 - layout.split) * 100)}%`} aria-hidden={layout.codeCollapsed || layout.previewCollapsed || undefined} tabIndex={layout.codeCollapsed || layout.previewCollapsed ? -1 : 0} title="Перетащите для изменения размера; двойной щелчок — поровну" onDoubleClick={() => resizeTo(0.5)} onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        event.preventDefault();
+        event.currentTarget.focus();
+        resizePointer.current = event.pointerId;
+        event.currentTarget.setPointerCapture(event.pointerId);
+        setResizing(true);
+      }} onPointerMove={(event) => {
+        if (resizePointer.current !== event.pointerId || !panes.current) return;
+        const rect = panes.current.getBoundingClientRect();
+        resizeTo(stacked ? (event.clientY - rect.top) / rect.height : (event.clientX - rect.left) / rect.width);
+      }} onPointerUp={finishResize} onPointerCancel={finishResize} onLostPointerCapture={finishResize} onKeyDown={(event) => {
+        const direction = stacked ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+        if (event.key === 'Home') resizeTo(0.2);
+        else if (event.key === 'End') resizeTo(0.8);
+        else if (direction.includes(event.key)) resizeTo(layout.split + (event.key === direction[0] ? -0.05 : 0.05));
+        else return;
+        event.preventDefault();
+      }} />
       <section className="html-preview-pane" aria-label="Предпросмотр HTML">
-        <div className="html-pane-head"><b>Предпросмотр</b><button type="button" className="icon-btn" title="Перезапустить предпросмотр" aria-label="Перезапустить предпросмотр" onClick={() => setRevision((v) => v + 1)}><Icon name="redo" /></button></div>
-        <HtmlPreview key={revision} html={html} title={name} />
+        <button type="button" className="html-pane-rail" hidden={!layout.previewCollapsed} title="Развернуть предпросмотр" aria-label="Развернуть предпросмотр" aria-expanded={false} onClick={() => togglePane('preview')}><Icon name={stacked ? 'chevronUp' : 'chevronLeft'} /><span>Предпросмотр</span></button>
+        <div className="html-pane-expanded" hidden={layout.previewCollapsed}>
+          <div className="html-pane-head"><b>Предпросмотр</b><div className="grow" /><button type="button" className="icon-btn" title="Перезапустить предпросмотр" aria-label="Перезапустить предпросмотр" onClick={() => setRevision((v) => v + 1)}><Icon name="redo" /></button><button type="button" className="icon-btn" title="Свернуть предпросмотр" aria-label="Свернуть предпросмотр" aria-expanded onClick={() => togglePane('preview')}><Icon name={stacked ? 'chevronDown' : 'chevronRight'} /></button></div>
+          <HtmlPreview key={revision} html={html} title={name} />
+        </div>
       </section>
     </div>
-    <footer className="html-editor-foot"><span>Изменения сохраняются автоматически</span><span>Встроенные стили и скрипты; внешние ресурсы не загружаются</span></footer>
   </div>;
 }
