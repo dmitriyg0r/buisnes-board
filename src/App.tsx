@@ -21,8 +21,10 @@ import { HttpError } from './api';
 import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
 import { starterHtml } from './html';
+import { getModelNotation } from './modeling/registry';
 import type { AiEffect, AiToolResult } from './aiToolContract';
 
+const IndependentModelEditor = lazy(() => import('./IndependentModelEditor'));
 const DiagramModelEditor = lazy(() => import('./DiagramModelEditor'));
 const DocEditorDialog = lazy(() => import('./DocEditorDialog'));
 const HtmlEditorDialog = lazy(() => import('./HtmlEditorDialog'));
@@ -36,6 +38,7 @@ const syncLabel: Record<SyncState, string> = {
   offline: 'Нет связи с сервером',
   conflict: 'Обновлено с сервера',
   revoked: 'Доступ закрыт',
+  error: 'Ошибка сохранения',
 };
 const syncHint: Record<SyncState, string> = {
   connecting: 'Подключаемся к бэкенду',
@@ -44,6 +47,7 @@ const syncHint: Record<SyncState, string> = {
   offline: 'Работаем локально, изменения отправятся при следующей попытке',
   conflict: 'Модель была изменена другим участником, правки объединены',
   revoked: 'Владелец закрыл вам доступ к проекту или удалил проект',
+  error: 'Сервер отклонил сохранение; локальные изменения не отправлены',
 };
 
 export function App() {
@@ -204,7 +208,7 @@ function Workspace({
   const [selCards, setSelCards] = useState<string[]>([]);
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
-  const [editing, setEditing] = useState<{ type: 'process' | 'doc' | 'html'; id: string } | null>(null);
+  const [editing, setEditing] = useState<{ type: 'process' | 'model' | 'doc' | 'html'; id: string } | null>(null);
   // свёрнутые боковые панели запоминаются в браузере
   const [layout, setLayout] = useState<{ tree: boolean; panel: boolean }>(() => {
     try {
@@ -324,6 +328,13 @@ function Workspace({
           sources={api.model.sources}
           docs={api.model.docs}
           processes={api.model.processes}
+          models={api.model.models}
+          onEditModel={(id) => setEditing({ type: 'model', id })}
+          onDeleteModel={(id) => {
+            const cardId = `model:${id}`;
+            api.apply((m) => ({ ...m, models: m.models.filter((item) => item.id !== id), cardLinks: m.cardLinks.filter((link) => link.from !== cardId && link.to !== cardId) }));
+            setSelCards((selected) => selected.filter((item) => item !== cardId));
+          }}
           htmlObjects={api.model.htmlObjects}
           onEditHtml={(id) => setEditing({ type: 'html', id })}
           selectedCards={selCards}
@@ -335,6 +346,7 @@ function Workspace({
           selCards={selCards}
           onSelCards={setSelCards}
           onAddMaterial={() => setAddOpen(true)}
+          onEditModel={(id) => setEditing({ type: 'model', id })}
           onEditProcess={(id) => setEditing({ type: 'process', id })}
           onEditDoc={(id) => setEditing({ type: 'doc', id })}
           onEditHtml={(id) => setEditing({ type: 'html', id })}
@@ -384,6 +396,14 @@ function Workspace({
         </Suspense>
       )}
 
+      {editing?.type === 'model' && api.model.models.find((m) => m.id === editing.id) && <Suspense fallback={<div className="boot">Загрузка редактора…</div>}>
+        <IndependentModelEditor key={editing.id} model={api.model.models.find((m) => m.id === editing.id)!} onClose={() => setEditing(null)} onSave={(title, source) => {
+          const id = editing.id;
+          api.apply((m) => ({ ...m, models: m.models.map((item) => item.id === id ? { ...item, title, source } : item) }));
+          setEditing(null);
+        }} />
+      </Suspense>}
+
       {editing?.type === 'doc' && api.model.docs.find((d) => d.id === editing.id) && (
         <Suspense fallback={<div className="doc-editor boot" role="status">Загрузка редактора…</div>}>
           <DocEditorDialog
@@ -425,7 +445,15 @@ function Workspace({
       {addOpen && (
         <AddMaterialDialog
           counts={{ processes: api.model.processes.length, docs: api.model.docs.length, htmlObjects: api.model.htmlObjects.length }}
-          onAddModel={(title) => {
+          onAddModel={(title, typeId) => {
+            if (typeId !== 'bpmn') {
+              const notation = getModelNotation(typeId);
+              if (!notation) throw new Error(`Неизвестная нотация: ${typeId}`);
+              const id = rid('m');
+              api.apply((m) => ({ ...m, models: [...m.models, { id, title, notation: typeId, source: notation.createEmpty() }] }));
+              setEditing({ type: 'model', id });
+              return;
+            }
             const id = rid('p');
             api.apply((m) => ({ ...m, processes: [...m.processes, { id, title, xml: blankXml(title) }] }));
             setEditing({ type: 'process', id });

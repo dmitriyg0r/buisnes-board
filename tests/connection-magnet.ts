@@ -13,7 +13,16 @@ try {
   port.setPointerCapture = () => {}; port.hasPointerCapture = () => false;
   const start = rect(port), before = doc.querySelectorAll('[data-diagram-edge]').length;
   pointer(port, 'pointerdown', start.x, start.y); pointer(port, 'pointerup', start.x, start.y); await pause();
-  const targetPort = dst.querySelector<SVGGElement>('[data-port-side="top"]')!, target = rect(targetPort), surface = doc.querySelector<SVGSVGElement>('.diagram-surface')!;
+  const surface = doc.querySelector<SVGSVGElement>('.diagram-surface')!;
+  const targetShape = dst.querySelector('.diagram-shape')!.getBoundingClientRect();
+  pointer(surface, 'pointermove', targetShape.x + targetShape.width / 2, targetShape.y); await pause();
+  assert(dst.querySelectorAll('[data-connection-port]').length === 12 && !src.querySelector('[data-connection-port]'), 'Точки показаны не только у ближайшей цели');
+  pointer(surface, 'pointermove', targetShape.x + targetShape.width * .32, targetShape.y + 4); await pause();
+  const nearBody = doc.querySelector('[data-connection-preview]')?.getAttribute('points')?.split(' ').at(-1)?.split(',').map(Number);
+  const firstPort = dst.querySelector<SVGGElement>('[data-port-side="top"][data-port-offset="0.25"]')!;
+  const portMatrix = firstPort.ownerSVGElement!.getCTM()!.inverse().multiply(firstPort.getCTM()!);
+  assert(nearBody && Math.abs(nearBody[0] - portMatrix.e) < .01 && Math.abs(nearBody[1] - (portMatrix.f + 14)) < .01, 'Возле фигуры предпросмотр не прилип к ближайшей точке');
+  const targetPort = dst.querySelector<SVGGElement>('[data-port-side="top"]')!, target = rect(targetPort);
   const scale = Math.abs(targetPort.getScreenCTM()!.a), near = { x: target.x, y: target.y - 7 * scale - 17 };
   pointer(surface, 'pointermove', near.x, near.y); await pause();
   const preview = doc.querySelector('[data-connection-preview]')?.getAttribute('points'); assert(preview, 'Нет предпросмотра у цели');
@@ -31,6 +40,7 @@ try {
   const local = (el: SVGGElement) => { const matrix = el.ownerSVGElement!.getCTM()!.inverse().multiply(el.getCTM()!); return { x: matrix.e, y: matrix.f }; };
   const a = local(first);
   first.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); await pause();
+  pointer(surface, 'pointermove', targetShape.x + targetShape.width / 2, targetShape.y); await pause();
   const last = dst.querySelector<SVGGElement>('[data-port-side="top"]')!;
   const b = local(last);
   last.dispatchEvent(new win.KeyboardEvent('keydown', { key: ' ', bubbles: true })); await pause();
@@ -39,6 +49,23 @@ try {
   const line = keyboard!.split(' ').map(item => item.split(',').map(Number));
 
   assert(Math.abs(line[0][0] - a.x) < .01 && Math.abs(line[0][1] - (a.y - 14)) < .01 && Math.abs(line[line.length - 1][0] - b.x) < .01 && Math.abs(line[line.length - 1][1] - (b.y + 14)) < .01, 'Клавиатура не сохранила выбранные точки');
-  result.textContent = 'Успешно: наведение, магнит, предпросмотр, привязки с клавиатуры и Undo/Redo (синтетические pointer-события).'; result.dataset.status = 'passed';
+  win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, bubbles: true })); await pause();
+  pointer(src, 'pointermove', p.x, p.y); await pause();
+  const dragPort = src.querySelector<SVGGElement>('[data-port-side="left"]')!;
+  dragPort.setPointerCapture = () => {}; dragPort.hasPointerCapture = () => false;
+  const dragStart = rect(dragPort);
+  pointer(dragPort, 'pointerdown', dragStart.x, dragStart.y); await pause();
+  // При потере захвата браузер может направить события в цель, а не исходный порт.
+  pointer(dst.querySelector('.diagram-shape')!, 'pointermove', target.x, target.y); await pause();
+  assert(dst.querySelectorAll('[data-connection-port]').length === 12, 'При перетаскивании не видны точки цели');
+  assert(Array.from(src.querySelectorAll<SVGGElement>('[data-connection-port]')).every(el => el.style.opacity === '0'), 'Точки источника видны при перетаскивании');
+  const dragPreview = doc.querySelector('[data-connection-preview]')?.getAttribute('points');
+  pointer(dst.querySelector('.diagram-shape')!, 'pointerup', target.x, target.y); await pause();
+  assert(Array.from(doc.querySelectorAll('[data-diagram-edge] > .diagram-edge')).some(el => el.getAttribute('points') === dragPreview), 'Перетаскивание не сохранило предпросмотр');
+  (Array.from(doc.querySelectorAll('button')).find(el => el.textContent === 'Сохранить') as HTMLButtonElement).click(); await pause();
+  const fixture = (win as unknown as { editorFixture: { saved: { source: string } | null } }).editorFixture;
+  assert(fixture.saved?.source.includes('BPMNEdge'), 'Изменённая модель не сохранена');
+  (window as unknown as { magnetXml: string }).magnetXml = fixture.saved!.source;
+  result.textContent = 'Успешно: ближайшая цель, магнит, перетаскивание, предпросмотр, клавиатура и Undo/Redo (синтетические pointer-события).'; result.dataset.status = 'passed';
 } catch (e) { result.textContent = `Ошибка: ${e instanceof Error ? e.message : String(e)}`; result.dataset.status = 'failed'; }
 export {};

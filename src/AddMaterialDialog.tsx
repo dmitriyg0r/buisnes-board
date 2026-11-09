@@ -5,7 +5,7 @@ import { objectCatalog, type ObjectCategoryId, type ObjectTypeId } from './objec
 
 interface Props {
   counts: { processes: number; docs: number; htmlObjects: number };
-  onAddModel: (title: string) => void;
+  onAddModel: (title: string, typeId: string) => void;
   onAddDoc: (title: string) => void;
   onAddHtml: (title: string) => void;
   onAddSource: (s: Omit<Source, 'id'>) => void;
@@ -43,11 +43,11 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddHtml, onA
     event.preventDefault();
     if (!valid) return;
     switch (type.id) {
-      case 'bpmn': onAddModel(modelName.trim()); break;
+      case 'bpmn': onAddModel(modelName.trim(), type.id); break;
       case 'markdown': onAddDoc(title.trim()); break;
       case 'interactive-html': onAddHtml(htmlName.trim()); break;
       case 'source-reference': onAddSource({ name: name.trim(), ext, pages: Math.max(1, Math.round(pages) || 1) }); break;
-      default: { const unsupported: never = type.id; return unsupported; }
+      default: if (type.kind === 'process') onAddModel(modelName.trim(), type.id); else throw new Error('Неизвестный тип объекта');
     }
     onClose();
   };

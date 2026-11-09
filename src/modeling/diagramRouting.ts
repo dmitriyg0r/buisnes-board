@@ -15,9 +15,15 @@ function pointSides(n: DiagramNode, p: DiagramPoint): Direction[] {
   return Math.abs(dx) >= Math.abs(dy) ? [dx < 0 ? 'left' : 'right'] : [dy < 0 ? 'up' : 'down'];
 }
 /** Первый и последний сегменты направлены наружу от соответствующей фигуры. */
-export function endpointsFaceOutward(points: readonly DiagramPoint[], from: DiagramNode, to: DiagramNode): boolean {
+export function endpointsFaceOutward(points: readonly DiagramPoint[], from: DiagramNode, to: DiagramNode, shapeOf?: (node: DiagramNode) => DiagramShape | undefined): boolean {
   if (points.length < 2) return false;
   const outward = (node: DiagramNode, at: DiagramPoint, next: DiagramPoint) => {
+    if (shapeOf?.(node) === 'hexagon') {
+      const cx = node.x + node.width / 2, cy = node.y + node.height / 2;
+      const dx = (at.x - cx) / (node.width / 2), dy = (at.y - cy) / (node.height / 2);
+      const onBoundary = Math.abs(dy) <= 1 + 1e-6 && Math.abs(dx) + .4 * Math.abs(dy) <= 1 + 1e-6 && (Math.abs(Math.abs(dy) - 1) < 1e-6 || Math.abs(Math.abs(dx) + .4 * Math.abs(dy) - 1) < 1e-6);
+      if (onBoundary) return (next.y === at.y && (next.x - at.x) * dx > 0) || (next.x === at.x && (next.y - at.y) * dy > 0);
+    }
     const side = pointSides(node, at)[0];
     return side === 'left' ? next.y === at.y && next.x < at.x : side === 'right' ? next.y === at.y && next.x > at.x : side === 'up' ? next.x === at.x && next.y < at.y : side === 'down' ? next.x === at.x && next.y > at.y : false;
   };

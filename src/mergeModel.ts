@@ -31,9 +31,11 @@ function mergeRecord<V>(base: Record<string, V>, local: Record<string, V>, remot
 }
 
 type WithId = { id: string };
-function mergeList<T extends WithId>(base: T[], local: T[], remote: T[]): T[] {
+function mergeList<T extends WithId>(base: T[], local: T[], remote: T[], fields = false): T[] {
   const idx = (a: T[]) => Object.fromEntries(a.map((x) => [x.id, x])) as Record<string, T>;
-  const merged = mergeRecord(idx(base), idx(local), idx(remote));
+  const merged = mergeRecord(idx(base), idx(local), idx(remote), fields
+    ? (b, l, r) => mergeRecord((b ?? {}) as Record<string, unknown>, l as Record<string, unknown>, r as Record<string, unknown>) as T
+    : undefined);
   // порядок: сначала как на сервере, затем новые локальные
   const order = [...remote.map((x) => x.id), ...local.map((x) => x.id)];
   const seen = new Set<string>();
@@ -47,6 +49,7 @@ export function mergeModel(base: Model, local: Model, remote: Model): Model {
     gateways: mergeList(base.gateways, local.gateways, remote.gateways),
     links: mergeList(base.links, local.links, remote.links),
     cardLinks: mergeList(base.cardLinks, local.cardLinks, remote.cardLinks),
+    models: mergeList(base.models, local.models, remote.models, true),
     processes: mergeList(base.processes, local.processes, remote.processes),
     docs: mergeList(base.docs, local.docs, remote.docs),
     htmlObjects: mergeList(base.htmlObjects, local.htmlObjects, remote.htmlObjects),

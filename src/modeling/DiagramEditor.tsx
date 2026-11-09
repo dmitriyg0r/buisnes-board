@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Icon } from '../Icon';
 import { WorkspaceActionDialog } from '../WorkspaceActionDialog';
 import { WorkspaceContextMenu } from '../WorkspaceContextMenu';
@@ -6,6 +6,8 @@ import { connectionPortCount } from '../connectionPorts';
 import { hasSelfIntersections, simplifyRoute } from './orthogonalRouting';
 import { endpointsFaceOutward, routeBetweenNodes } from './diagramRouting';
 import { moveSelectedNodes, nodesInSelection, selectionBounds } from './diagramSelection';
+import { DIAGRAM_GRID_STEP, snapDiagramPoint } from './diagramGrid';
+import { alignDiagramBox, type AlignmentGuide } from './diagramAlignment';
 import type { Diagram, DiagramEdge, DiagramNode, DiagramNotation, DiagramPoint, DiagramSymbol } from './types';
 
 interface Props {
@@ -16,11 +18,18 @@ interface Props {
   onClose: () => void;
 }
 type View = { x: number; y: number; width: number; height: number };
-type ConnectionAppearance = { lineStyle?: 'solid' | 'dotted' | 'dashed'; startMarker?: 'circle'; arrowStart?: boolean; arrowEnd?: boolean; arrowStyle?: 'open' | 'filled' };
+type ConnectionAppearance = { lineStyle?: 'solid' | 'dotted' | 'dashed'; startMarker?: 'circle' | 'diamond' | 'diamond-filled'; arrowStart?: boolean; arrowEnd?: boolean; arrowStyle?: 'open' | 'filled' | 'triangle' };
 type ConnectionOption = { id: string; title: string; appearance?: ConnectionAppearance };
+function markerAtStart(appearance: ConnectionAppearance): string | undefined {
+  return appearance.startMarker === 'circle' ? 'url(#diagram-message-circle)' : appearance.startMarker === 'diamond' ? 'url(#diagram-diamond)' : appearance.startMarker === 'diamond-filled' ? 'url(#diagram-diamond-filled)' : appearance.arrowStart ? 'url(#diagram-association-arrow)' : undefined;
+}
+function markerAtEnd(appearance: ConnectionAppearance): string | undefined {
+  if (!(appearance.arrowEnd ?? (appearance.lineStyle !== 'dotted'))) return undefined;
+  return appearance.arrowStyle === 'triangle' ? 'url(#diagram-triangle)' : appearance.arrowStyle === 'open' || appearance.lineStyle === 'dotted' ? 'url(#diagram-association-arrow)' : 'url(#diagram-arrow)';
+}
 type EdgeDrag = { edge: DiagramEdge; pointer: number; start: DiagramPoint; kind: 'point' | 'segment'; index: number; element: SVGElement; points: DiagramPoint[]; from: string; to: string; valid: boolean; moved: boolean };
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
-type Drag = { kind?: 'region' | 'resize' | 'label-resize'; width?: number; height?: number; corner?: ResizeCorner; square?: boolean; ids?: string[]; id: string; pointer: number; start: DiagramPoint; original: DiagramPoint; current: DiagramPoint; element: SVGGElement; moved: boolean };
+type Drag = { kind?: 'region' | 'resize' | 'label-resize'; width?: number; height?: number; corner?: ResizeCorner; square?: boolean; ids?: string[]; id: string; pointer: number; start: DiagramPoint; original: DiagramPoint; current: DiagramPoint; element: SVGGElement; moved: boolean; guides?: AlignmentGuide[] };
 type Marquee = { pointer: number; start: DiagramPoint; current: DiagramPoint; client: DiagramPoint; moved: boolean; additive: boolean; previous: string[] };
 
 function resized(item: Drag) {
@@ -34,11 +43,19 @@ function resized(item: Drag) {
   return { x: left ? item.original.x + item.width! - width : item.original.x, y: top ? item.original.y + item.height! - height : item.original.y, width, height };
 }
 
-function nodeLabelBounds(node: DiagramNode, symbol?: DiagramSymbol) {
+export function nodeLabelBounds(node: DiagramNode, symbol?: DiagramSymbol) {
   if (node.labelBounds) return node.labelBounds;
+  if (symbol?.appearance?.labelInside) {
+    if (symbol.appearance.icon) { const left = symbol.shape === 'hexagon' ? Math.min(45, node.width * .32) : Math.min(38, node.width * .32); const right = symbol.shape === 'hexagon' ? node.width * .15 : symbol.shape === 'pointed-right' ? Math.min(20, node.width * .15) : 8; return { x: node.x + left, y: node.y + 8, width: Math.max(1, node.width - left - right), height: Math.max(18, node.height - 16) }; }
+    const insetX = symbol.shape === 'diamond' ? node.width * .23 : symbol.shape === 'hexagon' || symbol.shape === 'ellipse' ? node.width * .15 : 8;
+    return { x: node.x + insetX, y: node.y + 8, width: Math.max(30, node.width - insetX * 2), height: Math.max(18, node.height - 16) };
+  }
   if (symbol?.shape === 'annotation') return { x: node.x + 12, y: node.y + 6, width: Math.max(30, node.width - 18), height: Math.max(18, node.height - 12) };
+  if (symbol?.shape === 'class-box') return { x: node.x + 6, y: node.y + (symbol.stereotype ? 16 : 3), width: Math.max(30, node.width - 12), height: 25 };
+  if (symbol?.shape === 'lifeline') return { x: node.x + 4, y: node.y + 3, width: Math.max(30, node.width - 8), height: 32 };
+  if (symbol?.shape === 'rectangle' || symbol?.shape === 'ellipse' || symbol?.shape === 'hexagon') return { x: node.x + 8, y: node.y + 6, width: Math.max(30, node.width - 16), height: Math.max(18, node.height - 12) };
   if (symbol?.shape !== 'rounded-rectangle') return { x: node.x + node.width / 2 - Math.max(100, node.width) / 2, y: node.y + node.height + 6, width: Math.max(100, node.width), height: 42 };
-  return { x: node.x + 8, y: node.y + 24, width: Math.max(30, node.width - 16), height: Math.max(18, node.height - 30) };
+  return { x: node.x + 8, y: node.y + 6, width: Math.max(30, node.width - 16), height: Math.max(18, node.height - 12) };
 }
 
 function ConnectionExample({ appearance, automatic }: { appearance?: ConnectionAppearance; automatic?: boolean }) {
@@ -50,13 +67,14 @@ function ConnectionExample({ appearance, automatic }: { appearance?: ConnectionA
   return <svg className="diagram-connection-example" viewBox="0 0 110 36" aria-hidden="true">
     <path d="M13 18 H96" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap={dotted ? 'round' : 'butt'} strokeDasharray={dotted ? '2 5' : dashed ? '6 4' : undefined} />
     {appearance?.startMarker === 'circle' && <circle cx="13" cy="18" r="4" fill="white" stroke="currentColor" strokeWidth="2" />}
-    {arrowEnd && (open ? <path d="M88 12 L96 18 L88 24" fill="none" stroke="currentColor" strokeWidth="2" /> : <path d="M87 12 L97 18 L87 24 Z" fill="currentColor" />)}
+    {(appearance?.startMarker === 'diamond' || appearance?.startMarker === 'diamond-filled') && <path d="M13 18 L19 13 L25 18 L19 23 Z" fill={appearance.startMarker === 'diamond' ? 'white' : 'currentColor'} stroke="currentColor" strokeWidth="1.5" />}
+    {arrowEnd && (open ? <path d="M88 12 L96 18 L88 24" fill="none" stroke="currentColor" strokeWidth="2" /> : <path d="M87 12 L97 18 L87 24 Z" fill={appearance?.arrowStyle === 'triangle' ? 'white' : 'currentColor'} stroke="currentColor" strokeWidth="1.5" />)}
     {arrowStart && <path d="M21 12 L13 18 L21 24" fill="none" stroke="currentColor" strokeWidth="2" />}
     {automatic && <text x="12" y="11" fontSize="10" fill="currentColor">А</text>}
   </svg>;
 }
 
-function labelLines(text: string, width: number, maxLines = 3): string[] {
+export function labelLines(text: string, width: number, maxLines = 3): string[] {
   const limit = Math.max(4, Math.floor(width / 7));
   const lines: string[] = [];
   for (const paragraph of text.split('\n')) {
@@ -88,10 +106,17 @@ function anchor(node: { x: number; y: number; width: number; height: number }, a
   const dx = at.x - cx; const dy = at.y - cy;
   if (!dx && !dy) return { x: cx + node.width / 2, y: cy };
   const rx = node.width / 2; const ry = node.height / 2;
-  const factor = shape === 'circle' || shape === 'double-circle' ? 1 / Math.hypot(dx / rx, dy / ry)
+  const factor = shape === 'circle' || shape === 'double-circle' || shape === 'ellipse' || shape === 'circle-cross' ? 1 / Math.hypot(dx / rx, dy / ry)
     : shape === 'diamond' ? 1 / (Math.abs(dx) / rx + Math.abs(dy) / ry)
+    : shape === 'hexagon' ? 1 / Math.max(Math.abs(dy) / ry, Math.abs(dx) / rx + .4 * Math.abs(dy) / ry)
+    : shape === 'pointed-right' ? 1 / Math.max(Math.abs(dy) / ry, -dx / rx, (dx + Math.min(18, node.width * .15) * Math.abs(dy) / ry) / rx)
     : 1 / Math.max(Math.abs(dx) / rx, Math.abs(dy) / ry);
   return { x: cx + dx * factor, y: cy + dy * factor };
+}
+
+function portCount(node: DiagramNode, symbol?: DiagramSymbol, horizontal = true): number {
+  if (!symbol?.singleConnectionPortPerSide && (!symbol?.shape || symbol.shape === 'rounded-rectangle' || symbol.shape === 'rectangle' || symbol.shape === 'class-box' || symbol.shape === 'document' || symbol.shape === 'annotation')) return 3;
+  return connectionPortCount(horizontal ? node.width : node.height, symbol?.singleConnectionPortPerSide);
 }
 
 function orthogonal(points: DiagramPoint[]): boolean {
@@ -136,11 +161,11 @@ function moveRouteSegment(points: DiagramPoint[], index: number, dx: number, dy:
   return simplifyRoute(next);
 }
 
-function validRoute(points: DiagramPoint[], nodes: DiagramNode[], from: string, to: string): boolean {
+function validRoute(points: DiagramPoint[], nodes: DiagramNode[], from: string, to: string, symbols?: DiagramSymbol[]): boolean {
   const route = simplifyRoute(points);
   if (route.length < 2 || route.length > 10 || hasSelfIntersections(route)) return false;
   const source = nodes.find(node => node.id === from), target = nodes.find(node => node.id === to);
-  if (!source || !target || !endpointsFaceOutward(route, source, target)) return false;
+  if (!source || !target || !endpointsFaceOutward(route, source, target, node => symbols?.find(symbol => symbol.type === node.type)?.shape)) return false;
   return route.slice(1).every((end, index) => nodes.every((node) => {
     if ((index === 0 && node.id === from) || (index === route.length - 2 && node.id === to)) return true;
     const start = route[index];
@@ -162,12 +187,40 @@ function pathMiddle(points: DiagramPoint[]): DiagramPoint {
   return points[0];
 }
 
-function NodeShape({ node, symbol, selected, detail }: { node: DiagramNode; symbol?: DiagramSymbol; selected: boolean; detail?: ReactNode }) {
+export function NodeShape(props: { node: DiagramNode; symbol?: DiagramSymbol; selected: boolean; detail?: ReactNode }) {
+  const appearance = props.symbol?.appearance;
+  return <g style={appearance ? { '--diagram-fill': appearance.fill, '--diagram-stroke': appearance.stroke } as React.CSSProperties : undefined}><NodeShapeContent {...props} /></g>;
+}
+function NodeShapeContent({ node, symbol, selected, detail }: { node: DiagramNode; symbol?: DiagramSymbol; selected: boolean; detail?: ReactNode }) {
+  const clipId = useId();
   const { width: w, height: h } = node;
   const shape = symbol?.shape ?? 'rounded-rectangle';
   const className = `diagram-shape${selected ? ' selected' : ''}`;
+  if (symbol?.appearance?.icon) {
+    const size = Math.min(26, w * .27, h * .58);
+    return <>{shape === 'hexagon' ? <polygon className={className} points={`${w * .2},0 ${w * .8},0 ${w},${h / 2} ${w * .8},${h} ${w * .2},${h} 0,${h / 2}`} /> : shape === 'pointed-right' ? <path className={className} d={`M0 0 H${w - Math.min(18, w * .15)} L${w} ${h / 2} L${w - Math.min(18, w * .15)} ${h} H0 Z`} /> : <rect className={className} width={w} height={h} rx={shape === 'rectangle' ? 0 : Math.min(8, h / 5)} />}
+      <svg x={shape === 'hexagon' ? w * .105 : Math.min(7, w * .05)} y={(h - size) / 2} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" pointerEvents="none">{detail}</svg></>;
+  }
+  if (shape === 'class-box') {
+    const header = symbol?.stereotype ? 41 : 28;
+    const divider = Math.max(header + 1, header + (h - header) / 2);
+    const maxAttributes = Math.max(0, Math.floor((divider - header - 3) / 14));
+    const maxOperations = Math.max(0, Math.floor((h - divider - 3) / 14));
+    return <><defs><clipPath id={clipId}><rect width={w} height={h} /></clipPath></defs><rect className={className} width={w} height={h} /><path className="diagram-kind" d={`M0 ${header} H${w} M0 ${divider} H${w}`} /><g clipPath={`url(#${clipId})`}>
+      {symbol?.stereotype && <text className="diagram-class-member" x={w / 2} y="13" textAnchor="middle">{symbol.stereotype}</text>}
+      {(node.compartments?.attributes ?? []).slice(0, maxAttributes).map((text, i) => <text key={`a-${i}`} className="diagram-class-member" x="6" y={header + 14 + i * 14}>{text}</text>)}
+      {(node.compartments?.operations ?? []).slice(0, maxOperations).map((text, i) => <text key={`o-${i}`} className="diagram-class-member" x="6" y={divider + 14 + i * 14}>{text}</text>)}
+    </g></>;
+  }
+  if (shape === 'rectangle') return <rect className={className} width={w} height={h} />;
+  if (shape === 'ellipse') return <ellipse className={className} cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} />;
+  if (shape === 'hexagon') return <polygon className={className} points={`${w * .2},0 ${w * .8},0 ${w},${h / 2} ${w * .8},${h} ${w * .2},${h} 0,${h / 2}`} />;
+  if (shape === 'bar') return <rect className={`${className} diagram-solid-node`} width={w} height={h} />;
+  if (shape === 'circle-cross') return <><ellipse className={className} cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} /><path className="diagram-glyph" d={`M${w * .3} ${h * .3} L${w * .7} ${h * .7} M${w * .7} ${h * .3} L${w * .3} ${h * .7}`} /></>;
+  if (shape === 'actor') return <><rect width={w} height={h} fill="transparent" /><circle className={className} cx={w / 2} cy={h * .18} r={Math.min(w, h) * .12} /><path className="diagram-glyph" d={`M${w / 2} ${h * .3} V${h * .7} M${w * .2} ${h * .45} H${w * .8} M${w / 2} ${h * .7} L${w * .22} ${h * .95} M${w / 2} ${h * .7} L${w * .78} ${h * .95}`} /></>;
+  if (shape === 'lifeline') return <><rect width={w} height={h} fill="transparent" /><rect className={className} width={w} height={Math.min(38, h)} /><path className="diagram-lifeline" d={`M${w / 2} ${Math.min(38, h)} V${h}`} /></>;
   if (shape === 'data-store') return <><path className={className} d={`M0 8 C0 -2 ${w} -2 ${w} 8 V${h - 8} C${w} ${h + 2} 0 ${h + 2} 0 ${h - 8} Z`} /><path className="diagram-kind" d={`M0 8 C0 18 ${w} 18 ${w} 8 M0 14 C0 24 ${w} 24 ${w} 14`} /></>;
-  if (shape === 'circle' || shape === 'double-circle') return <><ellipse className={`${className}${symbol?.outline === 'thick' ? ' double-circle' : ''}`} cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} />{symbol?.outline === 'double' && <ellipse className="diagram-inner-outline" cx={w / 2} cy={h / 2} rx={w / 2 - 4} ry={h / 2 - 4} />}{detail && <svg x={w * .22} y={h * .22} width={w * .56} height={h * .56} viewBox="0 0 24 24" aria-hidden="true" pointerEvents="none">{detail}</svg>}</>;
+  if (shape === 'circle' || shape === 'double-circle') return <><ellipse className={`${className}${symbol?.outline === 'thick' ? ' double-circle' : ''}${symbol?.glyph === 'filled' && shape === 'circle' ? ' diagram-solid-node' : ''}`} cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} />{symbol?.outline === 'double' && <ellipse className="diagram-inner-outline" cx={w / 2} cy={h / 2} rx={w / 2 - 4} ry={h / 2 - 4} />}{symbol?.glyph === 'filled' && shape === 'double-circle' && <ellipse className="diagram-solid-node" cx={w / 2} cy={h / 2} rx={w / 2 - 5} ry={h / 2 - 5} />}{symbol?.glyph === 'xor' && <path className="diagram-glyph" d={`M${w * .35} ${h * .3} L${w * .65} ${h * .7} M${w * .65} ${h * .3} L${w * .35} ${h * .7}`} />}{symbol?.glyph === 'or' && <path className="diagram-glyph" d={`M${w * .3} ${h * .36} L${w * .5} ${h * .68} L${w * .7} ${h * .36}`} />}{symbol?.glyph === 'plus' && <path className="diagram-glyph" d={`M${w * .3} ${h * .65} L${w * .5} ${h * .32} L${w * .7} ${h * .65}`} />}{detail && <svg x={w * .22} y={h * .22} width={w * .56} height={h * .56} viewBox="0 0 24 24" aria-hidden="true" pointerEvents="none">{detail}</svg>}</>;
   if (shape === 'document') return <><path className={className} d={`M0 0 H${w - 12} L${w} 12 V${h} H0 Z`} /><path className="diagram-kind" d={`M${w - 12} 0 V12 H${w}`} /></>;
   if (shape === 'annotation') return <><rect width={w} height={h} fill="transparent" /><path className={className + ' diagram-annotation'} d={`M12 0 H0 V${h} H12`} /></>;
   if (shape === 'diamond') return <>
@@ -188,6 +241,14 @@ function NodeShape({ node, symbol, selected, detail }: { node: DiagramNode; symb
 }
 
 export function DiagramEditor({ notation, title, source: original, onSave, onClose }: Props) {
+  const gridId = useId();
+  const sequence = Boolean(notation.timeline);
+  const [sequenceStart, setSequenceStart] = useState<{ id: string; y: number } | null>(null);
+  const sequenceDrag = useRef<{ id: string; pointer: number; start: number; y: number; receiveY: number; element: SVGElement; moved: boolean } | null>(null);
+  const [sequencePreview, setSequencePreview] = useState<string | null>(null);
+  const [showGrid, setShowGrid] = useState(true);
+  const [snapToGrid, setSnapToGrid] = useState(true);
+  const [smartGuides, setSmartGuides] = useState(true);
   const [name, setName] = useState(title);
   const [source, setSource] = useState(original);
   const [failure, setFailure] = useState<string | null>(null);
@@ -257,6 +318,8 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     } catch (error) { setFailure(error instanceof Error ? error.message : 'Не удалось изменить диаграмму.'); return false; }
   };
   const cancelGesture = () => {
+    const seq = sequenceDrag.current; sequenceDrag.current = null; setSequencePreview(null); setSequenceStart(null);
+    if (seq?.element.hasPointerCapture(seq.pointer)) seq.element.releasePointerCapture(seq.pointer);
     const box = marqueeRef.current; marqueeRef.current = null; setMarquee(null);
     if (box && svg.current?.hasPointerCapture(box.pointer)) svg.current.releasePointerCapture(box.pointer);
     const port = portDragRef.current; portDragRef.current = null;
@@ -283,7 +346,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       const symbol = notation.symbols.find((item) => item.type === node.type);
       const ports = (['top', 'right', 'bottom', 'left'] as const).flatMap((side) => {
         const horizontal = side === 'top' || side === 'bottom';
-        const count = connectionPortCount(horizontal ? node.width : node.height, symbol?.singleConnectionPortPerSide);
+        const count = portCount(node, symbol, horizontal);
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const local = { x: horizontal ? node.width * offset : side === 'left' ? 0 : node.width, y: horizontal ? side === 'top' ? 0 : node.height : node.height * offset };
@@ -293,9 +356,10 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           return { endpoint, distance: Math.hypot(center.x - at.x, center.y - at.y) * scale };
         });
       });
+      // Магнит шире видимого маркера: точное попадание не требуется.
       const port = ports.sort((a, b) => a.distance - b.distance)[0];
       const distance = Math.hypot(Math.max(node.x - at.x, 0, at.x - node.x - node.width), Math.max(node.y - at.y, 0, at.y - node.y - node.height)) * scale;
-      return { id: node.id, distance: Math.min(distance, Math.max(0, port.distance - 7 * scale)), endpoint: port.distance <= 7 * scale + 2 ? port.endpoint : anchor(node, at, symbol?.shape) };
+      return { id: node.id, distance: Math.min(distance, Math.max(0, port.distance - 7 * scale)), endpoint: port.endpoint };
     });
     const pools = (parsed.diagram.regions ?? []).filter((region) => region.kind === 'pool' && region.id !== from).map((region) => ({ id: region.id, distance: Math.hypot(Math.max(region.x - at.x, 0, at.x - region.x - region.width), Math.max(region.y - at.y, 0, at.y - region.y - region.height)) * scale, endpoint: null }));
     return [...nodes, ...pools].filter((candidate) => candidate.distance <= 18).sort((a, b) => a.distance - b.distance)[0];
@@ -384,13 +448,13 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     portDragRef.current = { id: node.id, pointer: event.pointerId, start, moved: false, element: event.currentTarget };
     event.currentTarget.setPointerCapture(event.pointerId);
   };
-  const movePort = (event: React.PointerEvent<SVGGElement>) => {
+  const movePort = (event: React.PointerEvent<SVGElement>) => {
     const item = portDragRef.current; if (!item || item.pointer !== event.pointerId) return;
     const at = point(event.clientX, event.clientY);
     item.moved ||= Math.hypot(at.x - item.start.x, at.y - item.start.y) > 3;
     setCursor(at);
   };
-  const finishPort = (event: React.PointerEvent<SVGGElement>, cancel = false) => {
+  const finishPort = (event: React.PointerEvent<SVGElement>, cancel = false) => {
     const item = portDragRef.current; if (!item || item.pointer !== event.pointerId) return;
     portDragRef.current = null;
     if (item.element.hasPointerCapture(item.pointer)) item.element.releasePointerCapture(item.pointer);
@@ -403,6 +467,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   const pickNode = (node: DiagramNode, event: React.PointerEvent<SVGGElement>) => {
     event.stopPropagation();
     if (event.button !== 0) return;
+    if (sequence && tool === 'connect') return;
     if (tool === 'connect' && !locked) { const target = connectFrom ? connectionTarget(point(event.clientX, event.clientY), connectFrom) : undefined; connectNode(target ?? node, target?.endpoint ?? null); return; }
     if (tool !== 'select') return;
     if (event.shiftKey || event.metaKey || event.ctrlKey) { setSelection(selectedIds.includes(node.id) ? selectedIds.filter(id => id !== node.id) : [...selectedIds, node.id]); return; }
@@ -422,7 +487,23 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   const moveNode = (event: React.PointerEvent<SVGElement>) => {
     const item = dragRef.current; if (!item || item.pointer !== event.pointerId) return;
     const p = point(event.clientX, event.clientY); const dx = p.x - item.start.x; const dy = p.y - item.start.y;
-    const next = { ...item, moved: item.moved || Math.hypot(dx, dy) > 3, current: { x: item.original.x + dx, y: item.original.y + dy } };
+    const moved = item.moved || Math.hypot(dx, dy) > 3;
+    const proposed = { x: item.original.x + dx, y: item.original.y + dy };
+    let current = proposed; let guides: AlignmentGuide[] = [];
+    if (!item.kind && moved) {
+      const ids = new Set(item.ids ?? [item.id]);
+      const moving = parsed.diagram.nodes.filter(node => ids.has(node.id));
+      if (moving.length) {
+        const left = Math.min(...moving.map(node => node.x)), top = Math.min(...moving.map(node => node.y));
+        const box = { x: left + dx, y: top + dy, width: Math.max(...moving.map(node => node.x + node.width)) - left, height: Math.max(...moving.map(node => node.y + node.height)) - top };
+        const scale = Math.abs(svg.current?.getScreenCTM()?.a || 1);
+        const alignment = smartGuides ? alignDiagramBox(box, parsed.diagram.nodes.filter(node => !ids.has(node.id)), 6 / scale) : { offset: { x: 0, y: 0 }, guides: [], snappedX: false, snappedY: false };
+        const grid = snapDiagramPoint(box);
+        current = { x: proposed.x + (alignment.snappedX ? alignment.offset.x : snapToGrid ? grid.x - box.x : 0), y: proposed.y + (alignment.snappedY ? alignment.offset.y : snapToGrid ? grid.y - box.y : 0) };
+        guides = alignment.guides;
+      }
+    }
+    const next = { ...item, moved, current, guides };
     dragRef.current = next; setDrag(next);
   };
   const finishNode = (event: React.PointerEvent<SVGElement>, cancel = false) => {
@@ -456,7 +537,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       } else { points = moveRoutePoint(points, item.index, at); valid = false; }
     } else if (item.kind === 'point') points = moveRoutePoint(points, item.index, { x: item.edge.points[item.index].x + dx, y: item.edge.points[item.index].y + dy });
     else points = moveRouteSegment(points, item.index, dx, dy);
-    if (!validRoute(points, parsed.diagram.nodes, from, to)) valid = false;
+    if (!validRoute(points, parsed.diagram.nodes, from, to, notation.symbols)) valid = false;
     const next = { ...item, points, from, to, valid, moved: item.moved || Math.hypot(dx, dy) > 3 }; edgeDragRef.current = next; setEdgeDrag(next);
   };
   const finishEdgeDrag = (event: React.PointerEvent<SVGElement>, cancel = false) => {
@@ -470,7 +551,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     const index = end === 'from' ? 0 : edge.points.length - 1;
     const neighbor = edge.points[end === 'from' ? 1 : edge.points.length - 2];
     const points = moveRoutePoint(edge.points, index, anchor(node, neighbor, notation.symbols.find((symbol) => symbol.type === node.type)?.shape));
-    if (!validRoute(points, parsed.diagram.nodes, end === 'from' ? nodeId : edge.from, end === 'to' ? nodeId : edge.to)) return;
+    if (!validRoute(points, parsed.diagram.nodes, end === 'from' ? nodeId : edge.from, end === 'to' ? nodeId : edge.to, notation.symbols)) return;
     apply((value) => notation.editEdge(value, edge.id, end === 'from' ? nodeId : edge.from, end === 'to' ? nodeId : edge.to, points));
   };
   const importFile = async (input: File | undefined) => {
@@ -485,10 +566,12 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     const a = document.createElement('a'); a.href = url; a.download = `${name.trim() || 'model'}.${notation.fileExtension}`; a.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  const liveConnectionTarget = connectFrom && cursor ? connectionTarget(cursor, connectFrom) : undefined;
   let previewDiagram = parsed.diagram;
+  let sequenceSource = sequencePreview ?? source;
   let previewResize = false;
   if (drag?.moved && (!drag.kind || drag.kind === 'region')) {
-    try { previewDiagram = notation.read(drag.kind === 'region' && notation.moveRegion ? notation.moveRegion(source, drag.id, drag.current) : drag.ids ? moveSelectedNodes(notation, source, drag.ids, { x: drag.current.x - drag.original.x, y: drag.current.y - drag.original.y }) : notation.moveNode(source, drag.id, drag.current)).diagram; } catch { /* Недопустимое положение не применяется. */ }
+    try { const previewSource = drag.kind === 'region' && notation.moveRegion ? notation.moveRegion(source, drag.id, drag.current) : drag.ids ? moveSelectedNodes(notation, source, drag.ids, { x: drag.current.x - drag.original.x, y: drag.current.y - drag.original.y }) : notation.moveNode(source, drag.id, drag.current); previewDiagram = notation.read(previewSource).diagram; if (sequence) sequenceSource = previewSource; } catch { /* Недопустимое положение не применяется. */ }
   }
   if (drag?.moved && drag.kind === 'resize' && notation.resizeNode) {
     try {
@@ -498,6 +581,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       previewDiagram = notation.read(xml).diagram; previewResize = true;
     } catch { /* Недопустимое положение не применяется. */ }
   }
+  const sequenceProjection = notation.timeline && !parsed.error ? notation.timeline.project(sequenceSource) : null;
   const displayNode = (node: DiagramNode) => {
     if (drag?.id !== node.id || !drag.moved) return node;
     if (drag.kind === 'label-resize') return { ...node, labelBounds: resized(drag) };
@@ -560,6 +644,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       {confirmClose ? <><span className="bpmn-warn">Есть несохранённые изменения</span><button type="button" className="btn btn-danger" onClick={onClose}>Закрыть без сохранения</button><button type="button" className="btn" onClick={() => setConfirmClose(false)}>Продолжить правку</button></> : <><button type="button" className="btn" onClick={close}>Закрыть</button><button type="button" className="btn btn-dark" disabled={locked || !dirty} onClick={() => onSave(name.trim() || 'Модель', source, imported)}>Сохранить</button></>}
     </header>
     {(failure || parsed.error || parsed.readOnlyReason) && <div className="diagram-alert" role="alert">{failure || parsed.error || parsed.readOnlyReason}</div>}
+    {!parsed.error && notation.validateDiagram && (() => { const warnings = notation.validateDiagram(parsed.diagram); return warnings.length > 0 && <details className="diagram-validation"><summary>Замечания к модели: {warnings.length}</summary><ul>{warnings.map((warning, index) => <li key={`${warning.id}-${index}`}><button type="button" onClick={() => setSelected(warning.id)}>{warning.message}</button></li>)}</ul><small>Замечания не мешают сохранять незавершённую модель.</small></details>; })()}
     <div className="diagram-workspace">
       <aside className="diagram-sidebar" aria-label="Инструменты диаграммы">
         <div className="diagram-sidebar-title">Элементы · {notation.title}</div>
@@ -570,32 +655,38 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           const items = notation.symbols.filter((symbol) => (symbol.group ?? 'Другие') === group && (!searchPalette || symbol.title.toLocaleLowerCase('ru').includes(searchPalette)));
           if (!items.length) return null;
           const open = Boolean(searchPalette) || !collapsedGroups.includes(group);
-          return <Fragment key={group}><button type="button" className="diagram-palette-group" aria-expanded={open} onClick={() => setCollapsedGroups((current) => current.includes(group) ? current.filter((item) => item !== group) : [...current, group])}><Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />{group}</button>{open && items.map((symbol) => <button key={symbol.type} type="button" className={`diagram-tool${tool === symbol.type ? ' on' : ''}`} aria-pressed={tool === symbol.type} disabled={locked} onClick={() => { setTool(symbol.type); setConnectFrom(null); }}><svg className="diagram-palette-svg" viewBox={`-3 -3 ${symbol.width + 6} ${symbol.height + 6}`} aria-hidden="true"><NodeShape node={{ id: '', type: symbol.type, label: '', x: 0, y: 0, width: symbol.width, height: symbol.height }} symbol={symbol} selected={false} detail={notation.renderSymbolDetail?.(symbol)} /></svg><span>{symbol.title}</span></button>)}</Fragment>;
+          return <Fragment key={group}><button type="button" className="diagram-palette-group" aria-expanded={open} onClick={() => setCollapsedGroups((current) => current.includes(group) ? current.filter((item) => item !== group) : [...current, group])}><Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />{group}</button>{open && items.map((symbol) => <button key={symbol.type} type="button" className={`diagram-tool${tool === symbol.type ? ' on' : ''}`} aria-pressed={tool === symbol.type} disabled={locked} onClick={() => { setTool(symbol.type); setConnectFrom(null); setSequenceStart(null); }}><svg className="diagram-palette-svg" viewBox={`-3 -3 ${symbol.width + 6} ${symbol.height + 6}`} aria-hidden="true"><NodeShape node={{ id: '', type: symbol.type, label: '', x: 0, y: 0, width: symbol.width, height: symbol.height }} symbol={symbol} selected={false} detail={notation.renderSymbolDetail?.(symbol)} /></svg><span>{symbol.title}</span></button>)}</Fragment>;
         })}
         {searchPalette && !notation.symbols.some((symbol) => symbol.title.toLocaleLowerCase('ru').includes(searchPalette)) && !(notation.addRegion && (notation.regionTitle ?? 'Область').toLocaleLowerCase('ru').includes(searchPalette)) && !(notation.addPool && 'пул'.includes(searchPalette)) && <p className="diagram-palette-empty">Элементы не найдены</p>}
       </aside>
       <main className="diagram-stage">
         <div className="tools diagram-toolbar" role="toolbar" aria-label="Инструменты редактора">
-          <button type="button" className={`tool-btn${tool === 'select' ? ' on' : ''}`} aria-label="Выбор" aria-pressed={tool === 'select'} title="Выбор" onClick={() => { setTool('select'); setConnectFrom(null); }}><Icon name="cursor" size={17} stroke={1.9} /></button>
+          <button type="button" className={`tool-btn${tool === 'select' ? ' on' : ''}`} aria-label="Выбор" aria-pressed={tool === 'select'} title="Выбор" onClick={() => { setTool('select'); setConnectFrom(null); setSequenceStart(null); }}><Icon name="cursor" size={17} stroke={1.9} /></button>
           <div className="diagram-connection-tool">
-            <button type="button" className={`tool-btn${tool === 'connect' ? ' on' : ''}`} aria-label="Связь" aria-pressed={tool === 'connect'} title={`Связь: ${notation.connectionTypes?.find((item) => item.id === connectionType)?.title ?? 'автоматически'}`} disabled={locked} onClick={() => { setTool('connect'); setConnectFrom(null); }}><Icon name="connect" size={17} stroke={1.9} /></button>
+            <button type="button" className={`tool-btn${tool === 'connect' ? ' on' : ''}`} aria-label="Связь" aria-pressed={tool === 'connect'} title={`Связь: ${notation.connectionTypes?.find((item) => item.id === connectionType)?.title ?? 'автоматически'}`} disabled={locked} onClick={() => { setTool('connect'); setConnectFrom(null); setSequenceStart(null); }}><Icon name="connect" size={17} stroke={1.9} /></button>
             <button type="button" className="tool-btn diagram-connection-dropdown" aria-label="Выбрать тип связи" aria-haspopup="menu" aria-expanded={Boolean(connectionMenu)} disabled={locked} title="Выбрать тип связи" onClick={(event) => { const rect = event.currentTarget.getBoundingClientRect(); setConnectionMenu({ x: rect.left, y: rect.bottom + 4 }); }}><Icon name="chevronDown" size={14} /></button>
           </div>
           <span className="tools-sep" />
           <button type="button" className="tool-btn" aria-label="Шаг назад" title="Шаг назад (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}><Icon name="undo" size={17} stroke={1.9} /></button>
           <button type="button" className="tool-btn" aria-label="Шаг вперёд" title="Шаг вперёд (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}><Icon name="redo" size={17} stroke={1.9} /></button>
+          <span className="tools-sep" />
+          <button type="button" className={`tool-btn${showGrid ? ' on' : ''}`} aria-label="Сетка" title="Показать сетку" aria-pressed={showGrid} onClick={() => setShowGrid(value => !value)}><Icon name="gridLayout" size={16} stroke={1.8} /></button>
+          <button type="button" className={`tool-btn${snapToGrid ? ' on' : ''}`} aria-label="Привязка к сетке" title="Привязка к сетке" aria-pressed={snapToGrid} onClick={() => setSnapToGrid(value => !value)}><Icon name="magnet" size={17} stroke={1.9} /></button>
+          <button type="button" className={`tool-btn${smartGuides ? ' on' : ''}`} aria-label="Умные направляющие" title="Выравнивание по другим объектам и интервалам" aria-pressed={smartGuides} onClick={() => setSmartGuides(value => !value)}><Icon name="alignGuides" size={17} stroke={1.9} /></button>
         </div>
-        {tool === 'connect' && <div className="diagram-connect-hint" aria-live="polite"><b>{notation.connectionTypes?.find((item) => item.id === connectionType)?.title ?? 'Автоматическая связь'}</b><span>{connectFrom ? 'Выберите конечный элемент' : 'Выберите начальный элемент'}</span></div>}
+        {tool === 'connect' && <div className="diagram-connect-hint" aria-live="polite"><b>{notation.connectionTypes?.find((item) => item.id === connectionType)?.title ?? 'Автоматическая связь'}</b><span>{sequence ? (sequenceStart ? 'Выберите вторую линию жизни на том же уровне' : 'Выберите время на линии жизни') : connectFrom ? 'Выберите конечный элемент' : 'Выберите начальный элемент'}</span></div>}
         <svg ref={svg} className={`diagram-surface${tool !== 'select' ? ' placing' : ''}${placingObject ? ' placing-object' : ''}`} viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} role="application" tabIndex={0} aria-label="Полотно диаграммы"
           onPointerMove={(event) => {
             const pan = panRef.current;
             if (pan?.pointer === event.pointerId) setView({ ...pan.view, x: pan.view.x - (event.clientX - pan.x) / pan.scale, y: pan.view.y - (event.clientY - pan.y) / pan.scale });
+            else if (portDragRef.current?.pointer === event.pointerId && !portDragRef.current.element.contains(event.target as Node)) movePort(event);
             else if (event.target === event.currentTarget && dragRef.current?.pointer === event.pointerId) moveNode(event);
             else if (marqueeRef.current?.pointer === event.pointerId) {
               const box = marqueeRef.current;
               const next = { ...box, current: point(event.clientX, event.clientY), moved: box.moved || Math.hypot(event.clientX - box.client.x, event.clientY - box.client.y) > 4 };
               marqueeRef.current = next; setMarquee(next);
             }
+            else if (sequence && tool === 'connect' && sequenceStart) { setCursor(point(event.clientX, event.clientY)); }
             else if (tool === 'connect' && connectFrom) { connectionClient.current = { x: event.clientX, y: event.clientY }; setCursor(point(event.clientX, event.clientY)); }
             else if (placingObject) { placementClient.current = { x: event.clientX, y: event.clientY }; setPlacementCursor(point(event.clientX, event.clientY)); }
             else if (tool === 'select' && !dragRef.current && !locked) {
@@ -617,12 +708,12 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
             const at = point(event.clientX, event.clientY);
             if (tool === 'pool' && notation.addPool) apply((value) => notation.addPool!(value, at));
             else if (tool === 'region' && notation.addRegion) apply((value) => notation.addRegion!(value, at));
-            else if (placementSymbol) apply((value) => notation.addNode(value, placementSymbol.type, { x: at.x - placementSymbol.width / 2, y: at.y - placementSymbol.height / 2 }));
+            else if (placementSymbol) { const position = { x: at.x - placementSymbol.width / 2, y: at.y - placementSymbol.height / 2 }; apply((value) => notation.addNode(value, placementSymbol.type, snapToGrid ? snapDiagramPoint(position) : position)); }
             placementClient.current = null; setPlacementCursor(null); setTool('select');
           }}
           onPointerDown={(event) => {
             if (event.target !== event.currentTarget || event.button !== 0) return;
-            if (tool === 'connect' && connectFrom) { const target = connectionTarget(point(event.clientX, event.clientY), connectFrom); if (target) connectNode(target, target.endpoint); return; }
+            if (!sequence && tool === 'connect' && connectFrom) { const target = connectionTarget(point(event.clientX, event.clientY), connectFrom); if (target) connectNode(target, target.endpoint); return; }
             if (tool === 'select') {
               const start = point(event.clientX, event.clientY);
               const box: Marquee = { pointer: event.pointerId, start, current: start, client: { x: event.clientX, y: event.clientY }, moved: false, additive: event.shiftKey || event.metaKey || event.ctrlKey, previous: selectedIds };
@@ -632,6 +723,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           }}
           onPointerUp={(event) => {
             if (panRef.current?.pointer === event.pointerId) panRef.current = null;
+            if (portDragRef.current?.pointer === event.pointerId && !portDragRef.current.element.contains(event.target as Node)) finishPort(event);
             if (event.target === event.currentTarget && dragRef.current?.pointer === event.pointerId) finishNode(event);
             const box = marqueeRef.current;
             if (box?.pointer === event.pointerId) {
@@ -649,38 +741,88 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
             if (tool === 'pool' && notation.addPool) { event.preventDefault(); apply((value) => notation.addPool!(value, { x: view.x + 30, y: view.y + 30 })); setTool('select'); return; }
             if (tool === 'region' && notation.addRegion) { event.preventDefault(); apply((value) => notation.addRegion!(value, { x: view.x + 30, y: view.y + 30 })); setTool('select'); return; }
             const symbol = notation.symbols.find((item) => item.type === tool);
-            if (symbol) { event.preventDefault(); apply((value) => notation.addNode(value, symbol.type, { x: view.x + (view.width - symbol.width) / 2, y: view.y + (view.height - symbol.height) / 2 })); setTool('select'); }
+            if (symbol) { event.preventDefault(); const position = { x: view.x + (view.width - symbol.width) / 2, y: view.y + (view.height - symbol.height) / 2 }; apply((value) => notation.addNode(value, symbol.type, snapToGrid ? snapDiagramPoint(position) : position)); setTool('select'); }
           }}>
-          <defs><marker id="diagram-message-circle" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="8" markerHeight="8" orient="auto"><circle cx="5" cy="5" r="4" fill="white" stroke="#424858" strokeWidth="1.3" /></marker><marker id="diagram-association-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#424858" strokeWidth="1.3" /></marker><marker id="diagram-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#424858" /></marker></defs>
+          <defs><pattern id={gridId} data-diagram-grid-pattern patternUnits="userSpaceOnUse" width={DIAGRAM_GRID_STEP} height={DIAGRAM_GRID_STEP}><circle cx="0" cy="0" r=".8" className="diagram-grid-dot" /></pattern><marker id="diagram-message-circle" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="8" markerHeight="8" orient="auto"><circle cx="5" cy="5" r="4" fill="white" stroke="#424858" strokeWidth="1.3" /></marker><marker id="diagram-association-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#424858" strokeWidth="1.3" /></marker><marker id="diagram-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 L10 5 L0 10z" fill="#424858" /></marker></defs>
+          <defs><marker id="diagram-triangle" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="10" markerHeight="10" orient="auto"><path d="M1 1 L9 5 L1 9 Z" fill="white" stroke="#424858" strokeWidth="1" /></marker><marker id="diagram-diamond" viewBox="0 0 12 10" refX="1" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M1 5 L6 1 L11 5 L6 9 Z" fill="white" stroke="#424858" strokeWidth="1" /></marker><marker id="diagram-diamond-filled" viewBox="0 0 12 10" refX="1" refY="5" markerWidth="12" markerHeight="10" orient="auto"><path d="M1 5 L6 1 L11 5 L6 9 Z" fill="#424858" stroke="#424858" strokeWidth="1" /></marker></defs>
           {previewDiagram.regions?.map((region) => { return <g key={region.id} className="diagram-region" data-diagram-region={region.id} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openMenu(region.id, event.clientX, event.clientY); }} aria-label={`${region.kind === 'pool' ? 'Пул' : notation.regionTitle ?? 'Область'}: ${region.label || region.id}`}>
             <rect x={region.x} y={region.y} width={region.width} height={region.height} />
             <g onDoubleClick={(event) => { event.stopPropagation(); startEdit(region.id, region.label, region.x, region.y + region.height / 2, 140); }} onPointerDown={(event) => { if (event.button === 0 && tool === 'connect' && region.kind === 'pool' && !locked) { event.stopPropagation(); connectNode(region); } else if (notation.moveRegion) startSpecialDrag(event, region.id, region.x, region.y, 'region'); }} onPointerMove={moveNode} onPointerUp={(event) => finishNode(event)} onPointerCancel={(event) => finishNode(event, true)} onLostPointerCapture={(event) => finishNode(event, true)}><rect className={`diagram-region-header${selected === region.id || connectFrom === region.id ? ' selected' : ''}`} x={region.x} y={region.y} width={Math.min(30, region.width)} height={region.height} role="button" tabIndex={0} aria-label={`${region.kind === 'pool' ? 'Пул' : notation.regionTitle ?? 'Область'}: ${region.label || region.id}`} onPointerDown={(event) => { if (event.button === 0 && tool === 'select') setSelected(region.id); }} onKeyDown={(event) => { if (menuKey(event, region.id)) return; if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); if (tool === 'connect' && region.kind === 'pool' && !locked) connectNode(region); else setSelected(region.id); } }} />
             <path d={`M${region.x + Math.min(30, region.width)} ${region.y}v${region.height}`} />
             {region.label && <text x={region.x + Math.min(15, region.width / 2)} y={region.y + region.height / 2} textAnchor="middle" transform={`rotate(-90 ${region.x + Math.min(15, region.width / 2)} ${region.y + region.height / 2})`}>{region.label}</text>}</g>
           </g>; })}
+          {showGrid && <rect data-diagram-grid x={view.x} y={view.y} width={view.width} height={view.height} fill={`url(#${gridId})`} pointerEvents="none" aria-hidden="true" />}
           {previewDiagram.edges.map((edge) => {
             let points = edgeDrag?.edge.id === edge.id ? edgeDrag.points : edge.points;
 
             const coords = points.map((p) => `${p.x},${p.y}`).join(' '); const middle = pathMiddle(points);
-            return <g key={edge.id} data-diagram-edge={edge.id} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openMenu(edge.id, event.clientX, event.clientY); }} onDoubleClick={() => { if (edge.labelEditable !== false) startEdit(edge.id, edge.label, middle.x - 70, middle.y - 22, 140); }} onPointerMove={updateEdgeDrag} onPointerUp={(event) => finishEdgeDrag(event)} onPointerCancel={(event) => finishEdgeDrag(event, true)} onLostPointerCapture={(event) => finishEdgeDrag(event, true)}><polyline points={coords} className={`diagram-edge${selected === edge.id ? ' selected' : ''}${edgeDrag?.edge.id === edge.id && !edgeDrag.valid ? ' invalid' : ''}`} strokeDasharray={edge.lineStyle === 'dashed' ? '6 4' : edge.lineStyle === 'dotted' ? '2 5' : undefined} strokeLinecap={edge.lineStyle === 'dotted' ? 'round' : undefined} markerStart={edge.startMarker === 'circle' ? 'url(#diagram-message-circle)' : edge.arrowStart ? 'url(#diagram-association-arrow)' : undefined} markerEnd={(edge.arrowEnd ?? (edge.lineStyle !== 'dotted')) ? (edge.arrowStyle === 'open' || edge.lineStyle === 'dotted' ? 'url(#diagram-association-arrow)' : 'url(#diagram-arrow)') : undefined} /><polyline points={coords} className="diagram-edge-hit" tabIndex={0} role="button" aria-label={`Связь${edge.label ? `: ${edge.label}` : ''}`} onPointerDown={(event) => { event.stopPropagation(); setSelected(edge.id); }} onKeyDown={(event) => { if (menuKey(event, edge.id)) return; if (event.key === 'Enter') setSelected(edge.id); }} />{edge.label && <text x={middle.x} y={middle.y - 8} className="diagram-edge-label">{edge.label}</text>}
+            const endAnnotations = edge.ends && (['from', 'to'] as const).map(side => {
+              const end = edge.ends![side], text = [end.role, end.multiplicity].filter(Boolean).join('  ');
+              if (!text) return null;
+              const a = side === 'from' ? points[0] : points[points.length - 1];
+              const b = side === 'from' ? points[1] : points[points.length - 2];
+              const length = Math.hypot(b.x - a.x, b.y - a.y) || 1, distance = Math.min(38, length / 2);
+              return <text key={side} x={a.x + (b.x - a.x) / length * distance} y={a.y + (b.y - a.y) / length * distance - 8} textAnchor="middle" className="diagram-edge-label" pointerEvents="none">{text}</text>;
+            });
+            return <g key={edge.id} data-diagram-edge={edge.id} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openMenu(edge.id, event.clientX, event.clientY); }} onDoubleClick={() => { if (edge.labelEditable !== false) startEdit(edge.id, edge.label, middle.x - 70, middle.y - 22, 140); }} onPointerMove={updateEdgeDrag} onPointerUp={(event) => finishEdgeDrag(event)} onPointerCancel={(event) => finishEdgeDrag(event, true)} onLostPointerCapture={(event) => finishEdgeDrag(event, true)}><polyline points={coords} className={`diagram-edge${selected === edge.id ? ' selected' : ''}${edgeDrag?.edge.id === edge.id && !edgeDrag.valid ? ' invalid' : ''}`} strokeDasharray={edge.lineStyle === 'dashed' ? '6 4' : edge.lineStyle === 'dotted' ? '2 5' : undefined} strokeLinecap={edge.lineStyle === 'dotted' ? 'round' : undefined} markerStart={markerAtStart(edge)} markerEnd={markerAtEnd(edge)} /><polyline points={coords} className="diagram-edge-hit" tabIndex={0} role="button" aria-label={`Связь${edge.label ? `: ${edge.label}` : ''}`} onPointerDown={(event) => { event.stopPropagation(); setSelected(edge.id); }} onKeyDown={(event) => { if (menuKey(event, edge.id)) return; if (event.key === 'Enter') setSelected(edge.id); }} />{edge.stereotype && <text x={middle.x} y={middle.y - (edge.label ? 22 : 8)} className="diagram-edge-label" textAnchor="middle">{edge.stereotype}</text>}{edge.label && <text x={middle.x} y={middle.y - 8} className="diagram-edge-label">{edge.label}</text>}
+              {endAnnotations}
               {selected === edge.id && !locked && edge.routeEditable !== false && orthogonal(edge.points) && edge.points.map((p, i) => <g key={`point-${i}`}><circle cx={p.x} cy={p.y} r="6" className="diagram-edge-handle" tabIndex={0} role="button" aria-label={i === 0 ? 'Начало связи; перетащите на элемент' : i === edge.points.length - 1 ? 'Конец связи; перетащите на элемент' : `Точка маршрута ${i}; используйте стрелки`} onPointerDown={(event) => beginEdgeDrag(event, edge, 'point', i)} onKeyDown={(event) => {
                 if (i === 0 || i === edge.points.length - 1) return;
                 const delta: Record<string, DiagramPoint> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } }; const d = delta[event.key]; if (!d) return; event.preventDefault(); event.stopPropagation();
-                const next = moveRoutePoint(edge.points, i, { x: p.x + d.x * (event.shiftKey ? 10 : 1), y: p.y + d.y * (event.shiftKey ? 10 : 1) }); if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to)) apply((value) => notation.editEdge(value, edge.id, edge.from, edge.to, next));
+                const next = moveRoutePoint(edge.points, i, { x: p.x + d.x * (event.shiftKey ? 10 : 1), y: p.y + d.y * (event.shiftKey ? 10 : 1) }); if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to, notation.symbols)) apply((value) => notation.editEdge(value, edge.id, edge.from, edge.to, next));
               }} />{i < edge.points.length - 1 && <circle cx={(p.x + edge.points[i + 1].x) / 2} cy={(p.y + edge.points[i + 1].y) / 2} r="5" className="diagram-segment-handle" tabIndex={0} role="button" aria-label={`Сегмент ${i + 1}; используйте стрелки`} onPointerDown={(event) => beginEdgeDrag(event, edge, 'segment', i)} onKeyDown={(event) => {
                   const horizontal = edge.points[i + 1].y === p.y;
                   const direction = horizontal ? (event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0) : (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0);
                   if (!direction) return; event.preventDefault(); event.stopPropagation(); const amount = direction * (event.shiftKey ? 10 : 1);
                   const next = moveRouteSegment(edge.points, i, horizontal ? 0 : amount, horizontal ? amount : 0);
-                  if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to)) apply((value) => notation.editEdge(value, edge.id, edge.from, edge.to, next));
+                  if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to, notation.symbols)) apply((value) => notation.editEdge(value, edge.id, edge.from, edge.to, next));
                 }} />}</g>)}
             </g>;
           })}
-          {connectFrom && cursor && (() => {
+          {sequenceProjection && <g data-sequence-layer="true">
+            {sequenceProjection.lifelines.map(line => <g key={line.id} data-sequence-lifeline={line.id}>
+              <line x1={line.lineStart.x} y1={line.lineStart.y} x2={line.lineEnd.x} y2={line.lineEnd.y} stroke="#424858" strokeWidth="1.5" strokeDasharray="6 4" pointerEvents="none" />
+              <line x1={line.lineStart.x} y1={line.lineStart.y} x2={line.lineEnd.x} y2={line.lineEnd.y} stroke="transparent" strokeWidth="20" style={{ cursor: tool === 'connect' ? 'crosshair' : 'default' }} onPointerDown={event => {
+                event.stopPropagation(); if (event.button !== 0 || locked || tool !== 'connect') return;
+                const y = point(event.clientX, event.clientY).y;
+                if (!sequenceStart) { setSequenceStart({ id: line.id, y }); setCursor({ x: line.lineStart.x, y }); }
+                else {
+                  if (apply(value => notation.timeline!.addMessage(value, sequenceStart.id, line.id, sequenceStart.y, connectionType))) { setSequenceStart(null); setCursor(null); setTool('select'); }
+                }
+              }} />
+            </g>)}
+            {sequenceProjection.messages.map(message => {
+              const coords = message.points.map(p => `${p.x},${p.y}`).join(' '), middle = pathMiddle(message.points);
+              return <g key={message.id} data-sequence-message={message.id} onContextMenu={event => { event.preventDefault(); event.stopPropagation(); openMenu(message.id, event.clientX, event.clientY); }} onDoubleClick={event => { event.stopPropagation(); startEdit(message.id, message.label, middle.x - 70, middle.y - 25, 140); }}>
+                <polyline points={coords} className={`diagram-edge${selected === message.id ? ' selected' : ''}`} strokeDasharray={message.lineStyle === 'dashed' ? '6 4' : undefined} markerEnd={markerAtEnd({ arrowEnd: true, arrowStyle: message.arrowStyle })} pointerEvents="none" />
+                <polyline points={coords} className="diagram-edge-hit" role="button" tabIndex={0} aria-label={`Сообщение${message.label ? `: ${message.label}` : ''}`} onKeyDown={event => { if (menuKey(event, message.id)) return; if (event.key === 'F2') { event.preventDefault(); startEdit(message.id, message.label, middle.x - 70, middle.y - 25, 140); } }} onPointerDown={event => {
+                  event.stopPropagation(); if (event.button !== 0 || locked || tool !== 'select') return; setSelected(message.id);
+                  sequenceDrag.current = { id: message.id, pointer: event.pointerId, start: point(event.clientX, event.clientY).y, y: message.send.y, receiveY: message.receive.y, element: event.currentTarget, moved: false }; event.currentTarget.setPointerCapture(event.pointerId);
+                }} onPointerMove={event => {
+                  const item = sequenceDrag.current; if (!item || item.pointer !== event.pointerId) return;
+                  const dy = point(event.clientX, event.clientY).y - item.start; item.moved ||= Math.abs(dy) > 3;
+                  try { setSequencePreview(notation.timeline!.moveMessage(source, item.id, item.y + dy, item.receiveY + dy)); } catch { setSequencePreview(null); }
+                }} onPointerUp={event => {
+                  const item = sequenceDrag.current; if (!item || item.pointer !== event.pointerId) return;
+                  sequenceDrag.current = null; setSequencePreview(null); if (item.element.hasPointerCapture(item.pointer)) item.element.releasePointerCapture(item.pointer);
+                  if (item.moved) { const dy = point(event.clientX, event.clientY).y - item.start; apply(value => notation.timeline!.moveMessage(value, item.id, item.y + dy, item.receiveY + dy)); }
+                }} onPointerCancel={() => { sequenceDrag.current = null; setSequencePreview(null); }} />
+                {message.label && <text x={middle.x} y={middle.y - 8} className="diagram-edge-label" pointerEvents="none">{message.label}</text>}
+              </g>;
+            })}
+            {sequenceStart && cursor && (() => { const line = sequenceProjection.lifelines.find(l => l.id === sequenceStart.id); if (!line) return null; const appearance = notation.connectionTypes?.find(t => t.id === connectionType)?.appearance; const target = sequenceProjection.lifelines.find(l => Math.abs(l.lineStart.x - cursor.x) <= 10 && cursor.y >= l.lineStart.y && cursor.y <= l.lineEnd.y); const x = line.lineStart.x, y = sequenceStart.y; const coords = target?.id === line.id ? `${x},${y} ${x + 40},${y} ${x + 40},${y + 30} ${x},${y + 30}` : `${x},${y} ${target?.lineStart.x ?? cursor.x},${y}`; return <polyline data-sequence-preview="true" points={coords} className="diagram-edge" pointerEvents="none" strokeDasharray={appearance?.lineStyle === 'dashed' ? '6 4' : undefined} markerEnd={markerAtEnd({ arrowEnd: true, arrowStyle: appearance?.arrowStyle ?? 'filled' })} />; })()}
+          </g>}
+          {drag?.moved && drag.guides?.map((guide, index) => {
+            const scale = Math.abs(svg.current?.getScreenCTM()?.a || 1), horizontal = guide.axis === 'y';
+            const x1 = horizontal ? guide.from : guide.position, y1 = horizontal ? guide.position : guide.from;
+            const x2 = horizontal ? guide.to : guide.position, y2 = horizontal ? guide.position : guide.to;
+            return <g key={index} className={`diagram-alignment-guide ${guide.kind}`} data-alignment-guide={guide.kind} pointerEvents="none" aria-hidden="true"><line x1={x1} y1={y1} x2={x2} y2={y2} />{guide.kind === 'spacing' && <><line x1={x1 - (horizontal ? 0 : 3 / scale)} y1={y1 - (horizontal ? 3 / scale : 0)} x2={x1 + (horizontal ? 0 : 3 / scale)} y2={y1 + (horizontal ? 3 / scale : 0)} /><line x1={x2 - (horizontal ? 0 : 3 / scale)} y1={y2 - (horizontal ? 3 / scale : 0)} x2={x2 + (horizontal ? 0 : 3 / scale)} y2={y2 + (horizontal ? 3 / scale : 0)} /></>}</g>;
+          })}
+          {!sequence && connectFrom && cursor && (() => {
             const node = parsed.diagram.nodes.find((item) => item.id === connectFrom);
             const region = parsed.diagram.regions?.find((item) => item.id === connectFrom && item.kind === 'pool');
             const origin = node ?? region; if (!origin) return null;
-            const target = connectionTarget(cursor, connectFrom);
+            const target = liveConnectionTarget;
             let points: DiagramPoint[] | undefined; let preview: DiagramEdge | undefined;
             if (target) {
               try { const candidate = notation.read(makeConnection(source, connectFrom, target.id, sourceAnchor, target.endpoint)).diagram; preview = candidate.edges.find((edge) => edge.from === connectFrom && edge.to === target.id && !parsed.diagram.edges.some((old) => old.id === edge.id)); points = preview?.points; } catch { /* Недопустимую цель не сохраняем. */ }
@@ -689,40 +831,42 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
             const selectedAppearance = (notation.connectionTypes as ConnectionOption[] | undefined)?.find((item) => item.id === connectionType)?.appearance;
             const lineStyle = preview?.lineStyle ?? selectedAppearance?.lineStyle;
             const endArrow = preview ? (preview.arrowEnd ?? true) : (selectedAppearance?.arrowEnd ?? true);
-            const startCircle = (preview?.startMarker ?? selectedAppearance?.startMarker) === 'circle';
-            const startArrow = preview?.arrowStart ?? selectedAppearance?.arrowStart ?? false;
-            const openArrow = (preview?.arrowStyle ?? selectedAppearance?.arrowStyle) === 'open' || lineStyle === 'dotted';
-            return <polyline data-connection-preview="true" pointerEvents="none" points={points.map((p) => `${p.x},${p.y}`).join(' ')} className="diagram-edge" strokeDasharray={lineStyle === 'dotted' ? '2 5' : lineStyle === 'dashed' ? '6 4' : undefined} strokeLinecap={lineStyle === 'dotted' ? 'round' : undefined} markerStart={startCircle ? 'url(#diagram-message-circle)' : startArrow ? 'url(#diagram-association-arrow)' : undefined} markerEnd={endArrow ? (openArrow ? 'url(#diagram-association-arrow)' : 'url(#diagram-arrow)') : undefined} />;
+            const appearance: ConnectionAppearance = { lineStyle, arrowEnd: endArrow, startMarker: preview?.startMarker ?? selectedAppearance?.startMarker, arrowStart: preview?.arrowStart ?? selectedAppearance?.arrowStart, arrowStyle: preview?.arrowStyle ?? selectedAppearance?.arrowStyle };
+            return <polyline data-connection-preview="true" pointerEvents="none" points={points.map((p) => `${p.x},${p.y}`).join(' ')} className="diagram-edge" strokeDasharray={lineStyle === 'dotted' ? '2 5' : lineStyle === 'dashed' ? '6 4' : undefined} strokeLinecap={lineStyle === 'dotted' ? 'round' : undefined} markerStart={markerAtStart(appearance)} markerEnd={markerAtEnd(appearance)} />;
           })()}
           {previewDiagram.nodes.map((originalNode) => {
             const node = displayNode(originalNode); const symbol = notation.symbols.find((item) => item.type === node.type);
             const labelBounds = nodeLabelBounds(node, symbol);
-            const lines = labelLines(node.label, labelBounds.width, Math.max(1, Math.floor(labelBounds.height / 14)));
+            const displayLabel = node.label || symbol?.appearance?.emptyLabel || '';
+            const lines = labelLines(displayLabel, labelBounds.width, Math.max(1, Math.floor(labelBounds.height / 14)));
             const labelX = labelBounds.x - node.x, labelY = labelBounds.y - node.y;
-            return <g key={node.id} data-diagram-node={node.id} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openMenu(node.id, event.clientX, event.clientY); }} onDoubleClick={(event) => { event.stopPropagation(); startEdit(node.id, node.label, labelBounds.x, labelBounds.y, labelBounds.width, labelBounds.height, true); }} transform={`translate(${node.x} ${node.y})`} className="diagram-node" role="button" tabIndex={0} aria-label={`${symbol?.title ?? 'Элемент'}${node.label ? `: ${node.label}` : ''}`} aria-pressed={selected === node.id || groupSelected.includes(node.id)} onPointerDown={(event) => pickNode(originalNode, event)} onPointerMove={moveNode} onPointerUp={(event) => finishNode(event)} onPointerCancel={(event) => finishNode(event, true)} onLostPointerCapture={(event) => finishNode(event, true)} onKeyDown={(event) => { if (menuKey(event, node.id) || moveGroupWithKeyboard(event, node.id)) return; if (event.key === 'F2') { event.preventDefault(); event.stopPropagation(); startEdit(node.id, node.label, labelBounds.x, labelBounds.y, labelBounds.width, labelBounds.height, true); return; } if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); if (tool === 'connect' && !locked) connectNode(originalNode); else if (event.shiftKey) setSelection(selectedIds.includes(node.id) ? selectedIds.filter(id => id !== node.id) : [...selectedIds, node.id]); else setSelected(node.id); } }}>
+            return <g key={node.id} data-diagram-node={node.id} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openMenu(node.id, event.clientX, event.clientY); }} onDoubleClick={(event) => { event.stopPropagation(); startEdit(node.id, node.label, labelBounds.x, labelBounds.y, labelBounds.width, labelBounds.height, true); }} transform={`translate(${node.x} ${node.y})`} className="diagram-node" role="button" tabIndex={0} onFocus={(event) => { if (event.target === event.currentTarget && tool === 'connect' && connectFrom && node.id !== connectFrom) setCursor({ x: node.x + node.width / 2, y: node.y + node.height / 2 }); }} aria-label={`${symbol?.title ?? 'Элемент'}${node.label ? `: ${node.label}` : ''}`} aria-pressed={selected === node.id || groupSelected.includes(node.id)} onPointerDown={(event) => pickNode(originalNode, event)} onPointerMove={moveNode} onPointerUp={(event) => finishNode(event)} onPointerCancel={(event) => finishNode(event, true)} onLostPointerCapture={(event) => finishNode(event, true)} onKeyDown={(event) => { if (menuKey(event, node.id) || moveGroupWithKeyboard(event, node.id)) return; if (event.key === 'F2') { event.preventDefault(); event.stopPropagation(); startEdit(node.id, node.label, labelBounds.x, labelBounds.y, labelBounds.width, labelBounds.height, true); return; } if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); if (tool === 'connect' && !locked && !sequence) connectNode(originalNode); else if (event.shiftKey) setSelection(selectedIds.includes(node.id) ? selectedIds.filter(id => id !== node.id) : [...selectedIds, node.id]); else setSelected(node.id); } }}>
               <NodeShape node={node} symbol={symbol} selected={selected === node.id || groupSelected.includes(node.id) || connectFrom === node.id} detail={symbol && notation.renderSymbolDetail?.(symbol)} />
-              {node.label && editing?.id !== node.id && <text x={labelX + labelBounds.width / 2} y={labelY + Math.max(12, (labelBounds.height - lines.length * 14) / 2 + 11)} className="diagram-node-label" textAnchor="middle">{lines.map((line, i) => <tspan key={i} x={labelX + labelBounds.width / 2} dy={i ? 14 : 0}>{line}</tspan>)}</text>}
+              {lines.some(line => line.endsWith('…')) && <g role="img" aria-label="Текст не помещается. Увеличьте фигуру или текстовый блок, либо сократите подпись."><title>Текст не помещается. Увеличьте фигуру или текстовый блок, либо сократите подпись.</title><circle cx={node.width - 3} cy={3} r={7} fill="#9b5d51" /><text x={node.width - 3} y={7} textAnchor="middle" fill="white" fontSize={11}>!</text></g>}
+              {displayLabel && editing?.id !== node.id && <text x={labelX + labelBounds.width / 2} y={labelY + Math.max(12, (labelBounds.height - lines.length * 14) / 2 + 11)} className="diagram-node-label" style={symbol?.appearance?.textColor ? { fill: symbol.appearance.textColor } : undefined} opacity={node.label || symbol?.appearance?.textColor ? 1 : .55} textAnchor="middle">{lines.map((line, i) => <tspan key={i} x={labelX + labelBounds.width / 2} dy={i ? 14 : 0}>{line}</tspan>)}</text>}
               {selected === node.id && !locked && tool === 'select' && <>
                 {notation.resizeNode && resizeHandles(node, node, 'resize', symbol?.shape === 'circle' || symbol?.shape === 'double-circle' || symbol?.shape === 'diamond')}
                 {notation.setLabelBounds && <><rect className="diagram-label-bounds" x={labelX} y={labelY} width={labelBounds.width} height={labelBounds.height} />{resizeHandles(node, labelBounds, 'label-resize')}</>}
               </>}
-              {!locked && (selected === node.id || hoveredNode === node.id || tool === 'connect') && (tool === 'select' || tool === 'connect') && ([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
+              {!sequence && !locked && (tool === 'select' ? (selected === node.id || hoveredNode === node.id) : tool === 'connect' && (connectFrom ? (liveConnectionTarget?.id === node.id || portDragRef.current?.id === node.id) : (selected === node.id || hoveredNode === node.id))) && ([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
                 const horizontal = side === 'top' || side === 'bottom';
-                const count = connectionPortCount(horizontal ? node.width : node.height, symbol?.singleConnectionPortPerSide);
+                const count = portCount(node, symbol, horizontal);
                 return Array.from({ length: count }, (_, i) => {
                   const offset = (i + 1) / (count + 1);
                   const local = { x: horizontal ? node.width * offset : side === 'left' ? 0 : node.width, y: horizontal ? side === 'top' ? 0 : node.height : node.height * offset };
                   const edge = anchor({ x: 0, y: 0, width: node.width, height: node.height }, local, symbol?.shape);
                   const x = edge.x + (side === 'left' ? -14 : side === 'right' ? 14 : 0), y = edge.y + (side === 'top' ? -14 : side === 'bottom' ? 14 : 0);
-                  return <g key={`${side}-${i}`} className="diagram-connection-port" data-connection-port={label} data-port-side={side} data-port-offset={offset} transform={`translate(${x} ${y})`} role="button" tabIndex={selected === node.id || tool === 'connect' ? 0 : -1} aria-label={`Создать связь ${label}: точка ${i + 1} из ${count}`} onPointerDown={(event) => beginPort(event, originalNode, { x: node.x + edge.x, y: node.y + edge.y })} onPointerMove={movePort} onPointerUp={(event) => finishPort(event)} onPointerCancel={(event) => finishPort(event, true)} onLostPointerCapture={(event) => finishPort(event, true)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); if (tool === 'connect' && connectFrom) connectNode(originalNode, { x: node.x + edge.x, y: node.y + edge.y }); else { setTool('connect'); connectNode(originalNode, { x: node.x + edge.x, y: node.y + edge.y }); } } }}><circle r="7" /><path d="M-3 0H3M0 -3V3" /></g>;
+                  return <g key={`${side}-${i}`} className="diagram-connection-port" style={connectFrom === node.id && portDragRef.current ? { opacity: 0, pointerEvents: 'none' } : undefined} data-connection-port={label} data-port-side={side} data-port-offset={offset} transform={`translate(${x} ${y})`} role="button" tabIndex={connectFrom === node.id && portDragRef.current ? -1 : selected === node.id || tool === 'connect' ? 0 : -1} aria-label={`Создать связь ${label}: точка ${i + 1} из ${count}`} onPointerDown={(event) => beginPort(event, originalNode, { x: node.x + edge.x, y: node.y + edge.y })} onPointerMove={movePort} onPointerUp={(event) => finishPort(event)} onPointerCancel={(event) => finishPort(event, true)} onLostPointerCapture={(event) => finishPort(event, true)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); if (tool === 'connect' && connectFrom) connectNode(originalNode, { x: node.x + edge.x, y: node.y + edge.y }); else { setTool('connect'); connectNode(originalNode, { x: node.x + edge.x, y: node.y + edge.y }); } } }}><circle r="4" /><path d="M-2 0H2M0 -2V2" /></g>;
                 });
               })}
             </g>;
           })}
           {marquee?.moved && <rect {...selectionBounds(marquee.start, marquee.current)} data-selection-marquee="true" className="diagram-selection-marquee" pointerEvents="none" />}
           {placingObject && placementCursor && (placementSymbol ? (() => {
-            const node: DiagramNode = { id: '', type: placementSymbol.type, label: '', x: Math.round(placementCursor.x - placementSymbol.width / 2), y: Math.round(placementCursor.y - placementSymbol.height / 2), width: placementSymbol.width, height: placementSymbol.height };
-            return <g className="diagram-placement-preview" data-placement-preview={placementSymbol.type} aria-hidden="true" pointerEvents="none" transform={`translate(${node.x} ${node.y})`}><NodeShape node={node} symbol={placementSymbol} selected={false} detail={notation.renderSymbolDetail?.(placementSymbol)} /></g>;
+            const raw = { x: placementCursor.x - placementSymbol.width / 2, y: placementCursor.y - placementSymbol.height / 2 };
+            const position = snapToGrid ? snapDiagramPoint(raw) : { x: Math.round(raw.x), y: Math.round(raw.y) };
+            const node: DiagramNode = { id: '', type: placementSymbol.type, label: '', ...position, width: placementSymbol.width, height: placementSymbol.height };
+            return <g className="diagram-placement-preview" data-placement-preview={placementSymbol.type} aria-hidden="true" pointerEvents="none" transform={`translate(${node.x} ${node.y})`}><NodeShape node={node} symbol={placementSymbol} selected={false} detail={notation.renderSymbolDetail?.(placementSymbol)} />{sequence && <line x1={node.width / 2} y1={node.height} x2={node.width / 2} y2={450} stroke="#424858" strokeDasharray="6 4" />}</g>;
           })() : placementSize && <g className="diagram-placement-preview" data-placement-preview={tool} aria-hidden="true" pointerEvents="none" transform={`translate(${Math.round(placementCursor.x)} ${Math.round(placementCursor.y)})`}><rect className="diagram-shape" width={placementSize.width} height={placementSize.height} /><path className="diagram-kind" d={`M30 0 V${placementSize.height}`} /></g>)}
           {editing && <foreignObject x={editing.x} y={editing.y} width={editing.width} height={editing.height}>{editing.multiline ? <textarea className="diagram-inline-textarea" aria-label="Редактировать текст" title="Enter — сохранить, Shift+Enter — перенос строки, Escape — отменить" autoFocus value={editing.value} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onBlur={() => finishEdit(true, false)} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); finishEdit(true); } else if (event.key === 'Escape') { event.preventDefault(); finishEdit(false); } }} /> : <input className="pinput diagram-inline-input" aria-label="Редактировать название" autoFocus value={editing.value} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onBlur={() => finishEdit(true, false)} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); finishEdit(true); } else if (event.key === 'Escape') { event.preventDefault(); finishEdit(false); } }} />}</foreignObject>}
         </svg>
@@ -733,9 +877,22 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       {properties && <aside className="diagram-properties" role="dialog" aria-label="Свойства элемента" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setProperties(false); } }}>
         <button type="button" className="btn" autoFocus onClick={() => setProperties(false)}>Закрыть</button>
         <div className="diagram-sidebar-title">Свойства</div>
-        {selectedNode || selectedEdge || selectedRegion ? <>
+        {selectedNode || selectedEdge || selectedRegion || (sequenceProjection && selected && sequenceProjection.messages.some(m => m.id === selected)) ? <>
           <b>{selectedNode ? notation.symbols.find((item) => item.type === selectedNode.type)?.title : selectedRegion ? selectedRegion.kind === 'pool' ? 'Пул' : notation.regionTitle ?? 'Область' : 'Связь'}</b>
-          <label className="create-object-field"><span>{selectedNode && notation.symbols.find((item) => item.type === selectedNode.type)?.shape === 'annotation' ? 'Текст' : 'Название'}</span><input className="pinput" disabled={locked || selectedEdge?.labelEditable === false} value={(selectedNode ?? selectedEdge ?? selectedRegion)?.label ?? ''} onChange={(event) => apply((value) => notation.rename(value, selected!, event.target.value))} /></label>
+          <label className="create-object-field"><span>{selectedNode && notation.symbols.find((item) => item.type === selectedNode.type)?.shape === 'annotation' ? 'Текст' : 'Название'}</span><input className="pinput" disabled={locked || selectedEdge?.labelEditable === false} value={(selectedNode ?? selectedEdge ?? selectedRegion ?? sequenceProjection?.messages.find(m => m.id === selected))?.label ?? ''} onChange={(event) => apply((value) => notation.rename(value, selected!, event.target.value))} /></label>
+          {sequenceProjection && notation.timeline?.editMessage && (() => {
+            const message = sequenceProjection.messages.find(item => item.id === selected);
+            if (!message) return null;
+            return <>
+              <label className="create-object-field"><span>Тип сообщения</span><select className="pinput" disabled={locked} value={message.kind === 'self' ? 'sync' : message.kind} onChange={event => apply(value => notation.timeline!.editMessage!(value, message.id, { kind: event.target.value }))}>{notation.connectionTypes?.map(type => <option key={type.id} value={type.id}>{type.title}</option>)}</select></label>
+              {(['from', 'to'] as const).map(side => <label key={side} className="create-object-field"><span>{side === 'from' ? 'Отправитель' : 'Получатель'}</span><select className="pinput" disabled={locked} value={side === 'from' ? message.send.lifelineId : message.receive.lifelineId} onChange={event => apply(value => notation.timeline!.editMessage!(value, message.id, { [side]: event.target.value }))}>{parsed.diagram.nodes.map(node => <option key={node.id} value={node.id}>{node.label || 'Участник'}</option>)}</select></label>)}
+            </>;
+          })()}
+          {selectedNode && selectedSymbol?.shape === 'class-box' && notation.setNodeCompartments && (['attributes', 'operations'] as const).map(section => <label className="create-object-field" key={`${selectedNode.id}-${section}-${JSON.stringify(selectedNode.compartments?.[section] ?? [])}`}><span>{section === 'attributes' ? 'Атрибуты — по одному на строку' : 'Операции — по одной на строку'}</span><textarea className="pinput diagram-compartment-input" disabled={locked} defaultValue={(selectedNode.compartments?.[section] ?? []).join('\n')} onBlur={event => { const current = selectedNode.compartments ?? { attributes: [], operations: [] }; const lines = event.target.value.split('\n').map(line => line.trim()).filter(Boolean); if (JSON.stringify(lines) !== JSON.stringify(current[section])) apply(value => notation.setNodeCompartments!(value, selectedNode.id, { ...current, [section]: lines })); }} /></label>)}
+          {selectedEdge && notation.setEdgeEnds && notation.edgeEndProperties?.(selectedEdge) && (['from', 'to'] as const).map(side => (['role', 'multiplicity'] as const).map(field => {
+            const ends = selectedEdge.ends ?? { from: { role: '', multiplicity: '' }, to: { role: '', multiplicity: '' } };
+            return <label className="create-object-field" key={`${selectedEdge.id}-${side}-${field}-${ends[side][field]}`}><span>{field === 'role' ? 'Роль' : 'Кратность'}: {side === 'from' ? 'начало' : 'конец'} связи</span><input className="pinput" disabled={locked} defaultValue={ends[side][field]} placeholder={field === 'multiplicity' ? 'Например, 0..*' : undefined} onBlur={event => { const next = event.target.value.trim(); if (next !== ends[side][field]) apply(value => notation.setEdgeEnds!(value, selectedEdge.id, { ...ends, [side]: { ...ends[side], [field]: next } })); }} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>;
+          }))}
           {selectedNode && notation.resizeNode && (['width', 'height'] as const).map((dimension) => <label key={`node-${selectedNode.id}-${dimension}-${selectedNode[dimension]}`} className="create-object-field"><span>{dimension === 'width' ? 'Ширина элемента' : 'Высота элемента'}</span><input className="pinput" type="number" min={dimension === 'width' ? 40 : 30} disabled={locked} defaultValue={selectedNode[dimension]} onBlur={(event) => { const size = Number(event.target.value); if (size !== selectedNode[dimension]) { const square = selectedSymbol?.shape === 'circle' || selectedSymbol?.shape === 'double-circle' || selectedSymbol?.shape === 'diamond'; apply((value) => notation.resizeNode!(value, selectedNode.id, square || dimension === 'width' ? size : selectedNode.width, square || dimension === 'height' ? size : selectedNode.height)); } }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>)}
           {selectedNode && selectedLabelBounds && notation.setLabelBounds && (['width', 'height'] as const).map((dimension) => <label key={`label-${selectedNode.id}-${dimension}-${selectedLabelBounds[dimension]}`} className="create-object-field"><span>{dimension === 'width' ? 'Ширина блока текста' : 'Высота блока текста'}</span><input className="pinput" type="number" min={dimension === 'width' ? 30 : 18} disabled={locked} defaultValue={selectedLabelBounds[dimension]} onBlur={(event) => { const size = Number(event.target.value); if (size !== selectedLabelBounds[dimension]) apply((value) => notation.setLabelBounds!(value, selectedNode.id, { ...selectedLabelBounds, [dimension]: size })); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>)}
           {selectedRegion && selectedRegion.kind !== 'pool' && notation.resizeRegion && <><p className="diagram-edge-help">Каждая строка — отдельная роль. Элементы относятся к строке по положению их центра.</p>{notation.setRegionRows && <label key={`${selectedRegion.id}-rows-${selectedRegion.rowCount}`} className="create-object-field"><span>Количество строк</span><input className="pinput" type="number" min={1} max={100} disabled={locked} defaultValue={selectedRegion.rowCount ?? 1} onBlur={(event) => { const count = Number(event.target.value); if (count !== (selectedRegion.rowCount ?? 1)) apply((value) => notation.setRegionRows!(value, selectedRegion.id, count)); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>}{(['width', 'height'] as const).map((dimension) => <label key={`${selectedRegion.id}-${dimension}-${selectedRegion[dimension]}`} className="create-object-field"><span>{dimension === 'width' ? 'Ширина' : 'Высота'}</span><input className="pinput" type="number" min={dimension === 'width' ? 160 : 80} disabled={locked} defaultValue={selectedRegion[dimension]} onBlur={(event) => { const size = Number(event.target.value); if (size !== selectedRegion[dimension]) apply((value) => notation.resizeRegion!(value, selectedRegion.id, dimension === 'width' ? size : selectedRegion.width, dimension === 'height' ? size : selectedRegion.height)); }} onKeyDown={(event) => { if (event.key === 'Enter') event.currentTarget.blur(); }} /></label>)}</>}
@@ -749,7 +906,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       </aside>}
     </div>
     {menu && <WorkspaceContextMenu x={menu.x} y={menu.y} onClose={() => setMenu(null)} actions={[{ label: 'Свойства', run: () => { setSelected(menu.id); setProperties(true); } }]} />}
-    {connectionMenu && <WorkspaceContextMenu variant="connections" x={connectionMenu.x} y={connectionMenu.y} onClose={() => setConnectionMenu(null)} actions={[{ label: 'Автоматически', selected: !connectionType, preview: <ConnectionExample automatic />, run: () => { setConnectionType(undefined); setTool('connect'); setConnectFrom(null); } }, ...((notation.connectionTypes ?? []) as ConnectionOption[]).map((item) => ({ label: item.title, selected: item.id === connectionType, preview: <ConnectionExample appearance={item.appearance} />, run: () => { setConnectionType(item.id); setTool('connect'); setConnectFrom(null); } }))]} />}
+    {connectionMenu && <WorkspaceContextMenu variant="connections" x={connectionMenu.x} y={connectionMenu.y} onClose={() => setConnectionMenu(null)} actions={[{ label: sequence ? 'Синхронное сообщение (по умолчанию)' : 'Автоматически', selected: !connectionType, preview: <ConnectionExample automatic />, run: () => { setConnectionType(undefined); setTool('connect'); setConnectFrom(null); setSequenceStart(null); } }, ...((notation.connectionTypes ?? []) as ConnectionOption[]).map((item) => ({ label: item.title, selected: item.id === connectionType, preview: <ConnectionExample appearance={item.appearance} />, run: () => { setConnectionType(item.id); setTool('connect'); setConnectFrom(null); setSequenceStart(null); } }))]} />}
     {pendingImport && <WorkspaceActionDialog title="Заменить открытую диаграмму?" description="Импорт заменит содержимое редактора. При последующем сохранении исходная модель будет заменена, а её привязки к документам потребуется удалить: совпадение ID не доказывает, что элементы совпадают. При необходимости сначала экспортируйте исходную модель." confirmLabel="Импортировать" danger busy={false} error={null} onClose={() => setPendingImport(null)} onConfirm={async () => { await importFile(pendingImport); return true; }} />}
   </div>;
 }

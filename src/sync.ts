@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { http, HttpError } from './api';
 import { emptyModel, type Model } from './data';
 import { mergeModel } from './mergeModel';
-import { normalizeModel } from './normalize';
+import { InvalidModelsError, normalizeModel } from './normalize';
 import type { Settings } from './settings';
 import type { ModelApi } from './useModel';
 
-export type SyncState = 'connecting' | 'saved' | 'saving' | 'offline' | 'conflict' | 'revoked';
+export type SyncState = 'connecting' | 'saved' | 'saving' | 'offline' | 'conflict' | 'revoked' | 'error';
 
 interface ModelDto {
   data: Model;
@@ -16,7 +16,7 @@ interface ModelDto {
 const normalize = (m: Partial<Model>): Model => normalizeModel(m);
 
 const hasContent = (m: Model) =>
-  m.processes.length > 0 || m.docs.length > 0 || m.htmlObjects.length > 0 || m.links.length > 0 || m.cardLinks.length > 0 || m.sources.length > 0 || Object.keys(m.meta).length > 0;
+  m.models.length > 0 || m.processes.length > 0 || m.docs.length > 0 || m.htmlObjects.length > 0 || m.links.length > 0 || m.cardLinks.length > 0 || m.sources.length > 0 || Object.keys(m.meta).length > 0;
 
 type Prefs = Pick<Settings, 'grid' | 'snap' | 'minimap' | 'wheelZoom'>;
 const pickPrefs = (s: Partial<Settings>): Partial<Prefs> => {
@@ -67,6 +67,8 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
 
   /* ----- первичная загрузка ----- */
   useEffect(() => {
+    // Повтор отправки после сетевого сбоя не должен заново загружать сервер поверх локальных правок.
+    if (ready) return;
     let dead = false;
     (async () => {
       try {
@@ -90,8 +92,9 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
         version.current = remote.version;
         setReady(true);
         setState('saved');
-      } catch {
+      } catch (error) {
         if (dead) return;
+        if (error instanceof InvalidModelsError) { setState('error'); return; }
         setState('offline');
         retryLater();
       }
@@ -111,9 +114,10 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
     const t = setTimeout(() => {
       queue.current = queue.current.then(async () => {
         try {
-          const res = await http<ModelDto>('PUT', `/projects/${projectId}/model`, { version: version.current, data: modelRef.current });
+          const sent = JSON.stringify(modelRef.current);
+          const res = await http<ModelDto>('PUT', `/projects/${projectId}/model`, { version: version.current, data: JSON.parse(sent) });
           version.current = res.version;
-          lastModel.current = JSON.stringify(modelRef.current);
+          lastModel.current = sent;
           setState(JSON.stringify(modelRef.current) === lastModel.current ? 'saved' : 'saving');
         } catch (e) {
           if (e instanceof HttpError && e.status === 409) {
@@ -122,7 +126,8 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
               await pull();
               setState('conflict');
               setTimeout(() => setState((st) => (st === 'conflict' ? 'saved' : st)), 4000);
-            } catch {
+            } catch (error) {
+              if (error instanceof InvalidModelsError) { setState('error'); return; }
               setState('offline');
               retryLater();
             }
@@ -132,7 +137,7 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
           } else if (isOffline(e)) {
             setState('offline');
             retryLater();
-          }
+          } else setState('error');
         }
       });
     }, 500);
@@ -151,6 +156,7 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
           if (v === version.current) return;
           if (await pull()) setState('saving');
         } catch (e) {
+          if (e instanceof InvalidModelsError) { setState('error'); return; }
           if (e instanceof HttpError && (e.status === 404 || e.status === 403)) {
             revoked.current = true;
             setState('revoked');

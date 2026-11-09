@@ -1,0 +1,44 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><title>Проверка оформления EPC</title><body><p id="result">Проверка…</p><script type="module">
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { IndependentModelPreview } from '../src/Canvas';
+import '../src/styles.css';
+const result = document.querySelector('#result');
+const assert = (condition, message) => { if (!condition) throw Error(message); };
+const pause = () => new Promise(resolve => setTimeout(resolve, 120));
+const frame = document.createElement('iframe'); frame.style.cssText = 'width:1000px;height:700px'; document.body.append(frame);
+try {
+  frame.src = '/tests/notation-editor.html?type=epc'; await new Promise(resolve => frame.onload = resolve); await pause();
+  const win = frame.contentWindow, doc = win.document, svg = doc.querySelector('.diagram-surface');
+  svg.setPointerCapture = () => {}; svg.hasPointerCapture = () => false;
+  const point = (x,y) => { const p = svg.createSVGPoint(); p.x=x; p.y=y; return p.matrixTransform(svg.getScreenCTM()); };
+  const send = (kind,p) => svg.dispatchEvent(new win.PointerEvent(kind,{bubbles:true,pointerId:9,button:0,buttons:kind==='pointerup'?0:1,clientX:p.x,clientY:p.y}));
+  for (const [title,x] of [['Функция',200],['Событие',450],['Внутренний сотрудник',700]]) {
+    const button = [...doc.querySelectorAll('.diagram-tool')].find(el => el.textContent.trim() === title);
+    assert(button, `Нет кнопки ${title}`); button.click(); await pause();
+    const palette = button.querySelector('.diagram-shape'); const fill = win.getComputedStyle(palette).fill;
+    const p = point(x,200); send('pointermove',p); await pause();
+    const preview = doc.querySelector('[data-placement-preview] .diagram-shape');
+    assert(preview && win.getComputedStyle(preview).fill === fill, `${title}: цвет предпросмотра отличается`);
+    send('pointerdown',p); await pause();
+    const nodes = [...doc.querySelectorAll('[data-diagram-node]')], node = nodes[nodes.length-1];
+    assert(node.getAttribute('aria-label').includes(title) && node.querySelector('.diagram-node-label'), `${title}: нет подписи`);
+    assert(win.getComputedStyle(node.querySelector('.diagram-shape')).fill === fill, `${title}: цвет холста отличается`);
+    assert(node.querySelector('.diagram-node-label').getAttribute('text-anchor') === 'middle', `${title}: подпись не центрирована`);
+    if (title === 'Внутренний сотрудник') assert(node.querySelector('.diagram-shape').tagName === 'rect', 'Сотрудник выглядит как UML-актор');
+  }
+  const nodes = [...doc.querySelectorAll('[data-diagram-node]')];
+  assert(win.getComputedStyle(nodes[0].querySelector('.diagram-shape')).fill !== win.getComputedStyle(nodes[1].querySelector('.diagram-shape')).fill, 'Событие и функция одного цвета');
+  [...doc.querySelectorAll('button')].find(el => el.textContent === 'Сохранить').click(); await pause();
+  assert(win.savedNotationSource && JSON.parse(win.savedNotationSource).nodes.length === 3, 'Модель не сохранена');
+  assert(doc.querySelectorAll('[data-diagram-node]').length === 3, 'Модель не открылась после сохранения');
+  const card = document.createElement('div'); card.style.cssText = 'position:relative;width:500px;height:300px'; document.body.append(card);
+  createRoot(card).render(React.createElement(IndependentModelPreview, { model: { id:'test', title:'EPC', notation:'epc', source:win.savedNotationSource } })); await pause();
+  const cardShapes = card.querySelectorAll('.diagram-shape');
+  assert(cardShapes.length === 3, 'Нет фигур в карточке');
+  const reopened = [...doc.querySelectorAll('[data-diagram-node]')];
+  assert(getComputedStyle(cardShapes[0]).fill === win.getComputedStyle(reopened[0].querySelector('.diagram-shape')).fill, 'Цвет карточки отличается от холста');
+  assert(cardShapes[1].tagName === reopened[1].querySelector('.diagram-shape').tagName, 'Форма карточки отличается от холста');
+  result.dataset.status = 'passed'; result.textContent = 'Успешно: палитра, предпросмотр, холст, подписи и повторное открытие EPC.';
+} catch (error) { result.dataset.status = 'failed'; result.textContent = `Ошибка: ${error.message}`; }
+</script></body></html>

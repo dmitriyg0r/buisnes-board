@@ -11,8 +11,8 @@ function load(KEY: string): Model {
       const m = JSON.parse(raw) as Model;
       return normalizeModel(m);
     }
-  } catch {
-    /* хранилище недоступно — начинаем с исходной модели */
+  } catch (error) {
+    throw new Error(`Не удалось прочитать локальный проект: ${String(error)}`);
   }
   return emptyModel;
 }
