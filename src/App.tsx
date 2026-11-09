@@ -344,6 +344,7 @@ function Workspace({
           onAiWorkspaceEffect={aiWorkspaceEffect}
         />
         <IssuePanel
+          docs={api.model.docs}
           issues={issues}
           cover={cover}
           onSelect={setSelectedId}

@@ -142,6 +142,17 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
           break;
         }
         case 'read_issue': data = findIssue(str(args, 'id')); break;
+        case 'read_html_test': {
+          const id = card(str(args, 'id')), object = canvasObject(model, id)!;
+          if (!('html' in object)) throw new Error('Проверка доступна только для HTML-объектов');
+          const steps = args.steps as Record<string, unknown>[];
+          if (!steps.some((step) => step.op === 'expect_text' || step.op === 'expect_value')) throw new Error('Нужна проверка ожидаемого результата');
+          for (const step of steps) {
+            if ((step.op === 'fill' || step.op === 'expect_value') && typeof step.value !== 'string') throw new Error('Для ввода и проверки значения требуется value');
+            if (step.op === 'expect_text' && typeof step.text !== 'string') throw new Error('Для проверки текста требуется text');
+          }
+          effect({ id, html: object.html, steps }); break;
+        }
         case 'read_object': data = readCanvasObject(model, card(str(args, 'id')), Math.round(Number(args.offset ?? 0)), Math.round(Number(args.limit ?? 12000))); break;
         case 'create_object': {
           if (action.key && aliases.has(action.key)) {

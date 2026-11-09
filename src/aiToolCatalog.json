@@ -69,6 +69,62 @@
       }
     },
     {
+      "name": "read_html_test",
+      "description": "Проверить HTML в отдельном sandbox с той же политикой, что на доске. Заполняет поля, нажимает кнопки и сравнивает результат; исходный объект и его состояние на доске не меняет. Обязателен после создания или изменения HTML перед итоговым ответом. Нужна хотя бы одна expect_text/expect_value; для калькулятора проверь конкретные числа. Выполняется отдельным шагом чтения.",
+      "parameters": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "steps"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "op",
+                "selector"
+              ],
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "enum": [
+                    "fill",
+                    "click",
+                    "expect_text",
+                    "expect_value"
+                  ]
+                },
+                "selector": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 240
+                },
+                "value": {
+                  "type": "string",
+                  "maxLength": 2000
+                },
+                "text": {
+                  "type": "string",
+                  "maxLength": 2000
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
       "name": "create_object",
       "description": "Создать объект любого типа на канвасе. Укажи уникальный key действия. HTML — полный автономный код с inline CSS/JS; без внешних ресурсов. Для пустого процесса XML не нужен. Для документа пункты образуются из Markdown-заголовков.",
       "parameters": {

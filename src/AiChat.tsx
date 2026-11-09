@@ -220,9 +220,12 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
     try {
       const result = await runCanvasAgent({ prompt, model: aiModel, history, projectId, api, signal: ctl.signal,
         host: () => ({ snapshot: () => toolsRef.current.snapshot(), execute: async (effect) => {
+          if (effect.tool === 'set_view' && typeof effect.arguments.chat === 'boolean') {
+            setOpen(effect.arguments.chat);
+            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+          }
           const result = await toolsRef.current.execute(effect);
           if (result.ok && (effect.tool === 'open_editor' || effect.tool === 'show_properties')) openedDialog = true;
-          if (result.ok && effect.tool === 'set_view' && typeof effect.arguments.chat === 'boolean') setOpen(effect.arguments.chat);
           return result;
         } }),
         onDelta: (text) => draft.push(text),

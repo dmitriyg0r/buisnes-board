@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { Issue, IssueStatus } from './data';
+import type { Doc, Issue, IssueStatus } from './data';
 import type { Coverage } from './coverage';
 import type { IssueFields } from './useIssues';
 import { Icon } from './Icon';
 
 interface Props {
+  docs: Doc[];
   issues: Issue[];
   cover: Coverage;
   onSelect: (id: string) => void;
@@ -64,7 +65,7 @@ function IssueOverview({ issues, cover, selectedId, onSelect, openCount }: { iss
   </>;
 }
 
-export function IssuePanel({ issues, cover, onSelect, issue, index, total, onStep, onTransition, collapsed, onToggle, openCount }: Props) {
+export function IssuePanel({ docs, issues, cover, onSelect, issue, index, total, onStep, onTransition, collapsed, onToggle, openCount }: Props) {
   const [note, setNote] = useState('');
   useEffect(() => setNote(''), [issue?.id, issue?.status]);
 
@@ -159,7 +160,7 @@ export function IssuePanel({ issues, cover, onSelect, issue, index, total, onSte
             <div className="ref-card">
               <span className="ref-icon"><Icon name="file" size={17} /></span>
               <span className="ref-text">
-                <small>Документ · Регламент согласования</small>
+                <small>Документ · {docs.find((doc) => doc.sections.some((section) => section.id === issue.doc?.sectionId))?.title ?? 'Документ не найден'}</small>
                 <b>{issue.doc.label}</b>
               </span>
             </div>

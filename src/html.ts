@@ -1,9 +1,32 @@
 const escapeHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /** Код выполняется только в iframe с непрозрачным origin, без доступа к приложению и сети. */
-export function htmlPreviewDocument(html: string): string {
+export function htmlPreviewDocument(html: string, bootstrap = ''): string {
   const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'";
-  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html{color-scheme:light}body{margin:0;font-family:system-ui,sans-serif}*,*::before,*::after{box-sizing:border-box}</style></head><body>${html}</body></html>`;
+  return `<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${policy}"><meta name="viewport" content="width=device-width, initial-scale=1"><style>html{color-scheme:light}body{margin:0;font-family:system-ui,sans-serif}*,*::before,*::after{box-sizing:border-box}</style><script>(${localForms.toString()})();${bootstrap}</script></head><body>${html}</body></html>`;
+}
+
+/** Только локальное событие: навигация и реальная отправка остаются запрещены sandbox/CSP. */
+function localForms() {
+  const submit = (form: HTMLFormElement, button: HTMLElement | null) => {
+    if (!form.noValidate && !button?.hasAttribute('formnovalidate') && !form.reportValidity()) return;
+    form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: button }));
+  };
+  document.addEventListener('click', (event) => {
+    if (event.defaultPrevented || !(event.target instanceof Element)) return;
+    const button = event.target.closest('button,input');
+    if (!(button instanceof HTMLButtonElement || button instanceof HTMLInputElement) || !button.form || !['submit', 'image'].includes(button.type)) return;
+    event.preventDefault();
+    submit(button.form, button);
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.key !== 'Enter' || event.isComposing || !(event.target instanceof HTMLInputElement)) return;
+    const input = event.target, form = input.form;
+    if (!form || ['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'range', 'color'].includes(input.type)) return;
+    event.preventDefault();
+    const button = Array.from(form.elements).find((element) => (element instanceof HTMLButtonElement || element instanceof HTMLInputElement) && element.type === 'submit' && !element.disabled);
+    if (button instanceof HTMLElement) button.click(); else submit(form, null);
+  });
 }
 
 /** Пример сразу показывает, что на доске работают кнопки и JavaScript. */

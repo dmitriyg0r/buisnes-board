@@ -10,7 +10,7 @@ export interface AiEffect { tool: string; arguments: Record<string, unknown>; in
 export interface AiEnvironment {
   issues: Issue[];
   settings: Pick<Settings, 'grid' | 'snap' | 'minimap' | 'wheelZoom' | 'aiModel'>;
-  view: { x: number; y: number; zoom: number; width: number; height: number; selectedIds: string[]; selectedLinkId?: string; tree: boolean; panel: boolean; mode: 'select' | 'link' | 'gateway' };
+  view: { x: number; y: number; zoom: number; width: number; height: number; safeArea?: { x: number; y: number; w: number; h: number }; selectedIds: string[]; selectedLinkId?: string; tree: boolean; panel: boolean; mode: 'select' | 'link' | 'gateway' };
   canUndo: boolean;
   canRedo: boolean;
 }

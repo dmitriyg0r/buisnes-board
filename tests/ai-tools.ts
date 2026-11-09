@@ -99,15 +99,16 @@ export async function runAiToolTests(dom = false) {
   await test('Агент: прочитать два фрагмента и изменить полный текст без потерь', async () => {
     const { api, past } = memoryApi(seed()); const code = '<main>' + 'Данные'.repeat(3000) + '</main>'; api.applyLive((m) => ({ ...m, htmlObjects: [{ ...m.htmlObjects[0], html: code }] }));
     let calls = 0;
-    const responses: GenResult[] = [{ reply: 'Читаю', actions: [action('read_object', { id: 'html:h', limit: 12000 })] }, { reply: 'Читаю продолжение', actions: [action('read_object', { id: 'html:h', offset: 12000, limit: 12000 })] }, { reply: 'Меняю', actions: [action('update_object', { id: 'html:h', html: code + '<!-- готово -->' })] }, { reply: 'Изменено' }];
+    const responses: GenResult[] = [{ reply: 'Читаю', actions: [action('read_object', { id: 'html:h', limit: 12000 })] }, { reply: 'Читаю продолжение', actions: [action('read_object', { id: 'html:h', offset: 12000, limit: 12000 })] }, { reply: 'Меняю', actions: [action('update_object', { id: 'html:h', html: code + '<!-- готово -->' })] }, { reply: 'Проверяю', actions: [action('read_html_test', { id: 'html:h', steps: [{ op: 'expect_text', selector: 'main', text: 'Данные'.repeat(3000).slice(0, 100) }] })] }, { reply: 'Изменено' }];
     const result = await runCanvasAgent({ prompt: 'Дополни код', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'ok' }) }), onDelta() {}, render: async () => {}, generate: async (_p, _m, _c, _h, _ev, _s, _id, observations) => { if (calls) assert(observations!.length === calls); return responses[calls++]; } });
-    equal(calls, 4); equal(api.getModel().htmlObjects[0].html, code + '<!-- готово -->'); equal(past.length, 1); api.undo(); equal(api.getModel().htmlObjects[0].html, code); equal(result.reply, 'Изменено');
+    equal(calls, 5); equal(api.getModel().htmlObjects[0].html, code + '<!-- готово -->'); equal(past.length, 1); api.undo(); equal(api.getModel().htmlObjects[0].html, code); equal(result.reply, 'Изменено');
   });
   await test('Агент: неверный пакет исправляется без частичных изменений', async () => {
     const { api, past } = memoryApi(emptyModel); let calls = 0;
     await runCanvasAgent({ prompt: 'Создай', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'ok' }) }), onDelta() {}, render: async () => {}, generate: async (_p, _m, _c, _h, _ev, _s, _id, observations) => {
       calls++; if (calls === 1) return { reply: 'x', actions: [action('create_object', { kind: 'html', title: 'x' }, 'h'), action('update_object', { id: 'doc:foreign', title: 'bad' })] };
-      if (calls > 2) return { reply: 'Готово' };
+      if (calls > 3) return { reply: 'Готово' };
+      if (calls === 3) return { reply: 'Проверяю', actions: [action('read_html_test', { id: '$h', steps: [{ op: 'expect_text', selector: 'h1', text: 'x' }] })] };
       equal(api.getModel().htmlObjects.length, 0); assert(observations![0].result.ok === false);
       return { reply: 'Готово', actions: [action('create_object', { kind: 'html', title: 'x' }, 'h')] };
     } });
@@ -115,14 +116,34 @@ export async function runAiToolTests(dom = false) {
   });
   await test('Агент: ошибка внешнего действия не дублирует уже созданный объект', async () => {
     const { api } = memoryApi(emptyModel); let calls = 0, saved = 0;
-    const host: AiToolHost = { snapshot: env, execute: async () => { if (!saved++) throw new Error('Нет связи'); return { ok: true, summary: 'Сохранено' }; } };
-    await runCanvasAgent({ prompt: 'Создай виджет и замечание', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => host, onDelta() {}, render: async () => {}, generate: async () => { calls++; return calls > 2 ? { reply: 'Готово' } : { reply: 'Создаю', actions: [action('create_object', { kind: 'html', title: 'x' }, 'h'), action('create_issue', { title: 'Проверить' }, 'issue')] }; } });
-    equal(calls, 3); equal(api.getModel().htmlObjects.length, 1); equal(saved, 2);
+    const host: AiToolHost = { snapshot: env, execute: async (effect) => { if (effect.tool === 'read_html_test') return { ok: true, summary: 'Проверено' }; if (!saved++) throw new Error('Нет связи'); return { ok: true, summary: 'Сохранено' }; } };
+    await runCanvasAgent({ prompt: 'Создай виджет и замечание', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => host, onDelta() {}, render: async () => {}, generate: async () => { calls++; if (calls === 3) return { reply: 'Проверяю', actions: [action('read_html_test', { id: '$h', steps: [{ op: 'expect_text', selector: 'h1', text: 'x' }] })] }; return calls > 3 ? { reply: 'Готово' } : { reply: 'Создаю', actions: [action('create_object', { kind: 'html', title: 'x' }, 'h'), action('create_issue', { title: 'Проверить' }, 'issue')] }; } });
+    equal(calls, 4); equal(api.getModel().htmlObjects.length, 1); equal(saved, 2);
   });
   await test('Отмена до ответа не меняет модель', async () => {
     const { api } = memoryApi(emptyModel), controller = new AbortController(); controller.abort(); let generated = false;
     try { await runCanvasAgent({ prompt: 'x', model: '6.1-sol', history: [], projectId: 'test', signal: controller.signal, api, host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'x' }) }), onDelta() {}, generate: async () => { generated = true; return { reply: 'x' }; } }); } catch { /* ожидаем AbortError */ }
     assert(!generated); equal(api.getModel(), emptyModel);
+  });
+  await test('HTML: проверка обязательна, ошибка возвращается ИИ, исправление требует нового теста', async () => {
+    const { api } = memoryApi(emptyModel); let calls = 0, checks = 0;
+    const host: AiToolHost = { snapshot: env, execute: async () => ++checks === 1 ? { ok: false, summary: 'Ошибка', error: 'Ожидалось 300,00, получено —' } : { ok: true, summary: '300,00 подтверждено' } };
+    const check = { reply: 'Проверяю', actions: [action('read_html_test', { id: '$calc', steps: [{ op: 'click', selector: '#calc' }, { op: 'expect_text', selector: '#total', text: '300,00' }] })] };
+    const responses: GenResult[] = [{ reply: 'Создаю', actions: [action('create_object', { kind: 'html', title: 'Расчёт', html: '<output id="total">—</output>' }, 'calc')] }, { reply: 'Всё работает' }, check, { reply: 'Исправляю', actions: [action('update_object', { id: '$calc', html: '<output id="total">300,00</output>' })] }, check, { reply: 'Проверено на 100 × 3' }];
+    const result = await runCanvasAgent({ prompt: 'Калькулятор', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => host, onDelta() {}, render: async () => {}, generate: async (_p, _m, _c, _h, _ev, _s, _id, observations) => {
+      if (calls === 2) assert(observations!.some((o) => o.result.error?.includes('ещё не проверен')));
+      if (calls === 3) assert(observations!.some((o) => o.result.error?.includes('получено —')));
+      return responses[calls++];
+    } });
+    equal(calls, 6); equal(checks, 2); equal(result.reply, 'Проверено на 100 × 3');
+    rejects(() => planAiActions(api.getModel(), [action('read_html_test', { id: 'html:' + api.getModel().htmlObjects[0].id, steps: [{ op: 'click', selector: 'button' }] })], env()));
+  });
+  await test('HTML: успешный тест старого кода не подтверждает новую правку', async () => {
+    const { api } = memoryApi(seed()); let calls = 0, checks = 0;
+    const check = { reply: 'Проверяю', actions: [action('read_html_test', { id: 'html:h', steps: [{ op: 'expect_text', selector: 'output', text: '1' }] })] };
+    const responses: GenResult[] = [{ reply: 'Правлю', actions: [action('update_object', { id: 'html:h', html: '<output>1</output>' })] }, check, { reply: 'Правлю снова', actions: [action('update_object', { id: 'html:h', html: '<output>2</output>' })] }, { reply: 'Готово' }, check, { reply: 'Повторно проверено' }];
+    const result = await runCanvasAgent({ prompt: 'Правка', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => ({ snapshot: env, execute: async () => { checks++; return { ok: true, summary: 'Проверено' }; } }), onDelta() {}, render: async () => {}, generate: async () => responses[calls++] });
+    equal(checks, 2); equal(result.reply, 'Повторно проверено');
   });
 
   if (dom) {

@@ -31,6 +31,9 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
   let aliases = new Map<string, string>();
   let lastError = '';
   const legacyDone = new Set<string>();
+  const changedHtml = new Set<string>();
+  const verifiedHtml = new Map<string, string>();
+  const untestedHtml = () => api.getModel().htmlObjects.filter((object) => changedHtml.has(`html:${object.id}`) && verifiedHtml.get(`html:${object.id}`) !== object.html).map((object) => `html:${object.id}`);
   const rememberRefs = (list: Created[], items: Created[]) => {
     for (const item of items) { const index = list.findIndex((x) => x.id === item.id && x.kind === item.kind); if (index < 0) list.push(item); else list[index] = item; }
   };
@@ -50,7 +53,15 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
     const actions = response.actions ?? [];
     const legacyKey = JSON.stringify({ processes: response.processes, documents: response.documents, updates: response.updates });
     const hasLegacy = !!(response.processes?.length || response.documents?.length || response.updates?.length) && !legacyDone.has(legacyKey);
-    if (!actions.length && !hasLegacy) return { reply: response.reply.trim() || 'Готово.', refs, observations };
+    if (!actions.length && !hasLegacy) {
+      const pending = untestedHtml();
+      if (pending.length) {
+        lastError = `HTML ещё не проверен: ${pending.join(', ')}. Выполни read_html_test с конкретными входными данными, нажатием кнопки и ожидаемым результатом. При ошибке исправь код и проверь заново.`;
+        observations.push({ action: { tool: 'validation', arguments: {} }, result: { ok: false, summary: 'Нельзя подтвердить готовность HTML без проверки', error: lastError } });
+        continue;
+      }
+      return { reply: response.reply.trim() || 'Готово.', refs, observations };
+    }
 
     const before = api.getModel();
     let plan;
@@ -68,7 +79,10 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
       continue;
     }
 
-    if (legacy.model !== before || plan.changed) { api.apply(() => plan.model); options.onApplied?.(); }
+    if (legacy.model !== before || plan.changed) {
+      for (const object of plan.model.htmlObjects) if (before.htmlObjects.find((old) => old.id === object.id)?.html !== object.html) changedHtml.add(`html:${object.id}`);
+      api.apply(() => plan.model); options.onApplied?.();
+    }
     aliases = plan.aliases;
     if (hasLegacy) {
       legacyDone.add(legacyKey);
@@ -82,7 +96,11 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
       try {
         const result = await options.host().execute(effect);
         plan.observations[effect.index].result = result;
-        if (result.ok) options.onApplied?.();
+        if (effect.tool === 'read_html_test') {
+          if (result.ok) verifiedHtml.set(String(effect.arguments.id), String(effect.arguments.html));
+          else verifiedHtml.delete(String(effect.arguments.id));
+        }
+        if (result.ok && !effect.tool.startsWith('read_')) options.onApplied?.();
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         plan.observations[effect.index].result = { ok: false, summary: `Не выполнено: ${effect.tool}`, error: message };
@@ -97,6 +115,7 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
     if (legacy.missing) { lastError = `Не найдено объектов: ${legacy.missing}`; continue; }
     // Итоговая реплика строится уже по фактическим результатам, а не по обещанию перед выполнением.
     if (actions.length && round < 5) continue;
+    if (untestedHtml().length) { lastError = 'Изменённый HTML остался без успешной проверки'; continue; }
     return { reply: actions.length ? plan.observations.map((o) => o.result.summary).join('. ') : response.reply.trim() || 'Готово.', refs, observations };
   }
   if (!observations.some((o) => o.result.ok && !o.action.tool.startsWith('read_'))) throw new GenError(`Не удалось выполнить запрос за 6 шагов.${lastError ? ` ${lastError}` : ' Уточните, с каким объектом нужно работать.'}`);
