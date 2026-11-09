@@ -1,9 +1,11 @@
 import { HttpError } from './api';
-import { nodeRef, parseProcess } from './bpmn';
+import { nodeRef } from './bpmn';
 import type { Model } from './data';
 import { reconcileSections, sectionTitles } from './markdown';
 import { INFO_SECTION, key } from './schema';
 import type { AiModel } from './settings';
+import { canvasContext } from './aiCanvasContext';
+import type { AiAction, AiEnvironment, AiObservation, CanvasRef } from './aiToolContract';
 
 /** Ответ сервера: проверенные процессы, документы и правки. */
 export interface GenNode {
@@ -48,6 +50,7 @@ export interface GenResult {
   processes?: GenProcess[];
   documents?: GenDoc[];
   updates?: GenUpdate[];
+  actions?: AiAction[];
 }
 
 /** Реплика диалога, которую уносим модели, чтобы она понимала уточнения. */
@@ -66,11 +69,11 @@ export type StreamEvent = { type: 'start' } | { type: 'delta'; text: string };
  * Возвращает проверенный сервером результат. Отмена через signal закрывает соединение, и сервер
  * перестаёт читать ответ модели.
  */
-export async function streamGenerate(prompt: string, model: AiModel, context: string, history: Turn[], onEvent: (e: StreamEvent) => void, signal: AbortSignal, projectId?: string): Promise<GenResult> {
+export async function streamGenerate(prompt: string, model: AiModel, context: string, history: Turn[], onEvent: (e: StreamEvent) => void, signal: AbortSignal, projectId?: string, observations: AiObservation[] = []): Promise<GenResult> {
   const res = await fetch('/api/ai/generate', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt, model, context, history, project_id: projectId }),
+    body: JSON.stringify({ prompt, model, context, history, project_id: projectId, observations }),
     signal,
   });
   if (!res.ok || !res.body) {
@@ -247,26 +250,9 @@ export function partialPlan(text: string): Plan {
 
 /* ---------- что модель видит на доске ---------- */
 
-const DOC_CHARS = 4000;
-const CONTEXT_CHARS = 50_000;
-
-/** Сжатое описание доски для запроса: процессы, документы и источники (у источников известны только имена). */
-export function buildContext(m: Model): string {
-  const parts: string[] = [];
-  for (const p of m.processes) {
-    const { nodes, flows } = parseProcess(p.xml);
-    const name = (id: string) => nodes.find((n) => n.id === id)?.name || id;
-    const steps = nodes.filter((n) => n.name).map((n) => `${n.kind === 'gateway' ? 'развилка' : 'шаг'}: ${n.name}`);
-    const trans = flows.map((f) => `${name(f.from)} → ${name(f.to)}${f.name ? ` (${f.name})` : ''}`);
-    parts.push(`Процесс «${p.title}» [id: ${p.id}]\n${steps.slice(0, 60).join('\n')}${trans.length ? `\nПереходы:\n${trans.slice(0, 100).join('\n')}` : ''}`);
-  }
-  for (const d of m.docs) {
-    const text = d.markdown.length > DOC_CHARS ? d.markdown.slice(0, DOC_CHARS) + '\n…' : d.markdown;
-    parts.push(`Документ «${d.title}» [id: ${d.id}]\n${text}`);
-  }
-  if (m.htmlObjects.length) parts.push('HTML-объекты на доске:\n' + m.htmlObjects.map((h) => `«${h.title}» [id: ${h.id}]`).join('\n'));
-  if (m.sources.length) parts.push('Источники (только названия):\n' + m.sources.map((s) => `${s.name}.${s.ext.toLowerCase()}, ${s.pages} стр.`).join('\n'));
-  return parts.join('\n\n').slice(0, CONTEXT_CHARS);
+/** Актуальный обзор доски и содержимого; полные длинные тексты доступны инструментами чтения. */
+export function buildContext(model: Model, environment?: AiEnvironment): string {
+  return canvasContext(model, environment);
 }
 
 /* ---------- сборка BPMN с раскладкой ---------- */
@@ -449,11 +435,7 @@ const demote = (md: string) => {
     .join('\n');
 };
 
-export interface Created {
-  id: string;
-  title: string;
-  kind: 'proc' | 'doc';
-}
+export type Created = CanvasRef;
 
 export interface Applied {
   model: Model;

@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test:html": "esbuild tests/html-objects.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/html-objects-test.mjs && node node_modules/.cache/html-objects-test.mjs",
+    "test:ai": "esbuild tests/ai-tools-node.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/ai-tools-test.mjs && node node_modules/.cache/ai-tools-test.mjs",
     "preview": "vite preview",
     "setup": "node scripts/setup.mjs",
     "dev:db": "docker compose up -d db",

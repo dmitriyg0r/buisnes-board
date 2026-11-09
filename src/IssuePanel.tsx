@@ -185,8 +185,8 @@ export function IssuePanel({ issues, cover, onSelect, issue, index, total, onSte
             </div>
           ) : (
             <div className="basis">
-              <div className="basis-head"><b>Автопроверка покрытия</b></div>
-              <p className="note">Замечание исчезнет, когда вы свяжете {issue.model ? 'шаг с пунктом регламента' : 'пункт с шагом модели'} в свойствах объекта (правая кнопка → «Свойства…» → «Связи»).</p>
+              <div className="basis-head"><b>{issue.auto ? 'Автопроверка покрытия' : 'Замечание проекта'}</b></div>
+              {issue.auto && <p className="note">Замечание исчезнет, когда вы свяжете {issue.model ? 'шаг с пунктом регламента' : 'пункт с шагом модели'} в свойствах объекта (правая кнопка → «Свойства…» → «Связи»).</p>}
             </div>
           )}
         </section>

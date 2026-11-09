@@ -1,5 +1,6 @@
 mod auth;
 mod ai;
+mod ai_tools;
 mod error;
 mod integrations;
 mod routes;

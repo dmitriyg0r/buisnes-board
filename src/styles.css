@@ -968,6 +968,12 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ai-msg.assistant.error { background: #fdecea; color: #8a1f14; }
 .ai-msg.assistant.note { background: transparent; color: var(--muted); padding-left: 4px; font-size: 12.5px; }
 .ai-text { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ai-tool-log { color: var(--muted); font-size: 11.5px; }
+.ai-tool-log summary { cursor: pointer; }
+.ai-tool-log ul { display: flex; flex-direction: column; gap: 5px; margin: 8px 0 0; padding: 0; list-style: none; }
+.ai-tool-log li { display: flex; align-items: flex-start; gap: 6px; }
+.ai-tool-log li > svg { flex: none; margin-top: 2px; }
+.ai-tool-log li.failed { color: #b42318; }
 .ai-msg .ai-steps { padding: 0; }
 .ai-empty { display: flex; flex-direction: column; gap: 10px; padding: 6px 4px; color: var(--ink-2); font-size: 13px; }
 .ai-empty p { margin: 0; line-height: 1.45; }

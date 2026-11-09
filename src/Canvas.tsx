@@ -9,6 +9,8 @@ import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
 import { HtmlPreview } from './HtmlPreview';
+import { exportCanvasObject } from './aiCanvasTools';
+import type { AiEffect, AiToolHost, AiToolResult } from './aiToolContract';
 
 const MarkdownView = lazy(() => import('./MarkdownView'));
 import { ContextMenu, type ContextOpener, type MenuItem, type MenuTarget } from './ContextMenu';
@@ -59,6 +61,8 @@ interface Props {
   paused: boolean;
   /** курсоры коллег и отправка своего */
   presence?: Presence;
+  aiPanels: { tree: boolean; panel: boolean };
+  onAiWorkspaceEffect: (effect: AiEffect) => Promise<AiToolResult>;
 }
 
 /* ---------- перетаскиваемая карточка ---------- */
@@ -506,7 +510,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, paused, presence }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways, htmlObjects } = api.model;
   const pnodes = projectNodes(processes);
@@ -1466,6 +1470,47 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     );
   })();
 
+  const aiTools: AiToolHost = {
+    snapshot: () => ({
+      issues, settings: { grid: settings.grid, snap: settings.snap, minimap: settings.minimap, wheelZoom: settings.wheelZoom, aiModel: settings.aiModel },
+      view: { x: camRef.current.x, y: camRef.current.y, zoom: camRef.current.k, width: size.w, height: size.h, selectedIds: selCards, selectedLinkId: selLink ?? undefined, ...aiPanels, mode },
+      canUndo: api.canUndo, canRedo: api.canRedo,
+    }),
+    execute: async (effect) => {
+      const args = effect.arguments;
+      switch (effect.tool) {
+        case 'set_view': {
+          if (args.x !== undefined || args.y !== undefined || args.zoom !== undefined) setCam({ x: Number(args.x ?? camRef.current.x), y: Number(args.y ?? camRef.current.y), k: Number(args.zoom ?? camRef.current.k) });
+          if (args.fit) fit();
+          if (typeof args.focusId === 'string') focusCard(args.focusId);
+          if (Array.isArray(args.selectedIds)) { setSelCards(args.selectedIds as string[]); setSelLink(null); }
+          if (args.mode) switchMode(args.mode as 'select' | 'link' | 'gateway');
+          if (args.aiModel === '6.1-sol' || args.aiModel === '6.1-terra') onModel(args.aiModel);
+          return onAiWorkspaceEffect(effect);
+        }
+        case 'open_editor': {
+          const id = String(args.id), key = id.slice(id.indexOf(':') + 1);
+          if (id.startsWith('proc:')) onEditProcess(key); else if (id.startsWith('doc:')) onEditDoc(key); else onEditHtml(key);
+          return { ok: true, summary: 'Редактор объекта открыт', data: { id } };
+        }
+        case 'show_properties': setProps({ type: args.targetType as PropTarget['type'], id: String(args.id) }); return { ok: true, summary: 'Свойства открыты' };
+        case 'select_issue': onSelect(String(args.id)); return { ok: true, summary: 'Замечание показано' };
+        case 'history': {
+          const restored = args.direction === 'undo' ? api.undo() : api.redo();
+          if (!restored) return { ok: false, summary: 'Нет изменения для отмены или повтора', error: 'История содержит только пустые точки фокуса; данные не изменились' };
+          return { ok: true, summary: args.direction === 'undo' ? 'Изменение отменено' : 'Изменение возвращено' };
+        }
+        case 'export_object': {
+          const exported = exportCanvasObject(api.getModel(), String(args.id));
+          const url = URL.createObjectURL(new Blob([exported.content], { type: `${exported.mime};charset=utf-8` }));
+          const link = document.createElement('a'); link.href = url; link.download = exported.filename; link.click(); URL.revokeObjectURL(url);
+          return { ok: true, summary: `Скачан файл «${exported.filename}»` };
+        }
+        default: return onAiWorkspaceEffect(effect);
+      }
+    },
+  };
+
   return (
     <main
       className={`canvas${panning ? ' panning' : ''}${space ? ' hand' : ''}${mode === 'link' ? ' linking' : ''}${mode === 'gateway' ? ' placing' : ''}`}
@@ -1487,7 +1532,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
         menuAt.current = w;
       }}
     >
-      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} />
+      <AiChat projectId={projectId} presence={presence} api={api} aiModel={settings.aiModel} onModel={onModel} onReveal={revealDraft} onFocusCard={focusCard} tools={aiTools} />
       {cardIds.length === 0 && !draftBuilding && (
         <div className="canvas-empty">
           <b>Проект пуст</b>

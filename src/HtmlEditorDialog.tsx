@@ -33,6 +33,10 @@ export default function HtmlEditorDialog({ object, onChange, onCheckpoint, onClo
   const nameRef = useRef(name);
   nameRef.current = name;
 
+  // Правки ИИ и отмена на доске могут прийти, пока редактор уже открыт.
+  useEffect(() => { setName(object.title); }, [object.title]);
+  useEffect(() => { setHtml(object.html); }, [object.html]);
+
   useEffect(() => {
     try { localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout)); } catch { /* хранилище недоступно */ }
   }, [layout]);

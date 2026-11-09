@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { blankXml } from './bpmn';
-import { emptyModel, NO_ISSUE, type IssueStatus } from './data';
+import { emptyModel, NO_ISSUE, type Issue, type IssueStatus } from './data';
 import { reconcileSections, sectionTitles, starterMarkdown } from './markdown';
 import { autoIssues, coverage } from './coverage';
 import { Tree } from './Tree';
@@ -21,6 +21,7 @@ import { HttpError } from './api';
 import { usePresence } from './presence';
 import { useIssues, type IssueFields } from './useIssues';
 import { starterHtml } from './html';
+import type { AiEffect, AiToolResult } from './aiToolContract';
 
 const DiagramModelEditor = lazy(() => import('./DiagramModelEditor'));
 const DocEditorDialog = lazy(() => import('./DocEditorDialog'));
@@ -256,6 +257,31 @@ function Workspace({
     if (issue) store.update(issue, status, fields);
   };
 
+  const aiWorkspaceEffect = async (effect: AiEffect): Promise<AiToolResult> => {
+    if (effect.tool === 'set_view') {
+      const values = effect.arguments;
+      const preferences: Partial<typeof settings> = {};
+      for (const key of ['grid', 'snap', 'minimap', 'wheelZoom'] as const) if (typeof values[key] === 'boolean') preferences[key] = values[key];
+      if (Object.keys(preferences).length) patchSettings(preferences);
+      if (typeof values.tree === 'boolean' || typeof values.panel === 'boolean') setLayout((old) => {
+        const next = { ...old, ...(typeof values.tree === 'boolean' ? { tree: values.tree } : {}), ...(typeof values.panel === 'boolean' ? { panel: values.panel } : {}) };
+        try { localStorage.setItem('bb.layout.v2', JSON.stringify(next)); } catch { /* хранилище недоступно */ }
+        return next;
+      });
+      return { ok: true, summary: 'Вид доски настроен' };
+    }
+    const issue = effect.arguments.issue as Issue;
+    if (effect.tool === 'delete_issue' && !effect.arguments.closeAuto) {
+      await store.removeAi(issue);
+      return { ok: true, summary: `Удалено замечание «${issue.title}»`, data: { id: issue.id } };
+    }
+    if (['create_issue', 'update_issue', 'delete_issue'].includes(effect.tool)) {
+      await store.saveAi(issue);
+      return { ok: true, summary: `Сохранено замечание «${issue.title}»: ${issue.status}`, data: { id: issue.id, status: issue.status } };
+    }
+    throw new Error(`Неизвестное действие проекта ${effect.tool}`);
+  };
+
   return (
     <div className="app">
       <header className="topbar">
@@ -314,6 +340,8 @@ function Workspace({
           onEditHtml={(id) => setEditing({ type: 'html', id })}
           paused={editing !== null || addOpen || settingsTab !== null}
           presence={presence}
+          aiPanels={layout}
+          onAiWorkspaceEffect={aiWorkspaceEffect}
         />
         <IssuePanel
           issues={issues}
