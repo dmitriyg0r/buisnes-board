@@ -81,7 +81,6 @@ function DragCard({
   snapPort,
   linkLabel,
   linkSource,
-  portSize,
   className,
   style,
   onEdit,
@@ -107,7 +106,6 @@ function DragCard({
   snapPort?: CardAnchor | null;
   linkLabel: string;
   linkSource: boolean;
-  portSize: { w: number; h: number };
   className: string;
   style?: React.CSSProperties;
   onEdit?: () => void;
@@ -171,10 +169,8 @@ function DragCard({
       <span className="pin" />
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
-        // от одной до трёх точек на сторону: примерно по одной на каждые 220 px длины. Больше не нужно: место
-        // конкретной связи выбирается и без точек, при клике по карточке оно берётся из места клика
-        const length = side === 'top' || side === 'bottom' ? portSize.w : portSize.h;
-        const count = id.startsWith('gw:') ? 1 : Math.max(1, Math.min(3, Math.floor(length / 220)));
+        // У всех объектов три точки на каждой стороне независимо от типа и размера.
+        const count = 3;
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const anchor = { side, offset };
@@ -1028,7 +1024,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel, portSize: boxForLink(id) });
+  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFrom(null);
