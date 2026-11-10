@@ -119,7 +119,7 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
       if (edge.from !== id && edge.to !== id) continue;
       const from = nodeById(graph, edge.from), to = nodeById(graph, edge.to);
       const reverse = edge.to === id;
-      const points = reverse ? [...edge.points].reverse() : [...edge.points];
+      const points = (reverse ? [...edge.points].reverse() : edge.points).map(point => ({ ...point }));
       const old = points[0];
       const anchor = { x: node.x + (old.x - before.x) / before.width * node.width, y: node.y + (old.y - before.y) / before.height * node.height };
       if (!isPoint(anchor)) throw new Error('Некорректная привязка связи.');
@@ -128,16 +128,14 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
         continue;
       }
       const next = points[1];
-      const middleX = (anchor.x + next.x) / 2, middleY = (anchor.y + next.y) / 2;
-      const bridges = [
-        [{ x: middleX, y: anchor.y }, { x: middleX, y: next.y }],
-        [{ x: anchor.x, y: middleY }, { x: next.x, y: middleY }],
-        [{ x: next.x, y: anchor.y }], [{ x: anchor.x, y: next.y }],
-      ];
-      const candidate = bridges.map(bridge => [anchor, ...bridge, ...points.slice(1)].filter((p, i, all) => i === 0 || p.x !== all[i - 1].x || p.y !== all[i - 1].y))
-        .map(path => reverse ? path.reverse() : path).find(path => validRoute(graph, from, to, path));
-      if (!candidate) throw new Error('Невозможно сохранить ручной маршрут при изменении элемента.');
-      edge.points = candidate;
+      if (old.x === next.x) next.x = anchor.x;
+      else if (old.y === next.y) next.y = anchor.y;
+      else throw new Error('Диагональный маршрут нельзя автоматически изменить.');
+      points[0] = anchor;
+      const candidate = simplifyRoute(reverse ? points.reverse() : points);
+      if (validRoute(graph, from, to, candidate)) edge.points = candidate;
+      else if (points.length <= 4) edge.points = route(graph, from, to, candidate[0], candidate[candidate.length - 1]);
+      else throw new Error('Невозможно безопасно сохранить маршрут связи при изменении элемента.');
     }
   };
   return {
