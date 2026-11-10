@@ -1,3 +1,5 @@
+import { getModelNotation } from './modeling/registry';
+import { applyModelOperation, readModelSource } from './aiModelTools';
 import { blankXml, isLinkable, projectNodes } from './bpmn';
 import { emptyModel, type CardLink, type Issue, type Model } from './data';
 import { starterHtml } from './html';
@@ -23,7 +25,7 @@ const number = (args: Record<string, unknown>, key: string) => {
 };
 const own = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
 const titleOf = (args: Record<string, unknown>) => str(args, 'title').trim() || 'Без названия';
-const objectPrefix = { process: 'proc', document: 'doc', html: 'html', source: 'src', gateway: 'gw' } as const;
+const objectPrefix = { model: 'model', process: 'proc', document: 'doc', html: 'html', source: 'src', gateway: 'gw' } as const;
 
 /** Полная предварительная проверка на копии: ошибочная команда не оставляет половину изменений. */
 export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironment, previousAliases = new Map<string, string>(), baseline: Model = input): AiPlan {
@@ -160,7 +162,15 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
           }
           const kind = str(args, 'kind') as keyof typeof objectPrefix, id = uid(objectPrefix[kind]), title = titleOf(args);
           const ref = `${objectPrefix[kind]}:${id}`;
-          if (kind === 'process') { const xml = typeof args.xml === 'string' ? args.xml : blankXml(title); validateXml(xml); model.processes.push({ id, title, xml }); }
+          if (kind !== 'model' && (own(args, 'source') || own(args, 'notation'))) throw new Error('source и notation доступны только для независимой модели');
+          if (kind === 'model' && ['xml', 'markdown', 'html', 'append', 'ext', 'pages', 'sectionMode'].some((key) => own(args, key))) throw new Error('Поле не соответствует независимой модели');
+          if (kind === 'model') {
+            const notation = str(args, 'notation'), n = getModelNotation(notation);
+            if (!n) throw new Error('Неизвестная нотация');
+            const source = typeof args.source === 'string' ? args.source : n.createEmpty();
+            const read = n.read(source); if (read.readOnlyReason) throw new Error(read.readOnlyReason);
+            model.models.push({ id, title, notation, source });
+          } else if (kind === 'process') { const xml = typeof args.xml === 'string' ? args.xml : blankXml(title); validateXml(xml); model.processes.push({ id, title, xml }); }
           else if (kind === 'document') {
             const doc = { id, title, markdown: '', sections: [] as Model['docs'][number]['sections'] };
             model.docs.push(doc); replaceMarkdown(doc, typeof args.markdown === 'string' ? args.markdown : `# ${title}\n\n`, args.sectionMode);
@@ -173,15 +183,20 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
         case 'update_object': {
           const id = card(str(args, 'id')), item = canvasObject(model, id)!;
           unchanged(id);
-          const contentFields = ['markdown', 'html', 'xml', 'ext', 'pages', 'append', 'sectionMode'].filter((key) => own(args, key));
-          const allowed = 'markdown' in item ? ['markdown', 'append', 'sectionMode'] : 'html' in item ? ['html'] : 'xml' in item ? ['xml'] : 'ext' in item ? ['ext', 'pages'] : [];
+          const contentFields = ['source', 'markdown', 'html', 'xml', 'ext', 'pages', 'append', 'sectionMode'].filter((key) => own(args, key));
+          const allowed = 'source' in item ? ['source'] : 'markdown' in item ? ['markdown', 'append', 'sectionMode'] : 'html' in item ? ['html'] : 'xml' in item ? ['xml'] : 'ext' in item ? ['ext', 'pages'] : [];
           if (contentFields.some((key) => !allowed.includes(key))) throw new Error('Поле не соответствует типу объекта');
           if (own(args, 'markdown') && own(args, 'append')) throw new Error('Выбери замену Markdown или дописывание, а не оба сразу');
           if (typeof args.title === 'string') {
             const title = titleOf(args);
             if ('title' in item) item.title = title; else if ('name' in item) item.name = title; else item.label = title;
           }
-          if ('markdown' in item) {
+          if ('source' in item && typeof args.source === 'string') {
+            const n = getModelNotation(item.notation); if (!n) throw new Error('Неизвестная нотация');
+            const old = n.read(item.source); if (old.readOnlyReason) throw new Error(old.readOnlyReason);
+            const read = n.read(args.source); if (read.readOnlyReason) throw new Error(read.readOnlyReason);
+            item.source = args.source;
+          } else if ('markdown' in item) {
             let markdown = item.markdown;
             if (typeof args.markdown === 'string') markdown = args.markdown;
             else if (typeof args.append === 'string') markdown = `${markdown.trimEnd()}\n\n${args.append}\n`;
@@ -195,6 +210,7 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
         case 'delete_objects': {
           const ids = (args.ids as string[]).map(card); ids.forEach(unchanged);
           const gone = new Set(ids);
+          model.models = model.models.filter((m) => !gone.has(`model:${m.id}`));
           model.processes = model.processes.filter((p) => !gone.has(`proc:${p.id}`));
           model.docs = model.docs.filter((d) => !gone.has(`doc:${d.id}`));
           model.htmlObjects = model.htmlObjects.filter((h) => !gone.has(`html:${h.id}`));
@@ -209,7 +225,7 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
             if (own(entry, 'x')) model.meta['layout:pos'] = { ...model.meta['layout:pos'], [id]: `${Math.round(number(entry, 'x'))},${Math.round(number(entry, 'y'))}` };
             if (own(entry, 'width')) {
               if (id.startsWith('src:')) throw new Error('Карточка источника имеет фиксированный размер');
-              const min = id.startsWith('gw:') ? [96, 96] : id.startsWith('proc:') ? [320, 240] : [240, 200];
+              const min = id.startsWith('gw:') ? [96, 96] : (id.startsWith('proc:') || id.startsWith('model:')) ? [320, 240] : [240, 200];
               if (number(entry, 'width') < min[0] || number(entry, 'height') < min[1]) throw new Error('Размер карточки меньше допустимого');
               model.meta['layout:size'] = { ...model.meta['layout:size'], [id]: `${Math.round(number(entry, 'width'))},${Math.round(number(entry, 'height'))}` };
             }
@@ -222,6 +238,7 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
           let fields: FieldDef[];
           if (type === 'section') fields = sectionFields;
           else if (type === 'node') fields = nodeFields[projectNodes(model.processes).find((n) => n.id === id)!.kind];
+          else if (id.startsWith('model:')) throw new Error('Свойства независимой модели меняются через update_object и edit_model');
           else fields = id.startsWith('proc:') ? modelFields : id.startsWith('src:') ? fileFields : id.startsWith('gw:') ? [] : docFields;
           const metaKey = `${type}:${id}`, values = args.values as Record<string, string | null>;
           model.meta[metaKey] = { ...model.meta[metaKey] };
@@ -263,6 +280,26 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
         case 'unlink_section': {
           const id = resolve(str(args, 'id')); if (!model.links.some((l) => l.id === id)) throw new Error('Связь с пунктом не найдена');
           model.links = model.links.filter((l) => l.id !== id); break;
+        }
+        case 'edit_model': {
+          const raw = resolve(str(args, 'modelId')), id = raw.startsWith('model:') ? raw : `model:${raw}`;
+          card(id); unchanged(id);
+          const item = model.models.find((m) => `model:${m.id}` === id)!;
+          const n = getModelNotation(item.notation); if (!n) throw new Error('Неизвестная нотация');
+          const local = (value: string) => { const resolved = resolve(value); if (resolved.startsWith(`${item.id}:`)) return resolved.slice(item.id.length + 1); if (resolved.includes(':')) throw new Error('Элемент относится к другой модели'); return resolved; };
+          const elements = (source: string) => { const read = readModelSource(n, source); return [...read.diagram.nodes, ...read.diagram.edges, ...(read.timeline?.messages ?? [])]; };
+          const added: Record<string, string> = {};
+          for (const operation of args.operations as Record<string, unknown>[]) {
+            const oldIds = new Set(elements(item.source).map((e) => e.id));
+            item.source = applyModelOperation(n, item.source, operation, local);
+            if (operation.key !== undefined) {
+              const additions = elements(item.source).filter((e) => !oldIds.has(e.id));
+              if (additions.length !== 1) throw new Error('Операция не создала единственный элемент для key');
+              const key = str(operation, 'key'), ref = `${item.id}:${additions[0].id}`; bind(key, ref); added[key] = ref;
+            }
+          }
+          const read = readModelSource(n, item.source); if (read.readOnlyReason) throw new Error(read.readOnlyReason);
+          touched(id); data = { id, notation: item.notation, elements: added, ...read }; summary = 'Модель обновлена'; break;
         }
         case 'edit_bpmn': {
           const raw = resolve(str(args, 'processId')), id = raw.startsWith('proc:') ? raw : `proc:${raw}`, pid = card(id).slice(5);
@@ -323,12 +360,13 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
           effect(args); break;
         }
         case 'open_editor': {
-          const id = card(str(args, 'id')); if (!/^(proc|doc|html):/.test(id)) throw new Error('Для этого объекта нет редактора кода/модели');
+          const id = card(str(args, 'id')); if (!/^(model|proc|doc|html):/.test(id)) throw new Error('Для этого объекта нет редактора кода/модели');
           effect({ id }); break;
         }
         case 'export_object': effect({ id: card(str(args, 'id')) }); break;
         case 'show_properties': {
           const id = target(str(args, 'targetType'), str(args, 'id'));
+          if (args.targetType === 'card' && id.startsWith('model:')) throw new Error('Для независимой модели используй open_editor');
           if (args.targetType === 'card' && id.startsWith('gw:')) throw new Error('У шлюза доски редактируется подпись через update_object; отдельного окна свойств нет');
           effect({ ...args, id }); break;
         }
@@ -356,6 +394,7 @@ function aiToolCatalogName(tool: string): string {
 export function exportCanvasObject(model: Model, id: string): { content: string; filename: string; mime: string } {
   const item = canvasObject(model, id); if (!item) throw new Error('Объект для экспорта не найден');
   const name = canvasTitle(item).replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').slice(0, 150) || 'object';
+  if ('source' in item) { const n = getModelNotation(item.notation); if (!n) throw new Error('Неизвестная нотация'); return { content: item.source, filename: `${name}.${n.fileExtension}`, mime: n.mimeType }; }
   if ('xml' in item) return { content: item.xml, filename: `${name}.bpmn`, mime: 'application/xml' };
   if ('html' in item) return { content: item.html, filename: `${name}.html`, mime: 'text/html' };
   if ('markdown' in item) return { content: item.markdown, filename: `${name}.md`, mime: 'text/markdown' };

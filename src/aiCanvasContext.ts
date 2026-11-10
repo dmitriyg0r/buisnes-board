@@ -1,3 +1,5 @@
+import { getModelNotation, modelDefinitions } from './modeling/registry';
+import { modelOperations, readModelSource } from './aiModelTools';
 import type { Model } from './data';
 import type { AiEnvironment } from './aiToolContract';
 import { aiToolCatalog } from './aiToolContract';
@@ -6,11 +8,12 @@ import { coverage } from './coverage';
 import { docFields, fileFields, modelFields, nodeFields, sectionFields } from './schema';
 
 export function canvasCardIds(model: Model): string[] {
-  return [...model.processes.map((p) => `proc:${p.id}`), ...model.docs.map((d) => `doc:${d.id}`), ...model.htmlObjects.map((h) => `html:${h.id}`), ...model.sources.map((s) => `src:${s.id}`), ...model.gateways.map((g) => `gw:${g.id}`)];
+  return [...model.models.map((m) => `model:${m.id}`), ...model.processes.map((p) => `proc:${p.id}`), ...model.docs.map((d) => `doc:${d.id}`), ...model.htmlObjects.map((h) => `html:${h.id}`), ...model.sources.map((s) => `src:${s.id}`), ...model.gateways.map((g) => `gw:${g.id}`)];
 }
 export function canvasObject(model: Model, id: string) {
   const at = id.indexOf(':'), kind = id.slice(0, at), key = id.slice(at + 1);
   switch (kind) {
+    case 'model': return model.models.find((m) => m.id === key);
     case 'proc': return model.processes.find((p) => p.id === key);
     case 'doc': return model.docs.find((d) => d.id === key);
     case 'html': return model.htmlObjects.find((h) => h.id === key);
@@ -24,14 +27,15 @@ export const canvasTitle = (object: NonNullable<ReturnType<typeof canvasObject>>
 export function canvasOverview(model: Model, env?: AiEnvironment) {
   const objects = canvasCardIds(model).map((id) => {
     const item = canvasObject(model, id)!;
-    const content = 'html' in item ? item.html : 'markdown' in item ? item.markdown : 'xml' in item ? item.xml : '';
+    const content = 'html' in item ? item.html : 'markdown' in item ? item.markdown : 'xml' in item ? item.xml : 'source' in item ? item.source : '';
     const extra = 'sections' in item ? { sections: item.sections } : 'ext' in item ? { ext: item.ext, pages: item.pages } : {};
-    return { id, title: canvasTitle(item), ...extra, contentLength: content.length, properties: model.meta[`card:${id}`] ?? {}, position: model.meta['layout:pos']?.[id] ?? null, size: model.meta['layout:size']?.[id] ?? null };
+    return { id, title: canvasTitle(item), ...('notation' in item ? { notation: item.notation } : {}), ...extra, contentLength: content.length, properties: model.meta[`card:${id}`] ?? {}, position: model.meta['layout:pos']?.[id] ?? null, size: model.meta['layout:size']?.[id] ?? null };
   });
   return {
     objects, cardLinks: model.cardLinks, sectionLinks: model.links, coverage: coverage(model),
     issues: env?.issues ?? [], view: env?.view, settings: env?.settings, canUndo: env?.canUndo, canRedo: env?.canRedo,
     propertyFields: { process: modelFields, document: docFields, html: docFields, source: fileFields, node: nodeFields, section: sectionFields },
+    notations: modelDefinitions.map((definition) => { const n = getModelNotation(definition.id)!; return { ...definition, symbols: n.symbols.map(({ type, title, width, height }) => ({ type, title, width, height })), connections: n.connectionTypes, operations: modelOperations(n) }; }),
     bpmnSymbols: bpmn.symbols.map(({ type, title, width, height }) => ({ type, title, width, height })),
     bpmnConnections: bpmn.connectionTypes,
     bpmnCapabilities: { resizeNode: 'все элементы палитры; минимум 40 × 30; события и шлюзы — равные ширина и высота', messageFlow: 'между двумя разными пулами', readOnly: 'Если адаптер вернул readOnlyReason, правки этой схемы запрещены', content: 'Существующие элементы меняются через edit_bpmn без пересоздания схемы' },
@@ -54,7 +58,10 @@ export function canvasContext(model: Model, env?: AiEnvironment): string {
   for (const id of canvasCardIds(model)) {
     const item = canvasObject(model, id)!;
     let data: unknown;
-    if ('xml' in item) {
+    if ('source' in item) {
+      try { const n = getModelNotation(item.notation); data = n ? readModelSource(n, item.source) : { error: 'Неизвестная нотация', notation: item.notation }; }
+      catch (error) { data = { error: String(error) }; }
+    } else if ('xml' in item) {
       try { data = bpmn.read(item.xml); }
       catch { data = { error: 'Не удалось разобрать XML. Прочитай объект перед правкой.' }; }
     } else if ('html' in item || 'markdown' in item) {
@@ -69,9 +76,10 @@ export function canvasContext(model: Model, env?: AiEnvironment): string {
 export function readCanvasObject(model: Model, id: string, offset = 0, limit = 12000) {
   const item = canvasObject(model, id);
   if (!item) throw new Error(`На доске нет объекта ${id}`);
-  const content = 'html' in item ? item.html : 'markdown' in item ? item.markdown : 'xml' in item ? item.xml : '';
+  const content = 'html' in item ? item.html : 'markdown' in item ? item.markdown : 'xml' in item ? item.xml : 'source' in item ? item.source : '';
   return {
     id, title: canvasTitle(item), ...('sections' in item ? { sections: item.sections } : {}),
+    ...('source' in item ? { notation: item.notation, model: getModelNotation(item.notation) ? readModelSource(getModelNotation(item.notation)!, item.source) : { readOnlyReason: 'Неизвестная нотация' } } : {}),
     ...('xml' in item ? { diagram: bpmn.read(item.xml) } : {}),
     ...('ext' in item ? { ext: item.ext, pages: item.pages } : {}),
     content: content.slice(offset, offset + limit), offset, nextOffset: Math.min(content.length, offset + limit), length: content.length, truncated: offset + limit < content.length,

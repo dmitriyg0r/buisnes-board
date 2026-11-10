@@ -3,7 +3,7 @@
   "tools": [
     {
       "name": "read_canvas",
-      "description": "Прочитать актуальный обзор канваса: объекты, связи, свойства, замечания, выделение, вид и доступные символы BPMN. При truncated=true продолжай с nextOffset; limit задаёт число записей (по умолчанию 40).",
+      "description": "Прочитать актуальный обзор канваса: объекты, связи, свойства, замечания, выделение, вид и доступные символы BPMN. При truncated=true продолжай с nextOffset; limit задаёт число записей (по умолчанию 40). Также возвращает EPC/UML, палитры, операции и возможности каждой нотации.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -24,7 +24,7 @@
     },
     {
       "name": "read_object",
-      "description": "Прочитать объект полностью или частями. Для процесса возвращает XML и подробную диаграмму с ID узлов, дорожек и связей. offset — смещение в тексте; продолжай чтение, пока truncated=true.",
+      "description": "Прочитать объект полностью или частями. Для процесса возвращает XML и подробную диаграмму с ID узлов, дорожек и связей. offset — смещение в тексте; продолжай чтение, пока truncated=true. Для EPC/UML возвращает notation, исходный source, диаграмму, сообщения timeline и замечания проверки.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -126,7 +126,7 @@
     },
     {
       "name": "create_object",
-      "description": "Создать объект любого типа на канвасе. Укажи уникальный key действия. HTML — полный автономный код с inline CSS/JS; без внешних ресурсов. Для пустого процесса XML не нужен. Для документа пункты образуются из Markdown-заголовков.",
+      "description": "Создать объект любого типа на канвасе. Укажи уникальный key действия. HTML — полный автономный код с inline CSS/JS; без внешних ресурсов. Для пустого процесса XML не нужен. Для документа пункты образуются из Markdown-заголовков. Для EPC/UML: kind=model, notation из read_canvas; source необязателен, пустая модель создаётся адаптером. Далее edit_model.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -137,7 +137,8 @@
               "document",
               "html",
               "source",
-              "gateway"
+              "gateway",
+              "model"
             ]
           },
           "title": {
@@ -174,6 +175,20 @@
               "reference",
               "process"
             ]
+          },
+          "notation": {
+            "type": "string",
+            "enum": [
+              "epc",
+              "uml-class",
+              "uml-use-case",
+              "uml-activity",
+              "uml-sequence"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 200000
           }
         },
         "required": [
@@ -185,7 +200,7 @@
     },
     {
       "name": "update_object",
-      "description": "Изменить существующий объект: название, полный Markdown/HTML/XML, источник или подпись шлюза. append дописывает Markdown. XML целиком заменяй только по явной просьбе заменить/импортировать схему; обычные правки BPMN делай edit_bpmn.",
+      "description": "Изменить существующий объект: название, полный Markdown/HTML/XML, источник или подпись шлюза. append дописывает Markdown. XML целиком заменяй только по явной просьбе заменить/импортировать схему; обычные правки BPMN делай edit_bpmn. Для EPC/UML source целиком допустим только для явной замены/импорта; обычные правки — edit_model. Нотация существующей модели не меняется.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -232,6 +247,10 @@
           "append": {
             "type": "string",
             "maxLength": 120000
+          },
+          "source": {
+            "type": "string",
+            "maxLength": 200000
           }
         },
         "required": [
@@ -718,6 +737,202 @@
       }
     },
     {
+      "name": "edit_model",
+      "description": "Редактировать EPC/UML существующим адаптером, сохраняя ID. modelId — model:<id> или $key. Общие операции: add_node(type,x,y,key), rename(id,name), move_node(id,x,y), resize_node(id,width,height), connect(from,to,type,key), edit_edge(id,from,to,points), reset_edge(id), remove(id). UML-классы: set_compartments(id,attributes,operations), set_edge_ends(id,ends). UML Sequence: add_message(from,to,y,type,key), move_message(id,sendY,receiveY), edit_message(id,from/to/type). Названия задавай rename. Доступные операции и типы читай в read_canvas; сообщения читай в read_object. Результат содержит актуальную диаграмму и замечания проверки; наличие замечаний не означает готовность модели.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "operations": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "op": {
+                  "type": "string",
+                  "enum": [
+                    "add_node",
+                    "rename",
+                    "move_node",
+                    "resize_node",
+                    "connect",
+                    "edit_edge",
+                    "reset_edge",
+                    "remove",
+                    "set_label_bounds",
+                    "set_compartments",
+                    "set_edge_ends",
+                    "add_message",
+                    "move_message",
+                    "edit_message"
+                  ]
+                },
+                "key": {
+                  "type": "string",
+                  "maxLength": 40
+                },
+                "id": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "type": {
+                  "type": "string",
+                  "maxLength": 100
+                },
+                "name": {
+                  "type": "string",
+                  "maxLength": 500
+                },
+                "x": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "y": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "width": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "height": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 10000
+                },
+                "from": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "to": {
+                  "type": "string",
+                  "maxLength": 240,
+                  "minLength": 1
+                },
+                "points": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "x": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      },
+                      "y": {
+                        "type": "number",
+                        "minimum": -1000000,
+                        "maximum": 1000000
+                      }
+                    },
+                    "required": [
+                      "x",
+                      "y"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "maxItems": 100,
+                  "minItems": 2
+                },
+                "attributes": {
+                  "type": "array",
+                  "maxItems": 100,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "operations": {
+                  "type": "array",
+                  "maxItems": 100,
+                  "items": {
+                    "type": "string",
+                    "maxLength": 500
+                  }
+                },
+                "ends": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "properties": {
+                    "from": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "role",
+                        "multiplicity"
+                      ],
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "maxLength": 500
+                        },
+                        "multiplicity": {
+                          "type": "string",
+                          "maxLength": 500
+                        }
+                      }
+                    },
+                    "to": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "role",
+                        "multiplicity"
+                      ],
+                      "properties": {
+                        "role": {
+                          "type": "string",
+                          "maxLength": 500
+                        },
+                        "multiplicity": {
+                          "type": "string",
+                          "maxLength": 500
+                        }
+                      }
+                    }
+                  }
+                },
+                "sendY": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                },
+                "receiveY": {
+                  "type": "number",
+                  "minimum": -1000000,
+                  "maximum": 1000000
+                }
+              },
+              "required": [
+                "op"
+              ],
+              "additionalProperties": false
+            },
+            "maxItems": 120,
+            "minItems": 1
+          },
+          "modelId": {
+            "type": "string",
+            "maxLength": 240,
+            "minLength": 1
+          }
+        },
+        "required": [
+          "modelId",
+          "operations"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "create_issue",
       "description": "Создать ручное замечание. Укажи key; опционально привяжи к узлу, пункту или источнику.",
       "parameters": {
@@ -1021,7 +1236,7 @@
     },
     {
       "name": "export_object",
-      "description": "Скачать объект: процесс .bpmn, документ .md, HTML .html, источник/шлюз .json. Внешние файлы источников не загружены в проект — доступны только их карточки.",
+      "description": "Скачать объект: процесс .bpmn, документ .md, HTML .html, источник/шлюз .json. Внешние файлы источников не загружены в проект — доступны только их карточки. EPC/UML экспортируются в родном JSON-формате адаптера.",
       "parameters": {
         "type": "object",
         "properties": {

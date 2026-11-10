@@ -154,20 +154,20 @@ pub fn normalize_actions(value: &Value) -> Result<Vec<Value>, String> {
         if name == "history" && actions.len() != 1 {
             return Err("отмена и повтор выполняются отдельной командой".into());
         }
-        if name == "edit_bpmn" {
+        if name == "edit_bpmn" || name == "edit_model" {
             let operations = action["arguments"]["operations"]
                 .as_array()
                 .expect("проверенный массив");
             bpmn_steps += operations.len();
             for operation in operations {
                 if let Some(key) = operation.get("key") {
-                    result_key(key.as_str().ok_or("неверный key BPMN")?, &mut keys)?;
+                    result_key(key.as_str().ok_or("неверный key диаграммы")?, &mut keys)?;
                 }
             }
         }
     }
     if bpmn_steps > 240 {
-        return Err("слишком много операций BPMN в одном ответе".into());
+        return Err("слишком много операций диаграмм в одном ответе".into());
     }
     if reads && writes {
         return Err("чтение выполняется отдельным шагом перед изменениями".into());
@@ -203,6 +203,24 @@ mod tests {
         for tool in tools {
             assert_eq!(tool["parameters"]["additionalProperties"], false);
         }
+    }
+    #[test]
+    fn independent_models_share_contract_and_operation_limits() {
+        assert!(normalize_actions(&json!([
+            {"tool":"create_object","key":"m","arguments":{"kind":"model","notation":"uml-class","title":"Заказы"}},
+            {"tool":"edit_model","arguments":{"modelId":"$m","operations":[{"op":"add_node","type":"class","x":0,"y":0,"key":"order"},{"op":"set_compartments","id":"$order","attributes":["id: UUID"],"operations":[]}]}}
+        ])).is_ok());
+        for value in [
+            json!([{"tool":"create_object","key":"m","arguments":{"kind":"model","notation":"invented","title":"x"}}]),
+            json!([{"tool":"edit_model","arguments":{"modelId":"model:x","operations":[{"op":"add_node","key":"same"},{"op":"add_message","key":"same"}]}}]),
+            json!([{"tool":"edit_model","arguments":{"modelId":"model:x","operations":[{"op":"move_message","id":"msg","sendY":1000001}]}}]),
+        ] { assert!(normalize_actions(&value).is_err()); }
+        let steps = vec![json!({"op":"rename","id":"n","name":"x"}); 120];
+        assert!(normalize_actions(&json!([
+            {"tool":"edit_model","arguments":{"modelId":"model:x","operations":steps}},
+            {"tool":"edit_bpmn","arguments":{"processId":"proc:p","operations":steps}},
+            {"tool":"edit_model","arguments":{"modelId":"model:y","operations":[{"op":"remove","id":"n"}]}}
+        ])).is_err());
     }
     #[test]
     fn html_is_preserved_without_trimming_or_truncation() {

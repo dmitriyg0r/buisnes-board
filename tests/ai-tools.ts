@@ -1,3 +1,5 @@
+import { getModelNotation, modelDefinitions } from '../src/modeling/registry';
+import { canvasOverview, canvasContext, readCanvasObject } from '../src/aiCanvasContext';
 import { emptyModel, type Model } from '../src/data';
 import { planAiActions, exportCanvasObject } from '../src/aiCanvasTools';
 import { runCanvasAgent } from '../src/aiCanvasAgent';
@@ -23,6 +25,84 @@ function memoryApi(initial: Model) {
 export async function runAiToolTests(dom = false) {
   const results: string[] = [];
   const test = async (name: string, fn: () => void | Promise<void>) => { await fn(); results.push(name); };
+  await test('EPC/UML: создание, чтение, сохранение ID, связи, экспорт и удаление всех нотаций', () => {
+    for (const definition of modelDefinitions) {
+      const n = getModelNotation(definition.id)!;
+      const first = planAiActions(seed(), [action('create_object', { kind: 'model', notation: n.id, title: `Проект: ${n.id}` }, 'm'), action('edit_model', { modelId: '$m', operations: [{ op: 'add_node', type: n.symbols[0].type, x: 120, y: 80, key: 'node' }, { op: 'rename', id: '$node', name: 'Актуальный элемент' }] }), action('connect_cards', { from: '$m', to: 'doc:d', label: 'Описывает' }), action('set_layout', { objects: [{ id: '$m', x: 30, y: 50, width: 600, height: 400 }] }), action('open_editor', { id: '$m' })], env());
+      const id = first.aliases.get('m')!, nodeId = first.aliases.get('node')!, m = first.model.models[0];
+      equal(n.read(m.source).diagram.nodes[0].label, 'Актуальный элемент');
+      assert(first.refs.some((ref) => ref.kind === 'model' && ref.id === m.id));
+      assert(canvasOverview(first.model).objects.some((o) => o.id === id));
+      assert(canvasContext(first.model).includes('Актуальный элемент'));
+      equal(readCanvasObject(first.model, id).content, m.source);
+      equal(exportCanvasObject(first.model, id).content, m.source);
+      equal(exportCanvasObject(first.model, id).filename, `Проект_ ${n.id}.${n.fileExtension}`);
+      const next = planAiActions(first.model, [action('edit_model', { modelId: id, operations: [{ op: 'move_node', id: nodeId, x: 200, y: 100 }] })], env());
+      equal(n.read(next.model.models[0].source).diagram.nodes[0].id, nodeId.slice(m.id.length + 1));
+      const baseline = first.model, concurrent = structuredClone(baseline); concurrent.models[0].title = 'Правка коллеги';
+      rejects(() => planAiActions(concurrent, [action('edit_model', { modelId: id, operations: [{ op: 'rename', id: nodeId, name: 'Потеря' }] })], env(), new Map(), baseline));
+      const deleted = planAiActions(next.model, [action('delete_objects', { ids: [id] })], env());
+      assert(!deleted.model.models.length && !deleted.model.cardLinks.length && !deleted.model.meta['layout:pos'][id]);
+    }
+  });
+  await test('EPC: корректные потоки, исполнители, диагностика и атомарный отказ', () => {
+    const initial = planAiActions(seed(), [action('create_object', { kind: 'model', notation: 'epc', title: 'Согласование' }, 'epc'), action('edit_model', { modelId: '$epc', operations: [{ op: 'add_node', type: 'event', x: 0, y: 0, key: 'start' }, { op: 'add_node', type: 'function', x: 0, y: 160, key: 'work' }, { op: 'add_node', type: 'event', x: 0, y: 320, key: 'end' }, { op: 'connect', from: '$start', to: '$work', type: 'flow', key: 'flow' }, { op: 'connect', from: '$work', to: '$end', type: 'flow' }, { op: 'add_node', type: 'role', x: 400, y: 160, key: 'role' }, { op: 'rename', id: '$role', name: 'Согласующий' }, { op: 'connect', from: '$role', to: '$work', type: 'resource' }] })], env());
+    const data = initial.observations[1].result.data as { diagram: { edges: unknown[] }; validation: unknown[] };
+    equal(data.diagram.edges.length, 3); assert(Array.isArray(data.validation));
+    const id = initial.aliases.get('epc')!, before = JSON.stringify(initial.model);
+    rejects(() => planAiActions(initial.model, [action('edit_model', { modelId: id, operations: [{ op: 'rename', id: initial.aliases.get('work'), name: 'Не сохранять' }, { op: 'connect', from: initial.aliases.get('start'), to: initial.aliases.get('end'), type: 'unknown' }] })], env()));
+    equal(JSON.stringify(initial.model), before);
+    rejects(() => planAiActions(initial.model, [action('edit_model', { modelId: id, operations: [{ op: 'rename', id: 'other:node', name: 'Чужой' }] })], env()));
+  });
+  await test('UML классы: атрибуты, операции, роли и кратности связей', () => {
+    const plan = planAiActions(emptyModel, [action('create_object', { kind: 'model', notation: 'uml-class', title: 'Заказы' }, 'classes'), action('edit_model', { modelId: '$classes', operations: [{ op: 'add_node', type: 'class', x: 0, y: 0, key: 'order' }, { op: 'add_node', type: 'class', x: 400, y: 0, key: 'line' }, { op: 'set_compartments', id: '$order', attributes: ['+ id: UUID'], operations: ['+ submit(): void'] }, { op: 'connect', from: '$order', to: '$line', type: 'composition', key: 'items' }, { op: 'set_edge_ends', id: '$items', ends: { from: { role: 'заказ', multiplicity: '1' }, to: { role: 'позиции', multiplicity: '1..*' } } }] })], env());
+    const diagram = getModelNotation('uml-class')!.read(plan.model.models[0].source).diagram;
+    equal(diagram.nodes[0].compartments?.attributes, ['+ id: UUID']); equal(diagram.edges[0].ends?.to.multiplicity, '1..*');
+  });
+  await test('UML Sequence: сообщения, временные точки, переименование и удаление', () => {
+    const plan = planAiActions(emptyModel, [action('create_object', { kind: 'model', notation: 'uml-sequence', title: 'Оформление заказа' }, 'seq'), action('edit_model', { modelId: '$seq', operations: [{ op: 'add_node', type: 'lifeline', x: 0, y: 0, key: 'client' }, { op: 'add_node', type: 'lifeline', x: 400, y: 0, key: 'server' }, { op: 'add_message', from: '$client', to: '$server', y: 150, type: 'sync', key: 'request' }, { op: 'rename', id: '$request', name: 'Создать заказ' }, { op: 'move_message', id: '$request', sendY: 180, receiveY: 180 }, { op: 'edit_message', id: '$request', type: 'async' }] })], env());
+    const data = plan.observations[1].result.data as { timeline: { messages: { label: string; kind: string; send: { y: number } }[] } };
+    equal(data.timeline.messages[0].label, 'Создать заказ'); equal(data.timeline.messages[0].kind, 'async');
+    const id = plan.aliases.get('seq')!;
+    assert(JSON.stringify(readCanvasObject(plan.model, id)).includes('Создать заказ'));
+    rejects(() => planAiActions(plan.model, [action('edit_model', { modelId: id, operations: [{ op: 'connect', from: plan.aliases.get('client'), to: plan.aliases.get('server') }] })], env()));
+    const removed = planAiActions(plan.model, [action('edit_model', { modelId: id, operations: [{ op: 'remove', id: plan.aliases.get('client') }] })], env());
+    equal(getModelNotation('uml-sequence')!.timeline!.project(removed.model.models[0].source).messages.length, 0);
+  });
+  await test('EPC/UML: контракт отклоняет неизвестную нотацию, повторные ключи и неверные поля', () => {
+    rejects(() => validateAiActions([action('create_object', { kind: 'model', notation: 'invented', title: 'x' }, 'm')]));
+    rejects(() => validateAiActions([action('edit_model', { modelId: 'model:m', operations: [{ op: 'add_node', key: 'same' }, { op: 'add_message', key: 'same' }] })]));
+    rejects(() => planAiActions(emptyModel, [action('create_object', { kind: 'model', title: 'x' }, 'm')], env()));
+    rejects(() => planAiActions(emptyModel, [action('create_object', { kind: 'document', source: '{}', title: 'x' }, 'm')], env()));
+    rejects(() => planAiActions(emptyModel, [action('create_object', { kind: 'model', notation: 'epc', source: '{}', title: 'x' }, 'm')], env()));
+  });
+  await test('EPC/UML: импорт, ограничения read-only, диагностика и ошибка в цикле агента', async () => {
+    const n = getModelNotation('epc')!;
+    let source = n.addNode(n.createEmpty(), 'function', { x: 100, y: 100 });
+    const imported = planAiActions(emptyModel, [action('create_object', { kind: 'model', notation: 'epc', title: 'Импорт', source }, 'm')], env());
+    equal(imported.model.models[0].source, source);
+    const id = imported.aliases.get('m')!;
+    const read = readCanvasObject(imported.model, id) as { model: { validation: unknown[] } };
+    assert(read.model.validation.length > 0, 'Замечания EPC не возвращены модели');
+    const frozen = structuredClone(imported.model), document = JSON.parse(source); document.version = 999;
+    frozen.models[0].source = JSON.stringify(document);
+    rejects(() => planAiActions(frozen, [action('edit_model', { modelId: id, operations: [{ op: 'rename', id: document.nodes[0].id, name: 'Потеря' }] })], env()));
+    rejects(() => planAiActions(frozen, [action('update_object', { id, source })], env()));
+    const { api } = memoryApi(imported.model);
+    let round = 0;
+    const result = await runCanvasAgent({ prompt: 'Переименовать функцию', model: '6.1-sol', history: [], projectId: 'test', api, signal: new AbortController().signal,
+      host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'OK' }) }), onDelta() {}, render: async () => {},
+      generate: async (_prompt, _model, _context, _history, _event, _signal, _project, observations) => {
+        round++;
+        if (round === 1) return { reply: '', actions: [action('edit_model', { modelId: id, operations: [{ op: 'add_message', from: 'x', to: 'y', y: 100 }] })] } as GenResult;
+        if (round === 2) { assert(observations?.some(o => !o.result.ok && o.result.error?.includes('не поддерживает'))); return { reply: '', actions: [action('edit_model', { modelId: id, operations: [{ op: 'rename', id: document.nodes[0].id, name: 'Согласовать заказ' }] })] } as GenResult; }
+        assert(observations?.some(o => o.action.tool === 'edit_model' && o.result.ok));
+        return { reply: 'Функция переименована' } as GenResult;
+      },
+    });
+    equal(n.read(api.model.models[0].source).diagram.nodes[0].label, 'Согласовать заказ');
+    equal(result.reply, 'Функция переименована'); equal(round, 3);
+  });
   await test('Контракт: запрет неизвестных команд, лишних полей и некорректных координат', () => {
     assert(aiToolCatalog.length >= 20);
     for (const value of [[action('shell', {})], [action('read_canvas', { projectId: 'чужой' })], [action('set_view', { zoom: 99 })], [action('create_object', { kind: 'html', title: 'x' })], [action('set_properties', { targetType: 'card', id: 'html:h', values: JSON.parse('{"__proto__":"x"}') })]]) rejects(() => validateAiActions(value));

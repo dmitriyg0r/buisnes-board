@@ -108,7 +108,7 @@ function Bubble({ m, onFocus }: { m: Msg; onFocus: (cardId: string) => void }) {
         <div className="ai-chips">
           {items.slice(0, CHIPS_SHOWN).map((c) => (
             <button key={`${c.kind}:${c.id}`} type="button" className="ai-chip" onClick={() => onFocus(`${c.kind}:${c.id}`)} title="Показать на доске">
-              <Icon name={c.kind === 'proc' ? 'model' : c.kind === 'html' ? 'code' : c.kind === 'gw' ? 'gateway' : 'file'} size={13} />
+              <Icon name={(c.kind === 'proc' || c.kind === 'model') ? 'model' : c.kind === 'html' ? 'code' : c.kind === 'gw' ? 'gateway' : 'file'} size={13} />
               <span>{c.title}</span>
             </button>
           ))}

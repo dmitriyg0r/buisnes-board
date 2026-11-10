@@ -5,7 +5,7 @@ import type { Settings } from './settings';
 export interface AiAction { tool: string; key?: string; arguments: Record<string, unknown> }
 export interface AiToolResult { ok: boolean; summary: string; data?: unknown; error?: string }
 export interface AiObservation { action: AiAction; result: AiToolResult }
-export interface CanvasRef { id: string; title: string; kind: 'proc' | 'doc' | 'html' | 'src' | 'gw' }
+export interface CanvasRef { id: string; title: string; kind: 'model' | 'proc' | 'doc' | 'html' | 'src' | 'gw' }
 export interface AiEffect { tool: string; arguments: Record<string, unknown>; index: number }
 export interface AiEnvironment {
   issues: Issue[];
@@ -67,9 +67,9 @@ export function validateAiActions(value: unknown): asserts value is AiAction[] {
     if (action.key !== undefined) keyOf(action.key);
     if ((action.tool === 'create_object' || action.tool === 'create_issue') && !action.key) throw new Error(`Команда ${i + 1}: создание требует key`);
     validate(action.arguments, tool.parameters, `Команда ${i + 1} (${tool.name})`);
-    if (action.tool === 'edit_bpmn') for (const operation of action.arguments.operations as Record<string, unknown>[]) if (operation.key !== undefined) keyOf(operation.key);
+    if (action.tool === 'edit_bpmn' || action.tool === 'edit_model') for (const operation of action.arguments.operations as Record<string, unknown>[]) if (operation.key !== undefined) keyOf(operation.key);
   });
   if (value.some((a) => a.tool.startsWith('read_')) && value.some((a) => !a.tool.startsWith('read_'))) throw new Error('Чтение выполняется отдельным шагом перед изменениями');
   if (value.some((a) => a.tool === 'history') && value.length !== 1) throw new Error('Отмена и повтор выполняются отдельной командой');
-  if (value.reduce((sum, a) => sum + (a.tool === 'edit_bpmn' ? (a.arguments.operations as unknown[]).length : 0), 0) > 240) throw new Error('Слишком много операций BPMN в одном ответе');
+  if (value.reduce((sum, a) => sum + ((a.tool === 'edit_bpmn' || a.tool === 'edit_model') ? (a.arguments.operations as unknown[]).length : 0), 0) > 240) throw new Error('Слишком много операций диаграмм в одном ответе');
 }
