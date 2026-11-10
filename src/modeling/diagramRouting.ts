@@ -1,4 +1,4 @@
-import { routeOrthogonal, simplifyRoute, type Direction, type RouteEndpoint } from './orthogonalRouting';
+import { routeOrthogonal, routeConflictCost, simplifyRoute, type Direction, type RouteEndpoint } from './orthogonalRouting';
 import type { DiagramNode, DiagramPoint, DiagramShape } from './types';
 
 const directions: Direction[] = ['right', 'left', 'down', 'up'];
@@ -42,7 +42,7 @@ export function segmentCrossesNode(a: DiagramPoint, b: DiagramPoint, n: DiagramN
   return low < high;
 }
 /** Маршрут с необязательными точными точками привязки; null означает отказ без небезопасного fallback. */
-export function routeBetweenNodes(nodes: readonly DiagramNode[], from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint, shapeOf?: (node: DiagramNode) => DiagramShape | undefined): DiagramPoint[] | null {
+export function routeBetweenNodes(nodes: readonly DiagramNode[], from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint, shapeOf?: (node: DiagramNode) => DiagramShape | undefined, routes?: readonly (readonly DiagramPoint[])[]): DiagramPoint[] | null {
   if (from.id === to.id) return null;
   const obstacles = nodes.filter(n => n.id !== from.id && n.id !== to.id);
   const starts = start ? pointSides(from, start) : shapeOf?.(from) === 'annotation' ? ['left' as const] : directions;
@@ -52,11 +52,11 @@ export function routeBetweenNodes(nodes: readonly DiagramNode[], from: DiagramNo
     const s = endpoint(from, a, start, shapeOf?.(from)), t = endpoint(to, b, end, shapeOf?.(to));
     if ([...obstacles, to].some(n => segmentCrossesNode(s.actual, s.endpoint.point, n)) || [...obstacles, from].some(n => segmentCrossesNode(t.actual, t.endpoint.point, n))) continue;
     try {
-      const route = routeOrthogonal({ start: s.endpoint, end: t.endpoint, obstacles });
+      const route = routeOrthogonal({ start: s.endpoint, end: t.endpoint, obstacles, routes });
       if (!route) continue;
       const points = simplifyRoute([s.actual, ...route, t.actual]);
       const length = points.slice(1).reduce((sum, p, i) => sum + Math.abs(p.x - points[i].x) + Math.abs(p.y - points[i].y), 0);
-      const cost = (points.length - 2) * 10000 + length;
+      const cost = (points.length - 2) * (routes ? 60 : 10000) + length + (routes ? points.slice(1).reduce((sum, p, i) => sum + routeConflictCost(points[i], p, routes), 0) : 0);
       if (cost < bestCost) { bestCost = cost; best = points; }
     } catch (error) { if (!(error instanceof RangeError)) throw error; }
   }

@@ -13,7 +13,7 @@ import { mergeDiagramSource } from './mergeSource';
 import { MODEL_DRAG_TTL, modelDragMatches, previewModelDrag, type ModelDragChange, type ModelDragEvent } from './liveDrag';
 import type { Presence } from '../presence';
 import type { SyncState } from '../sync';
-import type { Diagram, DiagramEdge, DiagramNode, DiagramNotation, DiagramPoint, DiagramSymbol } from './types';
+import type { Diagram, DiagramEdge, DiagramNode, DiagramNotation, DiagramPoint, DiagramSymbol, DiagramTimeline } from './types';
 
 interface Props {
   notation: DiagramNotation & { addPool?: (source: string, at: DiagramPoint) => string };
@@ -58,6 +58,7 @@ export function nodeLabelBounds(node: DiagramNode, symbol?: DiagramSymbol) {
     const insetX = symbol.shape === 'diamond' ? node.width * .23 : symbol.shape === 'hexagon' || symbol.shape === 'ellipse' ? node.width * .15 : 8;
     return { x: node.x + insetX, y: node.y + 8, width: Math.max(30, node.width - insetX * 2), height: Math.max(18, node.height - 16) };
   }
+  if (symbol?.container) return { x: node.x + 12, y: node.y + 8, width: Math.max(30, node.width - 24), height: 24 };
   if (symbol?.shape === 'annotation') return { x: node.x + 12, y: node.y + 6, width: Math.max(30, node.width - 18), height: Math.max(18, node.height - 12) };
   if (symbol?.shape === 'class-box') return { x: node.x + 6, y: node.y + (symbol.stereotype ? 16 : 3), width: Math.max(30, node.width - 12), height: 25 };
   if (symbol?.shape === 'lifeline') return { x: node.x + 4, y: node.y + 3, width: Math.max(30, node.width - 8), height: 32 };
@@ -99,8 +100,9 @@ export function labelLines(text: string, width: number, maxLines = 3): string[] 
   return lines;
 }
 
-function initialView(diagram: Diagram): View {
-  const items = [...diagram.nodes, ...(diagram.regions ?? [])];
+function initialView(diagram: Diagram, timeline?: ReturnType<DiagramTimeline['project']>): View {
+  const points = [...diagram.edges.flatMap(edge => edge.points), ...(timeline?.lifelines.flatMap(line => [line.lineStart, line.lineEnd]) ?? []), ...(timeline?.messages.flatMap(message => message.points) ?? [])];
+  const items = [...diagram.nodes, ...(diagram.regions ?? []), ...points.map(point => ({ ...point, width: 1, height: 1 }))];
   if (!items.length) return { x: 0, y: 0, width: 1000, height: 650 };
   const x = Math.min(...items.map((n) => n.x)) - 120;
   const y = Math.min(...items.map((n) => n.y)) - 120;
@@ -176,6 +178,7 @@ function validRoute(points: DiagramPoint[], nodes: DiagramNode[], from: string, 
   const source = nodes.find(node => node.id === from), target = nodes.find(node => node.id === to);
   if (!source || !target || !endpointsFaceOutward(route, source, target, node => symbols?.find(symbol => symbol.type === node.type)?.shape)) return false;
   return route.slice(1).every((end, index) => nodes.every((node) => {
+    if (symbols?.find(symbol => symbol.type === node.type)?.container) return true;
     if ((index === 0 && node.id === from) || (index === route.length - 2 && node.id === to)) return true;
     const start = route[index];
     if (start.y === end.y) return !(start.y > node.y && start.y < node.y + node.height && Math.max(start.x, end.x) > node.x && Math.min(start.x, end.x) < node.x + node.width);
@@ -221,6 +224,7 @@ function NodeShapeContent({ node, symbol, selected, detail }: { node: DiagramNod
       {(node.compartments?.operations ?? []).slice(0, maxOperations).map((text, i) => <text key={`o-${i}`} className="diagram-class-member" x="6" y={divider + 14 + i * 14}>{text}</text>)}
     </g></>;
   }
+  if (shape === 'frame') return <><rect className={className} style={{ fill: 'none' }} width={w} height={h} /><rect width={w} height={Math.min(40, h)} fill="transparent" style={{ cursor: 'move' }} /></>;
   if (shape === 'rectangle') return <rect className={className} width={w} height={h} />;
   if (shape === 'ellipse') return <ellipse className={className} cx={w / 2} cy={h / 2} rx={w / 2} ry={h / 2} />;
   if (shape === 'hexagon') return <polygon className={className} points={`${w * .2},0 ${w * .8},0 ${w},${h / 2} ${w * .8},${h} ${w * .2},${h} 0,${h / 2}`} />;
@@ -327,7 +331,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     try { return notation.read(source); } catch (error) { return { diagram: { nodes: [], edges: [] } as Diagram, error: error instanceof Error ? error.message : 'Не удалось открыть модель.' }; }
   }, [source, notation]);
   const selectedIds = groupSelected.length ? groupSelected : selected && parsed.diagram.nodes.some(node => node.id === selected) ? [selected] : [];
-  const [view, setView] = useState<View>(() => { try { return initialView(notation.read(original).diagram); } catch { return initialView({ nodes: [], edges: [] }); } });
+  const [view, setView] = useState<View>(() => { try { return initialView(notation.read(original).diagram, notation.timeline?.project(original)); } catch { return initialView({ nodes: [], edges: [] }); } });
   const locked = Boolean(parsed.error || parsed.readOnlyReason);
   const canPublish = useRef(!locked); canPublish.current = !locked;
   const dirty = source !== original || (live ? name.trim() : name) !== title;
@@ -454,7 +458,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
 
   const connectionTarget = (at: DiagramPoint, from: string) => {
     const scale = Math.abs(svg.current?.getScreenCTM()?.a || 1);
-    const nodes = parsed.diagram.nodes.filter((node) => node.id !== from).map((node) => {
+    const nodes = parsed.diagram.nodes.filter((node) => node.id !== from && !notation.symbols.find(symbol => symbol.type === node.type)?.container).map((node) => {
       const symbol = notation.symbols.find((item) => item.type === node.type);
       const ports = (['top', 'right', 'bottom', 'left'] as const).flatMap((side) => {
         const horizontal = side === 'top' || side === 'bottom';
@@ -484,7 +488,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     if (!edge || edge.routeEditable === false || !orthogonal(edge.points)) throw new Error('Нельзя сохранить выбранные точки этой связи.');
     const a = before.nodes.find((node) => node.id === from), b = before.nodes.find((node) => node.id === to);
     if (!a || !b) throw new Error('Нельзя сохранить выбранные точки этой связи.');
-    const points = routeBetweenNodes(before.nodes, a, b, start ?? undefined, end ?? undefined, n => notation.symbols.find(symbol => symbol.type === n.type)?.shape);
+    const points = routeBetweenNodes(before.nodes.filter(node => !notation.symbols.find(symbol => symbol.type === node.type)?.container), a, b, start ?? undefined, end ?? undefined, n => notation.symbols.find(symbol => symbol.type === n.type)?.shape);
     if (!points) throw new Error('Не удалось построить маршрут от выбранных точек без пересечений.');
     next = notation.editEdge(next, edge.id, from, to, points);
     return next;
@@ -557,6 +561,8 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   }, []);
 
   const connectNode = (node: { id: string }, endpoint: DiagramPoint | null = null) => {
+    const target = parsed.diagram.nodes.find(item => item.id === node.id);
+    if (target && notation.symbols.find(symbol => symbol.type === target.type)?.container) return;
     if (!connectFrom) { setSourceAnchor(endpoint); setConnectFrom(node.id); setSelected(node.id); setCursor(null); }
     else { apply((value) => makeConnection(value, connectFrom, node.id, sourceAnchor, endpoint)); setConnectFrom(null); setCursor(null); setTool('select'); }
   };
@@ -652,7 +658,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     if (allowed(points)) return points;
     const a = parsed.diagram.nodes.find(n => n.id === from), b = parsed.diagram.nodes.find(n => n.id === to);
     if (!a || !b) return null;
-    const route = routeBetweenNodes(parsed.diagram.nodes, a, b, points[0], points[points.length - 1], n => notation.symbols.find(symbol => symbol.type === n.type)?.shape);
+    const route = routeBetweenNodes(parsed.diagram.nodes.filter(node => !notation.symbols.find(symbol => symbol.type === node.type)?.container), a, b, points[0], points[points.length - 1], n => notation.symbols.find(symbol => symbol.type === n.type)?.shape);
     return route && allowed(route) ? route : null;
   };
   const updateEdgeDrag = (event: React.PointerEvent<SVGElement>) => {
@@ -695,7 +701,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     if (!input) return;
     try {
       const next = await input.text(); const result = notation.read(next);
-      history.current.past.push({ source, imported }); history.current.future = []; setSource(next); setImported(true); setSelected(null); setConnectFrom(null); setTool('select'); setView(initialView(result.diagram)); setFailure(null);
+      history.current.past.push({ source, imported }); history.current.future = []; setSource(next); setImported(true); setSelected(null); setConnectFrom(null); setTool('select'); setView(initialView(result.diagram, notation.timeline?.project(next))); setFailure(null);
     } catch (error) { setFailure(error instanceof Error ? error.message : 'Не удалось загрузить файл.'); }
   };
   const exportFile = () => {
@@ -801,7 +807,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           const items = notation.symbols.filter((symbol) => (symbol.group ?? 'Другие') === group && (!searchPalette || symbol.title.toLocaleLowerCase('ru').includes(searchPalette)));
           if (!items.length) return null;
           const open = Boolean(searchPalette) || !collapsedGroups.includes(group);
-          return <Fragment key={group}><button type="button" className="diagram-palette-group" aria-expanded={open} onClick={() => setCollapsedGroups((current) => current.includes(group) ? current.filter((item) => item !== group) : [...current, group])}><Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />{group}</button>{open && items.map((symbol) => <button key={symbol.type} type="button" className={`diagram-tool${tool === symbol.type ? ' on' : ''}`} aria-pressed={tool === symbol.type} disabled={locked} onClick={() => { setTool(symbol.type); setConnectFrom(null); setSequenceStart(null); }}><svg className="diagram-palette-svg" viewBox={`-3 -3 ${symbol.width + 6} ${symbol.height + 6}`} aria-hidden="true"><NodeShape node={{ id: '', type: symbol.type, label: '', x: 0, y: 0, width: symbol.width, height: symbol.height }} symbol={symbol} selected={false} detail={notation.renderSymbolDetail?.(symbol)} /></svg><span>{symbol.title}</span></button>)}</Fragment>;
+          return <Fragment key={group}><button type="button" className="diagram-palette-group" aria-expanded={open} onClick={() => setCollapsedGroups((current) => current.includes(group) ? current.filter((item) => item !== group) : [...current, group])}><Icon name={open ? 'chevronDown' : 'chevronRight'} size={13} />{group}</button>{open && items.map((symbol) => <button key={symbol.type} type="button" className={`diagram-tool${tool === symbol.type ? ' on' : ''}`} aria-pressed={tool === symbol.type} disabled={locked} onClick={() => { setTool(symbol.type); setConnectFrom(null); setSequenceStart(null); }}><svg className="diagram-palette-svg" viewBox={`-3 -3 ${(symbol.container ? 32 : symbol.width) + 6} ${(symbol.container ? 24 : symbol.height) + 6}`} aria-hidden="true"><NodeShape node={{ id: '', type: symbol.type, label: '', x: 0, y: 0, width: symbol.container ? 32 : symbol.width, height: symbol.container ? 24 : symbol.height }} symbol={symbol} selected={false} detail={notation.renderSymbolDetail?.(symbol)} /></svg><span>{symbol.title}</span></button>)}</Fragment>;
         })}
         {searchPalette && !notation.symbols.some((symbol) => symbol.title.toLocaleLowerCase('ru').includes(searchPalette)) && !(notation.addRegion && (notation.regionTitle ?? 'Область').toLocaleLowerCase('ru').includes(searchPalette)) && !(notation.addPool && 'пул'.includes(searchPalette)) && <p className="diagram-palette-empty">Элементы не найдены</p>}
       </aside>
@@ -815,6 +821,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           <span className="tools-sep" />
           <button type="button" className="tool-btn" aria-label="Шаг назад" title="Шаг назад (Ctrl+Z)" disabled={!history.current.past.length} onClick={undo}><Icon name="undo" size={17} stroke={1.9} /></button>
           <button type="button" className="tool-btn" aria-label="Шаг вперёд" title="Шаг вперёд (Ctrl+Shift+Z)" disabled={!history.current.future.length} onClick={redo}><Icon name="redo" size={17} stroke={1.9} /></button>
+          {notation.autoLayout && <button type="button" className="tool-btn" aria-label="Упорядочить диаграмму" title="Упорядочить элементы и связи" disabled={locked} onClick={() => { cancelGesture(); apply(value => { const next = notation.autoLayout!(value); setView(initialView(notation.read(next).diagram)); return next; }); }}><Icon name="gridLayout" size={17} /></button>}
           <span className="tools-sep" />
           <button type="button" className={`tool-btn${showGrid ? ' on' : ''}`} aria-label="Сетка" title="Показать сетку" aria-pressed={showGrid} onClick={() => setShowGrid(value => !value)}><Icon name="gridLayout" size={16} stroke={1.8} /></button>
           <button type="button" className={`tool-btn${snapToGrid ? ' on' : ''}`} aria-label="Привязка к сетке" title="Привязка к сетке" aria-pressed={snapToGrid} onClick={() => setSnapToGrid(value => !value)}><Icon name="magnet" size={17} stroke={1.9} /></button>
@@ -985,7 +992,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
                 {notation.resizeNode && resizeHandles(node, node, 'resize', symbol?.shape === 'circle' || symbol?.shape === 'double-circle' || symbol?.shape === 'diamond')}
                 {notation.setLabelBounds && <><rect className="diagram-label-bounds" x={labelX} y={labelY} width={labelBounds.width} height={labelBounds.height} />{resizeHandles(node, labelBounds, 'label-resize')}</>}
               </>}
-              {!sequence && !locked && (tool === 'select' ? (selected === node.id || hoveredNode === node.id) : tool === 'connect' && (connectFrom ? (liveConnectionTarget?.id === node.id || portDragRef.current?.id === node.id) : (selected === node.id || hoveredNode === node.id))) && ([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
+              {!symbol?.container && !sequence && !locked && (tool === 'select' ? (selected === node.id || hoveredNode === node.id) : tool === 'connect' && (connectFrom ? (liveConnectionTarget?.id === node.id || portDragRef.current?.id === node.id) : (selected === node.id || hoveredNode === node.id))) && ([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
                 const horizontal = side === 'top' || side === 'bottom';
                 const count = portCount(node, symbol, horizontal);
                 return Array.from({ length: count }, (_, i) => {
@@ -1057,7 +1064,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           })}
         </svg>
         <span className="diagram-selection-status" aria-live="polite">{groupSelected.length ? `Выбрано объектов: ${groupSelected.length}` : ''}</span>
-        <div className="zoom-ui diagram-zoom" role="group" aria-label="Масштаб"><button type="button" className="tool-btn" aria-label="Уменьшить" title="Уменьшить" onClick={() => zoom(1.25)}><Icon name="minus" size={15} /></button><button type="button" className="tool-text" onClick={() => setView(initialView(parsed.diagram))}>Вписать</button><button type="button" className="tool-btn" aria-label="Увеличить" title="Увеличить" onClick={() => zoom(0.8)}><Icon name="plus" size={15} /></button></div>
+        <div className="zoom-ui diagram-zoom" role="group" aria-label="Масштаб"><button type="button" className="tool-btn" aria-label="Уменьшить" title="Уменьшить" onClick={() => zoom(1.25)}><Icon name="minus" size={15} /></button><button type="button" className="tool-text" onClick={() => setView(initialView(parsed.diagram, sequenceProjection ?? undefined))}>Вписать</button><button type="button" className="tool-btn" aria-label="Увеличить" title="Увеличить" onClick={() => zoom(0.8)}><Icon name="plus" size={15} /></button></div>
 
       </main>
       {properties && <aside className="diagram-properties" role="dialog" aria-label="Свойства элемента" onKeyDown={(event) => { if (event.key === 'Escape') { event.stopPropagation(); setProperties(false); } }}>

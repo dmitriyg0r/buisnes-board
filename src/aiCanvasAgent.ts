@@ -21,6 +21,7 @@ interface Options {
   render?: () => Promise<void>;
 }
 
+const MAX_AGENT_ROUNDS = 20;
 const nextRender = () => typeof requestAnimationFrame === 'function' ? new Promise<void>((resolve) => requestAnimationFrame(() => resolve())) : Promise.resolve();
 
 /** Ограниченный цикл чтения → проверка → применение. Действия вне каталога не исполняются. */
@@ -50,7 +51,7 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
     for (const item of items) { const index = list.findIndex((x) => x.id === item.id && x.kind === item.kind); if (index < 0) list.push(item); else list[index] = item; }
   };
 
-  for (let round = 0; round < 6; round++) {
+  for (let round = 0; round < MAX_AGENT_ROUNDS; round++) {
     signal.throwIfAborted();
     if (takeMessages()) round = 0;
     options.onRound?.(round);
@@ -129,10 +130,10 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
     if (actions.some((a) => a.tool.startsWith('read_'))) continue;
     if (legacy.missing) { lastError = `Не найдено объектов: ${legacy.missing}`; continue; }
     // Итоговая реплика строится уже по фактическим результатам, а не по обещанию перед выполнением.
-    if (actions.length && round < 5) continue;
+    if (actions.length && round < MAX_AGENT_ROUNDS - 1) continue;
     if (untestedHtml().length) { lastError = 'Изменённый HTML остался без успешной проверки'; continue; }
     return { reply: actions.length ? plan.observations.map((o) => o.result.summary).join('. ') : response.reply.trim() || 'Готово.', refs, observations };
   }
-  if (!observations.some((o) => o.result.ok && !o.action.tool.startsWith('read_'))) throw new GenError(`Не удалось выполнить запрос за 6 шагов.${lastError ? ` ${lastError}` : ' Уточните, с каким объектом нужно работать.'}`);
+  if (!observations.some((o) => o.result.ok && !o.action.tool.startsWith('read_'))) throw new GenError(`Не удалось выполнить запрос за ${MAX_AGENT_ROUNDS} шагов.${lastError ? ` ${lastError}` : ' Уточните, с каким объектом нужно работать.'}`);
   return { reply: `Запрос выполнен частично.${lastError ? ` ${lastError}` : ' Достигнут лимит шагов.'} Уже выполненные действия остаются на доске.`, refs, observations };
 }

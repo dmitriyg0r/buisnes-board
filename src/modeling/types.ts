@@ -45,7 +45,7 @@ export interface DiagramTimeline {
   moveMessage: (source: string, id: string, sendY: number, receiveY: number) => string;
   editMessage?: (source: string, id: string, changes: { kind?: string; from?: string; to?: string }) => string;
 }
-export type DiagramShape = 'circle' | 'double-circle' | 'rounded-rectangle' | 'diamond' | 'document' | 'annotation' | 'data-store' | 'rectangle' | 'ellipse' | 'actor' | 'bar' | 'hexagon' | 'lifeline' | 'circle-cross' | 'class-box' | 'pointed-right';
+export type DiagramShape = 'circle' | 'double-circle' | 'rounded-rectangle' | 'diamond' | 'document' | 'annotation' | 'data-store' | 'rectangle' | 'ellipse' | 'actor' | 'bar' | 'hexagon' | 'lifeline' | 'circle-cross' | 'class-box' | 'pointed-right' | 'frame';
 export interface DiagramSymbol {
   type: string;
   title: string;
@@ -62,6 +62,8 @@ export interface DiagramSymbol {
   height: number;
   /** Для фигур с ограниченным числом точек на каждой стороне. */
   singleConnectionPortPerSide?: boolean;
+  /** Фоновая граница; не является препятствием для внутренних связей. */
+  container?: boolean;
 }
 /** Нотация отвечает за формат и правила, движок — за взаимодействие и отрисовку. */
 export interface DiagramNotation {
@@ -77,6 +79,7 @@ export interface DiagramNotation {
   connectionTypes?: { id: string; title: string; stereotype?: string; appearance?: { lineStyle?: 'solid' | 'dotted' | 'dashed'; startMarker?: 'circle' | 'diamond' | 'diamond-filled'; arrowStart?: boolean; arrowEnd?: boolean; arrowStyle?: 'open' | 'filled' | 'triangle' } }[];
   read: (source: string) => { diagram: Diagram; readOnlyReason?: string };
   validateDiagram?: (diagram: Diagram) => { id: string; message: string }[];
+  autoLayout?: (source: string) => string;
   addNode: (source: string, type: string, at: DiagramPoint) => string;
   regionTitle?: string;
   regionPlacementSize?: { width: number; height: number };

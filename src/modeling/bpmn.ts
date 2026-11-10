@@ -1,3 +1,4 @@
+import { layoutDiagram } from './diagramLayout';
 import { endpointsFaceOutward, routeBetweenNodes, segmentCrossesNode } from './diagramRouting';
 import { hasSelfIntersections } from './orthogonalRouting';
 import { inspectDataModel, addDataStore, addDataAssociation, editDataAssociation, removeDataAssociation, removeDataConnectionsForNode } from './bpmnData';
@@ -32,7 +33,7 @@ function insertFlowRef(node: Element, item: Element, tag: string) {
   node.insertBefore(item, before);
 }
 const element = (doc: Document, ns: string, name: string) => doc.createElementNS(ns, name);
-const all = (doc: Document, ns: string, name: string) => Array.from(doc.getElementsByTagNameNS(ns, name));
+const all = (doc: Document | Element, ns: string, name: string) => Array.from(doc.getElementsByTagNameNS(ns, name));
 const byId = (doc: Document, id: string) => Array.from(doc.getElementsByTagName('*')).find((item) => item.getAttribute('id') === id);
 const ref = (doc: Document, tag: string, id: string) => all(doc, BPMNDI, tag).find((item) => item.getAttribute('bpmnElement') === id);
 const number = (item: Element, key: string) => Number(item.getAttribute(key));
@@ -177,8 +178,8 @@ function shapeNode(doc: Document, id: string): DiagramNode {
   if (!found) throw new Error('Элемент диаграммы не найден.');
   return found;
 }
-function connectionPoints(nodes: DiagramNode[], a: DiagramNode, b: DiagramNode): DiagramPoint[] {
-  const points = routeBetweenNodes(nodes, a, b, undefined, undefined, n => symbols.find(symbol => symbol.type === n.type)?.shape);
+function connectionPoints(diagram: Diagram, a: DiagramNode, b: DiagramNode): DiagramPoint[] {
+  const points = routeBetweenNodes(diagram.nodes, a, b, undefined, undefined, n => symbols.find(symbol => symbol.type === n.type)?.shape, diagram.edges.map(e => e.points));
   if (!points) throw new Error('Не удалось построить маршрут связи без пересечений.');
   return points;
 }
@@ -255,6 +256,32 @@ export const bpmnNotation: DiagramNotation = {
   regionTitle: 'Дорожка',
   regionPlacementSize: { width: 800, height: 180 },
   read: (source) => inspect(parse(source)),
+  autoLayout: source => {
+    const doc = writable(source), before = inspect(doc).diagram;
+    const laneOf = new Map<string, string>();
+    for (const lane of all(doc, BPMN, 'lane')) for (const reference of all(lane, BPMN, 'flowNodeRef')) laneOf.set(reference.textContent!.trim(), lane.id);
+    const next = layoutDiagram(before, { lanes: before.regions, laneOf, flowTypes: ['sequenceFlow'] });
+    for (const item of [...next.nodes, ...(next.regions ?? [])]) {
+      const bounds = all(ref(doc, 'BPMNShape', item.id)!, DC, 'Bounds')[0];
+      for (const key of ['x', 'y', 'width', 'height'] as const) bounds.setAttribute(key, String(item[key]));
+      const label = all(ref(doc, 'BPMNShape', item.id)!, BPMNDI, 'BPMNLabel')[0];
+      if (label && 'labelBounds' in item && item.labelBounds) {
+        const box = all(label, DC, 'Bounds')[0];
+        for (const key of ['x', 'y', 'width', 'height'] as const) box?.setAttribute(key, String(item.labelBounds[key]));
+      }
+    }
+    for (const node of next.nodes) assignLane(doc, node);
+    const routes: DiagramPoint[][] = [];
+    for (const edge of next.edges) {
+      const points = routeBetweenNodes(next.nodes, next.nodes.find(n => n.id === edge.from)!, next.nodes.find(n => n.id === edge.to)!, undefined, undefined, n => symbols.find(s => s.type === n.type)?.shape, routes);
+      if (!points) throw new Error('Не удалось упорядочить связи; исходная модель сохранена.');
+      setWaypoints(doc, ref(doc, 'BPMNEdge', edge.id)!, points); routes.push(points);
+      // Старая позиция подписи больше не соответствует новому маршруту.
+      all(ref(doc, 'BPMNEdge', edge.id)!, BPMNDI, 'BPMNLabel').forEach(label => label.remove());
+    }
+    const result = inspect(doc); if (result.readOnlyReason) throw new Error(result.readOnlyReason);
+    return serialize(doc);
+  },
   addRegion: (source, at) => {
     const doc = writable(source); const diagram = inspect(doc).diagram;
     const area: DiagramRegion = { id: '', label: '', x: Math.round(at.x), y: Math.round(at.y), ...bpmnNotation.regionPlacementSize! };
@@ -467,7 +494,7 @@ export const bpmnNotation: DiagramNotation = {
     const dataTypes = ['dataObjectReference', 'dataStoreReference'];
     const activityTypes = ['task', 'userTask', 'serviceTask', 'manualTask', 'sendTask', 'receiveTask', 'businessRuleTask', 'scriptTask', 'subProcess'];
     const inferred = dataTypes.includes(a.type) && activityTypes.includes(b.type) ? 'dataInputAssociation' : activityTypes.includes(a.type) && dataTypes.includes(b.type) ? 'dataOutputAssociation' : undefined;
-    if (type === 'dataInputAssociation' || type === 'dataOutputAssociation' || (!type && inferred)) { requireDataCompatibility(source); return addDataAssociation(source, (type || inferred) as 'dataInputAssociation' | 'dataOutputAssociation', from, to, connectionPoints(inspect(doc).diagram.nodes, a, b)).xml; }
+    if (type === 'dataInputAssociation' || type === 'dataOutputAssociation' || (!type && inferred)) { requireDataCompatibility(source); return addDataAssociation(source, (type || inferred) as 'dataInputAssociation' | 'dataOutputAssociation', from, to, connectionPoints(inspect(doc).diagram, a, b)).xml; }
     if (type && !['sequenceFlow', 'association', 'directedAssociation'].includes(type)) throw new Error('Неизвестный тип связи.');
     const artifacts = [a.type, b.type].some((nodeType) => ['dataObjectReference', 'dataStoreReference', 'textAnnotation'].includes(nodeType));
     const association = type ? type !== 'sequenceFlow' : artifacts;
@@ -480,7 +507,7 @@ export const bpmnNotation: DiagramNotation = {
     process.insertBefore(flow, association ? null : Array.from(process.children).find((child) => ['association', 'textAnnotation'].includes(child.localName)) ?? null);
     if (!association) for (const [nodeId, tag] of [[from, 'outgoing'], [to, 'incoming']]) { const item = element(doc, BPMN, `bpmn:${tag}`); item.textContent = id; const node = byId(doc, nodeId)!; insertFlowRef(node, item, tag); }
     const edge = element(doc, BPMNDI, 'bpmndi:BPMNEdge'); edge.setAttribute('id', `${id}_di`); edge.setAttribute('bpmnElement', id);
-    setWaypoints(doc, edge, connectionPoints(inspect(doc).diagram.nodes, a, b)); all(doc, BPMNDI, 'BPMNPlane')[0].appendChild(edge);
+    setWaypoints(doc, edge, connectionPoints(inspect(doc).diagram, a, b)); all(doc, BPMNDI, 'BPMNPlane')[0].appendChild(edge);
     return serialize(doc);
   },
   editEdge: (source, id, from, to, points) => {

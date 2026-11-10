@@ -205,6 +205,15 @@ mod tests {
         }
     }
     #[test]
+    fn layout_and_uml_sheet_use_shared_contract() {
+        assert!(normalize_actions(&json!([
+            {"tool":"edit_bpmn","arguments":{"processId":"proc:p","operations":[{"op":"auto_layout"}]}},
+            {"tool":"edit_model","arguments":{"modelId":"model:u","operations":[{"op":"add_node","type":"system-boundary","x":0,"y":0},{"op":"auto_layout"}]}},
+            {"tool":"edit_model","arguments":{"modelId":"model:s","operations":[{"op":"add_message","from":"a","to":"b","y":900,"type":"sync"}]}}
+        ])).is_ok());
+    }
+
+    #[test]
     fn independent_models_share_contract_and_operation_limits() {
         assert!(normalize_actions(&json!([
             {"tool":"create_object","key":"m","arguments":{"kind":"model","notation":"uml-class","title":"Заказы"}},

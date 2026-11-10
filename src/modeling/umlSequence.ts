@@ -90,8 +90,17 @@ export function addSequenceLifeline(source: string, at: DiagramPoint): string {
     document.lifelines.sort((a, b) => a.x + a.width / 2 - b.x - b.width / 2);
   });
 }
+/** Новое сообщение может продлить линии жизни, но не попасть в заголовок. Импорт остаётся строгим. */
+function extendLifelines(document: SequenceDocument, message: SequenceMessage | Omit<SequenceMessage, 'id'>) {
+  for (const point of [message.send, message.receive]) {
+    const line = document.lifelines.find(l => l.id === point.lifelineId) ?? fail('Линия жизни не найдена.');
+    if (!num(point.y) || point.y < line.y + line.height) fail(`Сообщение должно находиться ниже заголовка участника: y >= ${line.y + line.height}.`);
+    if (point.y > line.endY) line.endY = point.y + 80;
+  }
+}
 export function addSequenceMessage(source: string, message: Omit<SequenceMessage, 'id'>): string {
   return mutate(source, document => {
+    extendLifelines(document, message);
     document.messages.push({ ...message, send: { ...message.send }, receive: { ...message.receive }, id: nextId(document, 'message') });
     document.messages.sort((a, b) => a.send.y - b.send.y);
   });
@@ -101,6 +110,7 @@ export function moveSequenceMessage(source: string, messageId: string, sendY: nu
   return mutate(source, document => {
     const item = document.messages.find(message => message.id === messageId) ?? fail('Сообщение не найдено.');
     item.send.y = sendY; item.receive.y = receiveY;
+    extendLifelines(document, item);
     document.messages.sort((a, b) => a.send.y - b.send.y);
   });
 }
@@ -132,6 +142,7 @@ export function editSequenceMessage(source: string, messageId: string, changes: 
     const index = document.messages.findIndex(message => message.id === messageId);
     if (index < 0) return fail('Сообщение не найдено.');
     document.messages[index] = { ...document.messages[index], ...changes };
+    extendLifelines(document, document.messages[index]);
     document.messages.sort((a, b) => a.send.y - b.send.y);
   });
 }

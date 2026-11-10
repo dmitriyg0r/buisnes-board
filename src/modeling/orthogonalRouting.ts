@@ -7,6 +7,8 @@ export interface RouteOptions {
   start: RouteEndpoint;
   end: RouteEndpoint;
   obstacles?: readonly Rect[];
+  /** Уже проложенные связи: наложения дороже пересечений. */
+  routes?: readonly (readonly Point[])[];
   /** Расстояние до препятствий; граница расширенного прямоугольника допустима. */
   clearance?: number;
   /** Минимальная длина начального и конечного прямого участка. */
@@ -63,6 +65,19 @@ export function hasSelfIntersections(points: readonly Point[]): boolean {
   return false;
 }
 
+/** Штраф за общий участок и за пересечение внутренних точек отрезков. */
+export function routeConflictCost(a: Point, b: Point, routes: readonly (readonly Point[])[]): number {
+  let cost = 0;
+  for (const route of routes) for (let i = 1; i < route.length; i++) {
+    const c = route[i - 1], d = route[i];
+    if (a.y === b.y && c.y === d.y && a.y === c.y) cost += Math.max(0, Math.min(Math.max(a.x, b.x), Math.max(c.x, d.x)) - Math.max(Math.min(a.x, b.x), Math.min(c.x, d.x))) * 12;
+    else if (a.x === b.x && c.x === d.x && a.x === c.x) cost += Math.max(0, Math.min(Math.max(a.y, b.y), Math.max(c.y, d.y)) - Math.max(Math.min(a.y, b.y), Math.min(c.y, d.y))) * 12;
+    else if (a.y === b.y && c.x === d.x && c.x > Math.min(a.x, b.x) && c.x < Math.max(a.x, b.x) && a.y > Math.min(c.y, d.y) && a.y < Math.max(c.y, d.y)) cost += 100;
+    else if (a.x === b.x && c.y === d.y && a.x > Math.min(c.x, d.x) && a.x < Math.max(c.x, d.x) && c.y > Math.min(a.y, b.y) && c.y < Math.max(a.y, b.y)) cost += 100;
+  }
+  return cost;
+}
+
 function blocked(a: Point, b: Point, boxes: readonly Rect[]): boolean {
   return boxes.some(r => a.y === b.y
     ? a.y > r.y && a.y < r.y + r.height && Math.max(Math.min(a.x, b.x), r.x) < Math.min(Math.max(a.x, b.x), r.x + r.width)
@@ -99,12 +114,17 @@ export function routeOrthogonal(options: RouteOptions): Point[] | null {
   if (!finitePoint(s) || !finitePoint(t) || same(start.point, s) || same(end.point, t)) throw new RangeError('Некорректная длина выхода.');
   if (same(start.point, end.point) || blocked(start.point, s, boxes.slice(1)) || blocked(t, end.point, [boxes[0], ...boxes.slice(2)])) return null;
   const margin = Math.max(1, stubLength, clearance);
-  const xs = [...new Set([s.x, t.x, s.x - margin, s.x + margin, t.x - margin, t.x + margin, ...boxes.flatMap(r => [r.x, r.x + r.width])])].sort((a, b) => a - b);
-  const ys = [...new Set([s.y, t.y, s.y - margin, s.y + margin, t.y - margin, t.y + margin, ...boxes.flatMap(r => [r.y, r.y + r.height])])].sort((a, b) => a - b);
+  let xs = [...new Set([s.x, t.x, s.x - margin, s.x + margin, t.x - margin, t.x + margin, ...boxes.flatMap(r => [r.x, r.x + r.width]), ...(options.routes ?? []).flatMap(r => r.flatMap(p => [p.x - 20, p.x + 20]))])].sort((a, b) => a - b);
+  let ys = [...new Set([s.y, t.y, s.y - margin, s.y + margin, t.y - margin, t.y + margin, ...boxes.flatMap(r => [r.y, r.y + r.height]), ...(options.routes ?? []).flatMap(r => r.flatMap(p => [p.y - 20, p.y + 20]))])].sort((a, b) => a - b);
+  // На больших схемах не раздуваем сетку координатами всех прежних связей.
+  if (xs.length * ys.length > 10000 && options.routes?.length) {
+    xs = [...new Set([s.x, t.x, s.x - margin, s.x + margin, t.x - margin, t.x + margin, ...boxes.flatMap(r => [r.x, r.x + r.width])])].sort((a, b) => a - b);
+    ys = [...new Set([s.y, t.y, s.y - margin, s.y + margin, t.y - margin, t.y + margin, ...boxes.flatMap(r => [r.y, r.y + r.height])])].sort((a, b) => a - b);
+  }
   if (xs.some(x => !Number.isFinite(x)) || ys.some(y => !Number.isFinite(y)) || xs.length * ys.length > 10000) throw new RangeError('Сетка маршрута слишком велика.');
   type State = { p: Point; dir: Direction; bends: number; length: number; path: Point[] };
   const queue: State[] = [{ p: s, dir: start.normal, bends: 0, length: stubLength, path: [start.point, s] }];
-  const less = (a: State, b: State) => a.bends < b.bends || (a.bends === b.bends && a.length < b.length);
+  const less = (a: State, b: State) => options.routes ? a.length + a.bends * 60 < b.length + b.bends * 60 : a.bends < b.bends || (a.bends === b.bends && a.length < b.length);
   const push = (item: State) => {
     queue.push(item); let i = queue.length - 1;
     while (i > 0) { const parent = Math.floor((i - 1) / 2); if (!less(queue[i], queue[parent])) break; [queue[i], queue[parent]] = [queue[parent], queue[i]]; i = parent; }
@@ -138,7 +158,7 @@ export function routeOrthogonal(options: RouteOptions): Point[] | null {
       if (bends > maxBends) continue;
       const path = simplifyRoute([...cur.path, p]);
       if (hasSelfIntersections(path)) continue;
-      const length = cur.length + Math.abs(p.x - cur.p.x) + Math.abs(p.y - cur.p.y);
+      const length = cur.length + Math.abs(p.x - cur.p.x) + Math.abs(p.y - cur.p.y) + (options.routes ? routeConflictCost(cur.p, p, options.routes) : 0);
       const nextKey = `${p.x},${p.y},${dir},${bends}`;
       if ((best.get(nextKey) ?? Infinity) <= length) continue;
       best.set(nextKey, length);

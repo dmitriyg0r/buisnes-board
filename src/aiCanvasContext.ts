@@ -38,7 +38,7 @@ export function canvasOverview(model: Model, env?: AiEnvironment) {
     notations: modelDefinitions.map((definition) => { const n = getModelNotation(definition.id)!; return { ...definition, symbols: n.symbols.map(({ type, title, width, height }) => ({ type, title, width, height })), connections: n.connectionTypes, operations: modelOperations(n) }; }),
     bpmnSymbols: bpmn.symbols.map(({ type, title, width, height }) => ({ type, title, width, height })),
     bpmnConnections: bpmn.connectionTypes,
-    bpmnCapabilities: { resizeNode: 'все элементы палитры; минимум 40 × 30; события и шлюзы — равные ширина и высота', messageFlow: 'между двумя разными пулами', readOnly: 'Если адаптер вернул readOnlyReason, правки этой схемы запрещены', content: 'Существующие элементы меняются через edit_bpmn без пересоздания схемы' },
+    bpmnCapabilities: { autoLayout: 'auto_layout: собрать дорожки одного процесса без зазоров и упорядочить узлы/связи; ID сохраняются', resizeNode: 'все элементы палитры; минимум 40 × 30; события и шлюзы — равные ширина и высота', messageFlow: 'между двумя разными пулами', readOnly: 'Если адаптер вернул readOnlyReason, правки этой схемы запрещены', content: 'Существующие элементы меняются через edit_bpmn без пересоздания схемы' },
     tools: aiToolCatalog.map(({ name }) => name),
   };
 }

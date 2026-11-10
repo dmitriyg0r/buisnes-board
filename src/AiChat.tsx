@@ -350,7 +350,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
           }}
           placeholder={busy ? 'Уточните задачу…' : 'Что сделать на доске?'}
           aria-label="Сообщение ИИ"
-          maxLength={4000}
+          maxLength={24000}
         />
         <select className="ai-model" value={aiModel} onChange={(e) => onModel(e.target.value as AiModel)} aria-label="Модель ИИ" disabled={busy}>
           {aiModels.map((m) => (

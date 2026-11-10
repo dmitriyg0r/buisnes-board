@@ -3,7 +3,7 @@ import type { DiagramNotation, DiagramEdge } from './modeling/types';
 /** Возможности берём у того же адаптера, который использует редактор. */
 export function modelOperations(n: DiagramNotation): string[] {
   return ['add_node', 'rename', 'move_node', 'remove', ...(n.timeline ? ['add_message', 'move_message', ...(n.timeline.editMessage ? ['edit_message'] : [])] : ['connect', 'edit_edge', 'reset_edge']),
-    ...(n.resizeNode ? ['resize_node'] : []), ...(n.setLabelBounds ? ['set_label_bounds'] : []),
+    ...(n.autoLayout ? ['auto_layout'] : []), ...(n.resizeNode ? ['resize_node'] : []), ...(n.setLabelBounds ? ['set_label_bounds'] : []),
     ...(n.setNodeCompartments ? ['set_compartments'] : []), ...(n.setEdgeEnds ? ['set_edge_ends'] : [])];
 }
 
@@ -20,6 +20,7 @@ export function applyModelOperation(n: DiagramNotation, source: string, op: Reco
   if (!modelOperations(n).includes(operation)) throw new Error(`Нотация ${n.id} не поддерживает ${operation}`);
   const before = n.read(source); if (before.readOnlyReason) throw new Error(before.readOnlyReason);
   switch (operation) {
+    case 'auto_layout': return n.autoLayout!(source);
     case 'add_node': return n.addNode(source, text('type'), at());
     case 'rename': return n.rename(source, id(), text('name'));
     case 'move_node': return n.moveNode(source, id(), at());

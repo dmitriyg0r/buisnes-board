@@ -313,6 +313,7 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
             const point = () => ({ x: number(operation, 'x'), y: number(operation, 'y') });
             const width = () => number(operation, 'width'), height = () => number(operation, 'height');
             switch (op) {
+              case 'auto_layout': process.xml = bpmn.autoLayout!(process.xml); break;
               case 'add_node': process.xml = bpmn.addNode(process.xml, str(operation, 'type'), point()); break;
               case 'add_region': process.xml = bpmn.addRegion!(process.xml, point()); break;
               case 'add_pool': process.xml = bpmn.addPool!(process.xml, point()); break;
@@ -338,7 +339,7 @@ export function planAiActions(input: Model, actions: AiAction[], env: AiEnvironm
               const ref = `${pid}:${created.id}`; bind(str(operation, 'key'), ref); added[str(operation, 'key')] = ref;
             }
           }
-          cleanReferences(); touched(id); data = { id, elements: added }; break;
+          cleanReferences(); touched(id); data = { id, elements: added, ...bpmn.read(process.xml) }; break;
         }
         case 'create_issue': {
           if (action.key && aliases.has(action.key)) { data = { id: aliases.get(action.key), alreadyCreated: true }; summary = 'Замечание уже создано'; break; }

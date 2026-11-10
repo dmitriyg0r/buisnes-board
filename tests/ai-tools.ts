@@ -199,6 +199,23 @@ export async function runAiToolTests(dom = false) {
     const result = await runCanvasAgent({ prompt: 'Дополни код', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'ok' }) }), onDelta() {}, render: async () => {}, generate: async (_p, _m, _c, _h, _ev, _s, _id, observations) => { if (calls) assert(observations!.length === calls); return responses[calls++]; } });
     equal(calls, 5); equal(api.getModel().htmlObjects[0].html, code + '<!-- готово -->'); equal(past.length, 1); api.undo(); equal(api.getModel().htmlObjects[0].html, code); equal(result.reply, 'Изменено');
   });
+  await test('Составная задача продолжается после шестого шага без дублирования объектов', async () => {
+    const { api } = memoryApi(emptyModel); let calls = 0;
+    const result = await runCanvasAgent({ prompt: 'Подготовь несколько материалов', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'ok' }) }), onDelta() {}, render: async () => {}, generate: async () => {
+      calls++;
+      return calls <= 8 ? { reply: 'Продолжаю', actions: [action('create_object', { kind: 'document', title: `Материал ${calls}` }, `doc${calls}`)] } : { reply: 'Готово' };
+    } });
+    equal(calls, 9); equal(api.getModel().docs.length, 8); equal(result.reply, 'Готово');
+  });
+  await test('ИИ: лист UML и auto_layout доступны через общий контракт и возвращают реальную диаграмму', () => {
+    const plan = planAiActions(emptyModel, [action('create_object', { kind: 'model', notation: 'uml-use-case', title: 'Заказы' }, 'model'), action('edit_model', { modelId: '$model', operations: [{ op: 'add_node', type: 'system-boundary', x: 250, y: 60, key: 'sheet' }, { op: 'rename', id: '$sheet', name: 'Заказы' }, { op: 'add_node', type: 'actor', x: 60, y: 180, key: 'actor' }, { op: 'add_node', type: 'use-case', x: 350, y: 180, key: 'case' }, { op: 'connect', from: '$actor', to: '$case', type: 'association' }, { op: 'auto_layout' }] })], env());
+    const n = getModelNotation('uml-use-case')!, diagram = n.read(plan.model.models[0].source).diagram;
+    equal(diagram.nodes.length, 3); equal(diagram.edges.length, 1);
+    const data = plan.observations[1].result.data as { diagram: typeof diagram };
+    equal(data.diagram, diagram);
+    assert(diagram.nodes.some(node => node.type === 'system-boundary' && node.label === 'Заказы'));
+    rejects(() => planAiActions(plan.model, [action('edit_model', { modelId: plan.aliases.get('model'), operations: [{ op: 'connect', from: plan.aliases.get('sheet'), to: plan.aliases.get('case'), type: 'dependency' }] })], env()));
+  });
   await test('Агент: неверный пакет исправляется без частичных изменений', async () => {
     const { api, past } = memoryApi(emptyModel); let calls = 0;
     await runCanvasAgent({ prompt: 'Создай', model: '6.1-sol', history: [], projectId: 'test', signal: new AbortController().signal, api, host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'ok' }) }), onDelta() {}, render: async () => {}, generate: async (_p, _m, _c, _h, _ev, _s, _id, observations) => {

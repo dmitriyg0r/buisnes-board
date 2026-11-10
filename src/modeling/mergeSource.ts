@@ -98,7 +98,7 @@ function mergeSource(base: string, local: string, remote: string, notationId: st
     const from = parsed.diagram.nodes.find(n => n.id === edge.from), to = parsed.diagram.nodes.find(n => n.id === edge.to);
     if (!oldFrom || !oldTo || !from || !to || (!boundsChanged(from, oldFrom) && !boundsChanged(to, oldTo))) continue;
     const translate = (point: { x: number; y: number }, old: DiagramNode, next: DiagramNode) => ({ x: next.x + (point.x - old.x) * next.width / old.width, y: next.y + (point.y - old.y) * next.height / old.height });
-    const points = routeBetweenNodes(parsed.diagram.nodes, from, to, translate(previousEdge.points[0], oldFrom, from), translate(previousEdge.points[previousEdge.points.length - 1], oldTo, to), n => notation.symbols.find(s => s.type === n.type)?.shape);
+    const points = routeBetweenNodes(parsed.diagram.nodes.filter(node => !notation.symbols.find(symbol => symbol.type === node.type)?.container), from, to, translate(previousEdge.points[0], oldFrom, from), translate(previousEdge.points[previousEdge.points.length - 1], oldTo, to), n => notation.symbols.find(s => s.type === n.type)?.shape);
     if (!points) throw new Error(`Не удалось объединить одновременное перемещение концов связи (${notationId}).`);
     result = notation.editEdge(result, edge.id, edge.from, edge.to, points);
     parsed = notation.read(result);

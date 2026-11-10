@@ -23,7 +23,7 @@ use crate::integrations::access_token;
 use crate::AppState;
 
 const CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const MAX_PROMPT: usize = 4000;
+const MAX_PROMPT: usize = 24000;
 const MAX_CONTEXT: usize = 60_000;
 const MAX_NODES: usize = 60;
 const MAX_FLOWS: usize = 120;

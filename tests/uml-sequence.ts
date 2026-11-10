@@ -73,6 +73,14 @@ assert.equal(timeline.project(restoredEndpoint).messages.find(item => item.id ==
 assert.throws(() => timeline.addMessage(source, a, b, 100, 'unknown'), /Неизвестный/);
 assert.throws(() => timeline.addMessage(source, a, a, 100, 'reply'), /только как синхронный/);
 assert.equal(parseSequence(timeline.addMessage(source, a, a, 100, 'sync')).messages.find(item => item.send.y === 100)?.kind, 'self');
+const extended = timeline.addMessage(source, a, b, 900, 'sync');
+assert.ok(parseSequence(extended).lifelines.every(line => line.endY >= 900));
+const late = parseSequence(extended).messages.at(-1)!;
+assert.ok(parseSequence(moveSequenceMessage(extended, late.id, 1500, 1500)).lifelines.every(line => line.endY >= 1500));
+assert.ok(parseSequence(timeline.addMessage(extended, a, a, 1700, 'sync')).lifelines.find(line => line.id === a)!.endY >= 1730);
+const imported = parseSequence(extended); imported.lifelines[0].endY = 300;
+assert.throws(() => parseSequence(JSON.stringify(imported)), /вне линии жизни/);
+assert.deepEqual(parseSequence(source), original);
 source = removeSequenceElement(source, a);
 assert.equal(parseSequence(source).messages.length, 0);
 assert.equal(parseSequence(source).lifelines.length, 1);

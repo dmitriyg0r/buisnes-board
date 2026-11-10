@@ -609,7 +609,7 @@
     },
     {
       "name": "edit_bpmn",
-      "description": "Редактировать процесс теми же функциями, что и редактор BPMN: все символы палитры, дорожки, пулы, связи, геометрия, подписи, удаление. У add_node/add_region/add_pool/connect можно задать key и далее обращаться к созданному элементу как $key. add_node требует type,x,y; rename — id,name; move — id,x,y; resize — id,width,height; connect — from,to,type; set_region_rows — id,count; edit_edge — id,from,to,points; set_label_bounds — id,x,y,width,height; remove/reset_edge — id.",
+      "description": "Редактировать процесс теми же функциями, что и редактор BPMN: все символы палитры, дорожки, пулы, связи, геометрия, подписи, удаление. У add_node/add_region/add_pool/connect можно задать key и далее обращаться к созданному элементу как $key. add_node требует type,x,y; rename — id,name; move — id,x,y; resize — id,width,height; connect — from,to,type; set_region_rows — id,count; edit_edge — id,from,to,points; set_label_bounds — id,x,y,width,height; remove/reset_edge — id. auto_layout() упорядочивает существующие элементы и маршруты связей без смены ID. Выполняй после построения схемы.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -639,7 +639,8 @@
                     "edit_edge",
                     "reset_edge",
                     "set_label_bounds",
-                    "remove"
+                    "remove",
+                    "auto_layout"
                   ]
                 },
                 "key": {
@@ -738,7 +739,7 @@
     },
     {
       "name": "edit_model",
-      "description": "Редактировать EPC/UML существующим адаптером, сохраняя ID. modelId — model:<id> или $key. Общие операции: add_node(type,x,y,key), rename(id,name), move_node(id,x,y), resize_node(id,width,height), connect(from,to,type,key), edit_edge(id,from,to,points), reset_edge(id), remove(id). UML-классы: set_compartments(id,attributes,operations), set_edge_ends(id,ends). UML Sequence: add_message(from,to,y,type,key), move_message(id,sendY,receiveY), edit_message(id,from/to/type). Названия задавай rename. Доступные операции и типы читай в read_canvas; сообщения читай в read_object. Результат содержит актуальную диаграмму и замечания проверки; наличие замечаний не означает готовность модели.",
+      "description": "Редактировать EPC/UML существующим адаптером, сохраняя ID. modelId — model:<id> или $key. Общие операции: add_node(type,x,y,key), rename(id,name), move_node(id,x,y), resize_node(id,width,height), connect(from,to,type,key), edit_edge(id,from,to,points), reset_edge(id), remove(id). UML-классы: set_compartments(id,attributes,operations), set_edge_ends(id,ends). UML Sequence: add_message(from,to,y,type,key), move_message(id,sendY,receiveY), edit_message(id,from/to/type). Названия задавай rename. Доступные операции и типы читай в read_canvas; сообщения читай в read_object. Результат содержит актуальную диаграмму и замечания проверки; наличие замечаний не означает готовность модели. auto_layout() упорядочивает существующие элементы и маршруты связей без смены ID. Выполняй после построения схемы. UML Use Case: system-boundary — лист/граница системы, resize_node задаёт размер; акторы снаружи. UML Sequence автоматически продлевает линии жизни для новых сообщений ниже заголовков.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -763,7 +764,8 @@
                     "set_edge_ends",
                     "add_message",
                     "move_message",
-                    "edit_message"
+                    "edit_message",
+                    "auto_layout"
                   ]
                 },
                 "key": {

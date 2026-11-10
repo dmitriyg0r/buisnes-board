@@ -135,6 +135,36 @@ export const bpmnCollaborationFacade: DiagramNotation & {
     });
     return { diagram: { ...base.diagram, regions: [...regions, ...(base.diagram.regions ?? []).map(r => ({ ...r, kind: 'lane' as const }))], edges: [...base.diagram.edges, ...flows] }, ...(inspection.editable ? {} : { readOnlyReason: inspection.readOnlyReason }) };
   },
+  autoLayout: source => {
+    if (!all(parse(source), MODEL, 'collaboration').length) return bpmnNotation.autoLayout!(source);
+    const projection = project(source), laidOut = bpmnNotation.autoLayout!(projection.xml);
+    const diagram = bpmnNotation.read(laidOut).diagram;
+    const content = [...diagram.nodes, ...(diagram.regions ?? [])];
+    const inspection = inspectCollaboration(source);
+    const primary = inspection.participants.find(p => p.processRef)!;
+    const boxes = new Map(inspection.participants.map(p => [p.id, { ...p.bounds }]));
+    if (content.length) boxes.set(primary.id, {
+      x: Math.min(...content.map(n => n.x)) - 40, y: Math.min(...content.map(n => n.y)) - 40,
+      width: Math.max(...content.map(n => n.x + n.width)) - Math.min(...content.map(n => n.x)) + 80,
+      height: Math.max(...content.map(n => n.y + n.height)) - Math.min(...content.map(n => n.y)) + 80,
+    });
+    const pool = boxes.get(primary.id)!; let y = pool.y + pool.height + 80;
+    for (const participant of inspection.participants.filter(p => !p.processRef)) { const box = boxes.get(participant.id)!; box.x = pool.x; box.y = y; y += box.height + 80; }
+    for (const item of projection.positions) {
+      const id = item.element.getAttribute('bpmnElement')!, box = boxes.get(id);
+      if (box) { const bounds = all(item.element, DC, 'Bounds')[0]; for (const key of ['x', 'y', 'width', 'height'] as const) bounds.setAttribute(key, String(box[key])); }
+      else {
+        const flow = inspection.messageFlows.find(f => f.id === id);
+        if (flow) {
+          all(item.element, DI, 'waypoint').forEach(p => p.remove());
+          for (const point of routeBetween(boxes.get(flow.from)!, boxes.get(flow.to)!)) {
+            const waypoint = item.element.ownerDocument.createElementNS(DI, 'di:waypoint'); waypoint.setAttribute('x', String(point.x)); waypoint.setAttribute('y', String(point.y)); item.element.appendChild(waypoint);
+          }
+        }
+      }
+    }
+    return restore(laidOut, projection);
+  },
   addNode: (s, type, at) => mutate(s, xml => bpmnNotation.addNode(xml, type, at)),
   addPool: (s, at) => {
     const xml = all(parse(s), MODEL, 'collaboration').length ? s : convertToCollaboration(s);
