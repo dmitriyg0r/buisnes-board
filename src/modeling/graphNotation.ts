@@ -98,8 +98,10 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
     do { id = globalThis.crypto.randomUUID(); } while (graph.nodes.some(n => n.id === id) || graph.edges.some(e => e.id === id));
     return id;
   };
+  const findRoute = (graph: Graph, from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint) =>
+    routeBetweenNodes(graph.nodes.filter(n => !container(n)), from, to, start, end, shapeOf, graph.edges.filter(e => e.from !== from.id || e.to !== to.id).map(e => e.points));
   const route = (graph: Graph, from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint) => {
-    const points = routeBetweenNodes(graph.nodes.filter(n => !container(n)), from, to, start, end, shapeOf, graph.edges.filter(e => e.from !== from.id || e.to !== to.id).map(e => e.points));
+    const points = findRoute(graph, from, to, start, end);
     if (!points) throw new Error('Не удалось построить маршрут связи.');
     return points;
   };
@@ -128,7 +130,7 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
       if (!isPoint(anchor)) throw new Error('Некорректная привязка связи.');
       if (points.length === 2) {
         const start = reverse ? points[1] : anchor, end = reverse ? anchor : points[1];
-        const clear = routeBetweenNodes(graph.nodes, from, to, start, end, shapeOf);
+        const clear = findRoute(graph, from, to, start, end);
         // При наложении фигур свободного обхода может не быть. Сохраняем обе
         // привязки и даём объекту двигаться; пересечение временно допустимо.
         const horizontal = points[0].y === points[1].y;
@@ -148,7 +150,7 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
       const simplified = simplifyRoute(ordered);
       const candidate = simplified.length >= 2 ? simplified : [ordered[0], ordered[ordered.length - 1]];
       if (validRoute(graph, from, to, candidate)) edge.points = candidate;
-      else if (points.length <= 4) edge.points = routeBetweenNodes(graph.nodes, from, to, candidate[0], candidate[candidate.length - 1], shapeOf) ?? candidate;
+      else if (points.length <= 4) edge.points = findRoute(graph, from, to, candidate[0], candidate[candidate.length - 1]) ?? candidate;
       // Ручные изгибы не удаляем: если путь перекрыт, сохраняем его как есть
       // и позволяем разнести объекты позже.
       else edge.points = candidate;
