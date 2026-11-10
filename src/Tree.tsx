@@ -3,8 +3,11 @@ import type { Doc, HtmlObject, IndependentModel, Process, Source } from './data'
 import { Icon } from './Icon';
 import { WorkspaceContextMenu } from './WorkspaceContextMenu';
 import { objectCatalog } from './objectCatalog';
+import { TreeResizeHandle } from './TreeResizeHandle';
 
 interface Props {
+  width?: number;
+  onWidthChange?: (width: number) => void;
   activeSourceId?: string;
   sources: Source[];
   docs: Doc[];
@@ -25,7 +28,7 @@ interface Props {
 function Group({ title, open, onToggle, children }: { title: string; open: boolean; onToggle: () => void; children: React.ReactNode }) {
   return (
     <div className="tree-group">
-      <button type="button" className="tree-head" onClick={onToggle} aria-expanded={open}>
+      <button type="button" className="tree-head" title={title} onClick={onToggle} aria-expanded={open}>
         <Icon name={open ? 'chevronDown' : 'chevronRight'} size={14} stroke={2.2} />
         <Icon name="folder" size={16} />
         <span>{title}</span>
@@ -35,7 +38,7 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
   );
 }
 
-export function Tree({ activeSourceId, sources, docs, processes, models, onEditModel, onFindCard, onDeleteCard, htmlObjects, onEditHtml, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
+export function Tree({ width = 232, onWidthChange, activeSourceId, sources, docs, processes, models, onEditModel, onFindCard, onDeleteCard, htmlObjects, onEditHtml, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
   const isSel = (id: string) => selectedCards.includes(id);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number; trigger: HTMLButtonElement } | null>(null);
   const closeMenu = () => {
@@ -63,6 +66,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
   }
 
   return (
+    <div className="tree-pane">
     <aside className="tree">
       <div className="tree-title">
         <span>Структура проекта</span>
@@ -76,7 +80,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
         {sources.map((s) => (
           <div key={s.id} className={`tree-row${isSel(`src:${s.id}`) ? ' sel' : ''}`}>
             <span className={`ext ext-${s.ext.toLowerCase()}`}>{s.ext === 'PDF' ? 'PDF' : 'DOC'}</span>
-            <span className="grow">{s.name}</span>
+            <span className="tree-label" title={s.name}>{s.name}</span>
             {s.id === activeSourceId && <span className="dot-amber" title="Основание выбранного замечания" />}
           </div>
         ))}
@@ -88,7 +92,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
           {processes.map((p) => (
             <div key={p.id} className={`tree-row${isSel(`proc:${p.id}`) ? ' sel' : ''}`}>
               <Icon name="model" />
-              <span className="tree-model-title">{p.title}</span>
+              <span className="tree-model-title" title={p.title}>{p.title}</span>
               {modelMenu(`proc:${p.id}`, p.title)}
             </div>
           ))}
@@ -101,7 +105,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
             {entries.length === 0 && <div className="tree-empty">Нет моделей {title}</div>}
             {entries.map((m) => <div key={m.id} className={`tree-row${isSel(`model:${m.id}`) ? ' sel' : ''}`}>
               <Icon name="model" />
-              <button type="button" className="tree-model-title tree-model-open" onClick={() => onEditModel(m.id)} aria-label={`Открыть модель: ${m.title}`}>{m.title}</button>
+              <button type="button" className="tree-model-title tree-model-open" title={m.title} onClick={() => onEditModel(m.id)} aria-label={`Открыть модель: ${m.title}`}>{m.title}</button>
               {modelMenu(`model:${m.id}`, m.title)}
             </div>)}
           </Group>;
@@ -113,9 +117,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
         {docs.map((d) => (
           <div key={d.id} className={`tree-row${isSel(`doc:${d.id}`) ? ' sel' : ''}`}>
             <Icon name="file" />
-            <span className="doc-name">
-              <span>{d.title}</span>
-            </span>
+            <span className="tree-label" title={d.title}>{d.title}</span>
           </div>
         ))}
       </Group>
@@ -123,7 +125,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
       <Group title="HTML-объекты" open={open.html} onToggle={() => toggle('html')}>
         {htmlObjects.length === 0 && <div className="tree-empty">Нет HTML-объектов</div>}
         {htmlObjects.map((h) => <div key={h.id} className={`tree-row${isSel(`html:${h.id}`) ? ' sel' : ''}`} role="button" tabIndex={0} aria-label={`Редактировать HTML: ${h.title}`} onDoubleClick={() => onEditHtml(h.id)} onKeyDown={(event) => { if (event.key === 'Enter') onEditHtml(h.id); }}>
-          <Icon name="code" /><span>{h.title}</span>
+          <Icon name="code" /><span className="tree-label" title={h.title}>{h.title}</span>
         </div>)}
       </Group>
 
@@ -137,5 +139,7 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
         Добавить объект
       </button>
     </aside>
+    {onWidthChange && <TreeResizeHandle width={width} onWidthChange={onWidthChange} />}
+    </div>
   );
 }

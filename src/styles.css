@@ -64,15 +64,20 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 .dot-blue { width: 6px; height: 6px; border-radius: 50%; background: var(--blue); }
 
 /* ---------- дерево ---------- */
+.tree-pane { position: relative; min-width: 0; min-height: 0; }
+.tree-pane > .tree { height: 100%; overflow-x: hidden; }
+.tree-resizer { position: absolute; top: 0; bottom: 0; right: -3px; width: 7px; z-index: 9; cursor: col-resize; touch-action: none; }
+.tree-resizer:hover, .tree-resizer:active, .tree-resizer:focus-visible { background: var(--blue-line); outline: none; }
 .tree { background: var(--panel); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; overflow: auto; }
 .tree-title { display: flex; align-items: center; justify-content: space-between; padding: 0 8px 10px; font-size: 11.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
 .tree-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 8px; margin-top: 6px; border: 0; background: transparent; border-radius: 8px; font-size: 13.5px; font-weight: 600; color: var(--ink); text-align: left; }
-.tree-head svg { color: var(--muted); }
+.tree-head svg { flex: none; color: var(--muted); }
+.tree-head > span { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tree-head:hover { background: rgba(31, 36, 48, 0.04); }
-.tree-children { margin-left: 20px; display: flex; flex-direction: column; gap: 2px; }
-.tree-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 13px; line-height: 18px; }
+.tree-children { min-width: 0; margin-left: 20px; display: flex; flex-direction: column; gap: 2px; }
+.tree-row { min-width: 0; display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 8px; font-size: 13px; line-height: 18px; }
 .tree-row > svg { flex: none; margin-top: 1px; }
-.tree-model-title { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.tree-label, .tree-model-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tree-model-open { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 .tree-row .tree-model-menu { flex: none; padding: 0; width: 22px; height: 22px; margin-top: -2px; }
 .tree-model-menu span { font-size: 22px; line-height: 16px; }

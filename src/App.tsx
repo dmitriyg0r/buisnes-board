@@ -4,6 +4,7 @@ import { emptyModel, NO_ISSUE, type Issue, type IssueStatus } from './data';
 import { reconcileSections, sectionTitles, starterMarkdown } from './markdown';
 import { autoIssues, coverage } from './coverage';
 import { Tree } from './Tree';
+import { useTreeWidth } from './TreeResizeHandle';
 import { Canvas } from './Canvas';
 import { IssuePanel } from './IssuePanel';
 import { Icon } from './Icon';
@@ -203,6 +204,7 @@ function Workspace({
     }
     if (Object.keys(rest).length) patch(rest);
   };
+  const [treeWidth, setTreeWidth] = useTreeWidth();
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   /** выделенные на полотне карточки: подсвечиваются и в дереве слева */
   const [selCards, setSelCards] = useState<string[]>([]);
@@ -323,8 +325,10 @@ function Workspace({
       </header>
 
       {sync === 'revoked' && <div className="auth-error" role="alert" style={{ margin: 12 }}>Доступ к проекту закрыт: владелец отозвал его или удалил проект. Ваши последние правки не сохранены. <button type="button" onClick={onBack}>К списку проектов</button></div>}
-      <div className="workspace" style={{ gridTemplateColumns: `${layout.tree ? 232 : 44}px minmax(0, 1fr) ${layout.panel ? 300 : 44}px` }}>
+      <div className="workspace" style={{ gridTemplateColumns: `${layout.tree ? `clamp(192px, ${treeWidth}px, calc(100% - ${(layout.panel ? 300 : 44) + 320}px))` : '44px'} minmax(0, 1fr) ${layout.panel ? 300 : 44}px` }}>
         <Tree
+          width={treeWidth}
+          onWidthChange={setTreeWidth}
           activeSourceId={selected.basis?.sourceId}
           sources={api.model.sources}
           docs={api.model.docs}
