@@ -159,7 +159,14 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
-  busyRef.current = busy;
+  const msgsRef = useRef(msgs);
+  const pending = useRef<string[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const mounted = useRef(true);
+  const updateMsgs = (update: (messages: Msg[]) => Msg[]) => {
+    msgsRef.current = update(msgsRef.current);
+    setMsgs(msgsRef.current);
+  };
   // коллега просит ИИ построить процесс: его черновик растёт и у нас (если мы сами не генерируем)
   useEffect(() => {
     let draft: ReturnType<typeof beginDraft> | null = null;
@@ -191,7 +198,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
   };
   useEffect(() => { if (collapseRequest) setOpen(false); }, [collapseRequest]);
 
-  useEffect(() => () => abort.current?.abort(), []);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; abort.current?.abort(); }; }, []);
   useEffect(() => saveMsgs(projectId, msgs), [projectId, msgs]);
   // длинное сообщение растит поле вверх, но не больше четырёх строк
   useLayoutEffect(() => {
@@ -205,13 +212,14 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
     log.current?.scrollTo({ top: log.current.scrollHeight });
   }, [msgs.length, open]);
 
-  const send = async (raw?: string) => {
-    const prompt = (raw ?? text).trim();
-    if (!prompt || busy) return;
-    const history = toTurns(msgs);
-    setMsgs((m) => [...m, mk('user', prompt)]);
-    setText('');
-    setOpen(true);
+  const takeMessages = () => {
+    const messages = pending.current.splice(0);
+    if (mounted.current) setPendingCount(0);
+    return messages;
+  };
+
+  const run = async (prompt: string, history: Turn[]) => {
+    busyRef.current = true;
     setBusy(true);
     const ctl = new AbortController();
     abort.current = ctl;
@@ -230,24 +238,55 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
           if (result.ok && (effect.tool === 'open_editor' || effect.tool === 'show_properties')) openedDialog = true;
           return result;
         } }),
-        onDelta: (text) => draft.push(text),
-        onRound: (round) => { if (round) { draft.end(); draft = beginDraft(label, onReveal); } },
+        onDelta: (text) => { if (!ctl.signal.aborted && mounted.current && !pending.current.length) draft.push(text); },
+        takeMessages,
+        onRound: () => { draft.end(); draft = beginDraft(label, onReveal); },
         onApplied: () => { applied = true; },
       });
       const refs = result.refs.procs.length || result.refs.docs.length || result.refs.updated.length ? result.refs : undefined;
-      setMsgs((m) => [...m, mk('assistant', result.reply, { refs, tools: result.observations.filter((o) => o.action.tool !== 'validation').map((o) => ({ ok: o.result.ok, summary: o.result.ok ? o.result.summary : o.result.error ?? o.result.summary })) })]);
+      ctl.signal.throwIfAborted();
+      if (!mounted.current) return;
+      updateMsgs((m) => [...m, mk('assistant', result.reply, { refs, tools: result.observations.filter((o) => o.action.tool !== 'validation').map((o) => ({ ok: o.result.ok, summary: o.result.ok ? o.result.summary : o.result.error ?? o.result.summary })) })]);
     } catch (err) {
-      setMsgs((m) => [...m, ctl.signal.aborted ? mk('assistant', applied ? 'Остановлено. Уже выполненные действия остаются на доске.' : 'Генерация отменена.', { tone: 'note' }) : mk('assistant', errText(err) + (applied ? ' Уже выполненные действия остаются на доске.' : ''), { tone: 'error' })]);
+      if (mounted.current) updateMsgs((m) => [...m, ctl.signal.aborted ? mk('assistant', applied ? 'Остановлено. Уже выполненные действия остаются на доске.' : 'Генерация отменена.', { tone: 'note' }) : mk('assistant', errText(err) + (applied ? ' Уже выполненные действия остаются на доске.' : ''), { tone: 'error' })]);
     }
-    draft.end();
-    abort.current = null;
-    setBusy(false);
-    if (!openedDialog) field.current?.focus();
+    finally {
+      draft.end();
+      abort.current = null;
+      busyRef.current = false;
+      if (mounted.current) {
+        const queued = takeMessages();
+        if (queued.length) {
+          // Сообщение после нажатия «Стоп» ждёт завершения отмены; исходная задача остаётся в истории.
+          const users = msgsRef.current.filter((m) => m.role === 'user');
+          const history = toTurns(msgsRef.current.filter((m) => m.id !== users[users.length - 1]?.id));
+          void run(queued[queued.length - 1], history);
+        } else {
+          setBusy(false);
+          if (!openedDialog) field.current?.focus();
+        }
+      }
+    }
+  };
+
+  const send = async (raw?: string) => {
+    const prompt = (raw ?? text).trim();
+    if (!prompt) return;
+    const history = toTurns(msgsRef.current);
+    updateMsgs((m) => [...m, mk('user', prompt)]);
+    setText('');
+    setOpen(true);
+    if (busyRef.current) {
+      pending.current.push(prompt);
+      setPendingCount(pending.current.length);
+      return;
+    }
+    void run(prompt, history);
   };
 
   const clear = () => {
-    if (busy) return;
-    setMsgs([]);
+    if (busyRef.current) return;
+    updateMsgs(() => []);
   };
 
   return (
@@ -282,6 +321,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
             {msgs.map((m) => (
               <Bubble key={m.id} m={m} onFocus={onFocusCard} />
             ))}
+            {pendingCount > 0 && <p className="ai-queued" role="status">{abort.current?.signal.aborted ? 'Запрос продолжится после остановки…' : 'Уточнение принято — учту перед следующим действием.'}</p>}
             {busy && <LiveBubble onCancel={() => abort.current?.abort()} />}
           </div>
         </>
@@ -308,7 +348,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
               void send();
             }
           }}
-          placeholder="Что сделать на доске?"
+          placeholder={busy ? 'Уточните задачу…' : 'Что сделать на доске?'}
           aria-label="Сообщение ИИ"
           maxLength={4000}
         />
@@ -319,7 +359,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
             </option>
           ))}
         </select>
-        <button type="submit" className="ai-send" disabled={busy || !text.trim()} title={busy ? 'ИИ отвечает…' : 'Отправить'} aria-label="Отправить">
+        <button type="submit" className="ai-send" disabled={!text.trim()} title={busy ? 'Отправить уточнение' : 'Отправить'} aria-label="Отправить">
           <Icon name="arrowUp" size={16} />
         </button>
       </form>

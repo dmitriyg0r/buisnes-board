@@ -103,6 +103,22 @@ export async function runAiToolTests(dom = false) {
     equal(n.read(api.model.models[0].source).diagram.nodes[0].label, 'Согласовать заказ');
     equal(result.reply, 'Функция переименована'); equal(round, 3);
   });
+  await test('Уточнение во время ответа заменяет старый план и сохраняет исходную задачу', async () => {
+    const { api } = memoryApi(emptyModel); let round = 0; const pending: string[] = [];
+    const result = await runCanvasAgent({ prompt: 'Сделай модель БД телеграм-бота стоматологии', model: '6.1-sol', history: [], projectId: 'test', api, signal: new AbortController().signal,
+      host: () => ({ snapshot: env, execute: async () => ({ ok: true, summary: 'OK' }) }), onDelta() {}, render: async () => {}, takeMessages: () => pending.splice(0),
+      generate: async (prompt, _model, _context, history) => {
+        round++;
+        if (round === 1) { pending.push('используй UML', 'добавь пациента'); return { reply: '', actions: [action('create_object', { kind: 'document', title: 'Устаревший план' }, 'stale')] } as GenResult; }
+        equal(prompt, 'добавь пациента');
+        assert(history.some(t => t.text.includes('стоматологии')) && history.some(t => t.text === 'используй UML'));
+        if (round === 2) return { reply: '', actions: [action('create_object', { kind: 'model', notation: 'uml-class', title: 'БД стоматологии' }, 'db')] } as GenResult;
+        return { reply: 'Создана UML-модель БД стоматологии' } as GenResult;
+      },
+    });
+    equal(api.model.docs.length, 0); equal(api.model.models.length, 1); equal(round, 3);
+    assert(result.reply.includes('стоматологии'));
+  });
   await test('Контракт: запрет неизвестных команд, лишних полей и некорректных координат', () => {
     assert(aiToolCatalog.length >= 20);
     for (const value of [[action('shell', {})], [action('read_canvas', { projectId: 'чужой' })], [action('set_view', { zoom: 99 })], [action('create_object', { kind: 'html', title: 'x' })], [action('set_properties', { targetType: 'card', id: 'html:h', values: JSON.parse('{"__proto__":"x"}') })]]) rejects(() => validateAiActions(value));

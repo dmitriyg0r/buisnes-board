@@ -15,6 +15,8 @@ interface Options {
   onDelta: (text: string) => void;
   onRound?: (round: number) => void;
   onApplied?: () => void;
+  /** Забрать уточнения пользователя на ближайшей границе шага. */
+  takeMessages?: () => string[];
   generate?: typeof streamGenerate;
   render?: () => Promise<void>;
 }
@@ -30,6 +32,16 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
   const refs: AgentResult['refs'] = { procs: [], docs: [], updated: [] };
   let aliases = new Map<string, string>();
   let lastError = '';
+  let prompt = options.prompt;
+  const conversation = [...options.history];
+  const takeMessages = () => {
+    const messages = options.takeMessages?.() ?? [];
+    if (!messages.length) return false;
+    conversation.push({ role: 'user', text: prompt });
+    for (const message of messages.slice(0, -1)) conversation.push({ role: 'user', text: message });
+    prompt = messages[messages.length - 1];
+    return true;
+  };
   const legacyDone = new Set<string>();
   const changedHtml = new Set<string>();
   const verifiedHtml = new Map<string, string>();
@@ -40,6 +52,7 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
 
   for (let round = 0; round < 6; round++) {
     signal.throwIfAborted();
+    if (takeMessages()) round = 0;
     options.onRound?.(round);
     const baseline = api.getModel();
     const history = observations.slice(-40);
@@ -48,8 +61,10 @@ export async function runCanvasAgent(options: Options): Promise<AgentResult> {
       entry.action = { ...entry.action, arguments: Object.fromEntries(Object.entries(entry.action.arguments).map(([key, value]) => [key, typeof value === 'string' && value.length > 1000 ? `[уже применённый текст: ${value.length} символов]` : value])) };
     }
     while (history.length > 1 && new TextEncoder().encode(JSON.stringify(history)).length > 450_000) history.shift();
-    const response = await generate(options.prompt, options.model, buildContext(baseline, options.host().snapshot()), options.history, (event) => { if (event.type === 'delta') options.onDelta(event.text); }, signal, options.projectId, history);
+    const response = await generate(prompt, options.model, buildContext(baseline, options.host().snapshot()), conversation, (event) => { if (event.type === 'delta') options.onDelta(event.text); }, signal, options.projectId, history);
     signal.throwIfAborted();
+    // Уточнение пришло во время ответа: старый план ещё не применялся, перечитываем задачу.
+    if (takeMessages()) { round = -1; continue; }
     const actions = response.actions ?? [];
     const legacyKey = JSON.stringify({ processes: response.processes, documents: response.documents, updates: response.updates });
     const hasLegacy = !!(response.processes?.length || response.documents?.length || response.updates?.length) && !legacyDone.has(legacyKey);
