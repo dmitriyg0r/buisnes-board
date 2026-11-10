@@ -2,3 +2,6 @@ node_modules
 dist
 .DS_Store
 .claude/settings.local.json
+
+# Конфигурация изолированного стенда совместного редактирования
+tests/model-collaboration-config.json

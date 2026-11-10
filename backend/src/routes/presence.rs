@@ -82,6 +82,8 @@ pub async fn stream(
 pub struct Cursor {
     x: Option<f64>,
     y: Option<f64>,
+    /// Модель, открытая в редакторе; x/y тогда заданы в координатах диаграммы.
+    editing: Option<String>,
     /// карточки, которые участник сейчас тащит: показываем их другим в реальном времени
     drag: Option<Vec<DragItem>>,
 }
@@ -108,19 +110,59 @@ pub async fn display_name(s: &AppState, id: Uuid) -> AppResult<String> {
 pub async fn cursor(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uuid>, Json(b): Json<Cursor>) -> AppResult<StatusCode> {
     ensure_project(&s.db, id, user.id).await?;
     let name = display_name(&s, user.id).await?;
+    let event = cursor_event(b, user.id, &name)?;
+    publish(&s, id, Ev::new(event, Some(user.id)));
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn cursor_event(b: Cursor, user: Uuid, name: &str) -> AppResult<Value> {
     let ok = |v: f64| v.is_finite() && v.abs() < 1e7;
     if let Some(items) = b.drag {
         if items.len() > 64 || items.iter().any(|i| i.id.is_empty() || i.id.len() > 200 || !ok(i.x) || !ok(i.y)) {
             return Err(AppError::BadRequest("некорректные данные перетаскивания".into()));
         }
-        publish(&s, id, Ev::new(json!({ "t": "drag", "u": user.id, "d": items }), Some(user.id)));
-        return Ok(StatusCode::NO_CONTENT);
+        return Ok(json!({ "t": "drag", "u": user, "d": items }));
+    }
+    if let Some(ref editing) = b.editing {
+        let key = editing.strip_prefix("model:").or_else(|| editing.strip_prefix("proc:"));
+        if editing.len() > 200 || key.is_none_or(str::is_empty) {
+            return Err(AppError::BadRequest("некорректная модель присутствия".into()));
+        }
     }
     let (x, y) = match (b.x, b.y) {
         (Some(x), Some(y)) if ok(x) && ok(y) => (Some(x), Some(y)),
         (None, None) => (None, None),
         _ => return Err(AppError::BadRequest("некорректные координаты".into())),
     };
-    publish(&s, id, Ev::new(json!({ "t": "cursor", "u": user.id, "n": name, "x": x, "y": y }), Some(user.id)));
-    Ok(StatusCode::NO_CONTENT)
+    // Старые клиенты знают только координаты доски: не показываем им курсор модели на доске.
+    let in_editor = b.editing.is_some();
+    Ok(json!({ "t": "cursor", "u": user, "n": name,
+        "x": if in_editor { None } else { x }, "y": if in_editor { None } else { y },
+        "mx": if in_editor { x } else { None }, "my": if in_editor { y } else { None }, "editing": b.editing }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scoped_cursor_keeps_editor_when_pointer_leaves() {
+        let user = Uuid::new_v4();
+        let event = cursor_event(serde_json::from_value(json!({"editing":"model:epc", "x":120.5,"y":-20})).unwrap(), user, "Коллега").unwrap();
+        assert_eq!(event["editing"], "model:epc");
+        assert_eq!(event["mx"], 120.5);
+        assert!(event["x"].is_null());
+        let hidden = cursor_event(serde_json::from_value(json!({"editing":"proc:bpmn", "x":null,"y":null})).unwrap(), user, "Коллега").unwrap();
+        assert_eq!(hidden["editing"], "proc:bpmn");
+        assert!(hidden["x"].is_null());
+        let board = cursor_event(serde_json::from_value(json!({"x":10,"y":20})).unwrap(), user, "Коллега").unwrap();
+        assert!(board["editing"].is_null());
+    }
+
+    #[test]
+    fn rejects_invalid_editor_and_cursor_coordinates() {
+        for value in [json!({"editing":"doc:1"}), json!({"editing":"model:"}), json!({"editing":"model:1", "x":10}), json!({"editing":"proc:1", "x":1e8,"y":0}), json!({"editing":format!("model:{}", "x".repeat(200))})] {
+            assert!(cursor_event(serde_json::from_value(value).unwrap(), Uuid::new_v4(), "Имя").is_err());
+        }
+    }
 }

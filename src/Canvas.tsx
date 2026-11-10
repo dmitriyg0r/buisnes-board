@@ -24,7 +24,8 @@ import { PropertiesDialog, type PropTarget } from './PropertiesDialog';
 import type { ModelApi } from './useModel';
 import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
 import { loadView, saveView, type CardSizes } from './viewState';
-import type { Presence } from './presence';
+import type { Peer, Presence } from './presence';
+import { initials } from './settings';
 
 /** карточки, которые коллега тащит прямо сейчас: их движение сглаживается */
 const LiveCtx = createContext<Set<string>>(new Set());
@@ -135,8 +136,10 @@ function DragCard({
   onEdit,
   onResizeStart,
   children,
+  editors = [],
 }: {
   id: string;
+  editors?: Peer[];
   pos: Pos;
   onMove: (id: string, p: Pos) => void;
   onGrab: (id: string, shift: boolean) => void;
@@ -218,6 +221,7 @@ function DragCard({
       }}
     >
       <span className="pin" />
+      {editors.length > 0 && <div className="card-editors" style={{ transform: `scale(${1 / k})` }}>{editors.map(peer => <span key={peer.id} role="img" aria-label={`${peer.name} редактирует модель`} title={`${peer.name} редактирует модель`} style={{ background: peer.color }}>{initials(peer.name)}</span>)}</div>}
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
         // Как в EPC: у прямоугольных карточек три точки, у шлюза одна.
@@ -1012,7 +1016,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
+  const linkProps = (id: string, linkLabel: string) => ({ editors: presence?.peers.filter(peer => peer.editing === id), linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFailure(null);
@@ -1559,7 +1563,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       <ZoomCtx.Provider value={cam.k}><LiveCtx.Provider value={liveIds}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
           <AiDraftLayer procPos={procPos} docPos={docPos} />
-          {presence?.peers.filter((p) => p.x !== null && p.y !== null).map((p) => (
+          {presence?.peers.filter((p) => !p.editing && p.x !== null && p.y !== null).map((p) => (
             <div key={p.id} className="peer-cursor" style={{ left: p.x!, top: p.y!, transform: `scale(${1 / cam.k})`, color: p.color }} aria-hidden="true">
               <svg width="18" height="20" viewBox="0 0 18 20"><path d="M1 1l6.5 17 2.4-7 7-2.4z" fill="currentColor" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round"/></svg>
               <span style={{ background: p.color }}>{p.name}</span>

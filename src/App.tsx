@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { blankXml } from './bpmn';
-import { emptyModel, NO_ISSUE, type Issue, type IssueStatus } from './data';
+import { blankXml, parseProcess } from './bpmn';
+import { emptyModel, NO_ISSUE, type DocLink, type Issue, type IssueStatus } from './data';
 import { reconcileSections, sectionTitles, starterMarkdown } from './markdown';
 import { autoIssues, coverage } from './coverage';
 import { Tree } from './Tree';
@@ -48,7 +48,7 @@ const syncHint: Record<SyncState, string> = {
   offline: 'Работаем локально, изменения отправятся при следующей попытке',
   conflict: 'Модель была изменена другим участником, правки объединены',
   revoked: 'Владелец закрыл вам доступ к проекту или удалил проект',
-  error: 'Сервер отклонил сохранение; локальные изменения не отправлены',
+  error: 'Не удалось сохранить или объединить изменения; локальная копия сохранена на устройстве',
 };
 
 export function App() {
@@ -212,6 +212,10 @@ function Workspace({
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
   const [editing, setEditing] = useState<{ type: 'process' | 'model' | 'doc' | 'html'; id: string } | null>(null);
+  useEffect(() => {
+    if (editing?.type === 'model' && !api.model.models.some(model => model.id === editing.id)) setEditing(null);
+    if (editing?.type === 'process' && !api.model.processes.some(process => process.id === editing.id)) setEditing(null);
+  }, [editing, api.model.models, api.model.processes]);
   // свёрнутые боковые панели запоминаются в браузере
   const [layout, setLayout] = useState<{ tree: boolean; panel: boolean }>(() => {
     try {
@@ -259,6 +263,28 @@ function Workspace({
   };
 
   const selectCanvasIssue = (id: string) => { setSelectedId(id); if (!layout.panel) toggleSide('panel'); };
+  const saveProcess = (id: string, title: string, xml: string, removeLinkIds: string[], restoreLinks: DocLink[] = []) => {
+    const current = api.getModel().processes.find(item => item.id === id);
+    if (!current) return false;
+    if (current.title === title && current.xml === xml && !removeLinkIds.length && !restoreLinks.length) return true;
+    const removed = new Set(removeLinkIds);
+    const nodes = new Set(parseProcess(xml).nodes.map(node => `${id}:${node.id}`));
+    api.apply(model => {
+      const sections = new Set(model.docs.flatMap(doc => doc.sections.map(section => section.id)));
+      const links = model.links.filter(link => !removed.has(link.id));
+      const restore = restoreLinks.filter(link => nodes.has(link.nodeId) && sections.has(link.sectionId) && !links.some(current => current.id === link.id));
+      return { ...model, processes: model.processes.map(item => item.id === id ? { ...item, title, xml } : item), links: [...links, ...restore] };
+    });
+    return true;
+  };
+  const saveIndependentModel = (id: string, title: string, source: string) => {
+    const current = api.getModel().models.find(item => item.id === id);
+    if (!current) return false;
+    if (current.title === title && current.source === source) return true;
+    api.apply(model => ({ ...model, models: model.models.map(item => item.id === id ? { ...item, title, source } : item) }));
+    return true;
+  };
+
   const transition = (id: string, status: IssueStatus, fields?: IssueFields) => {
     const issue = issues.find((i) => i.id === id);
     if (issue) store.update(issue, status, fields);
@@ -386,16 +412,11 @@ function Workspace({
             processId={editing.id}
             links={api.model.links}
             onClose={() => setEditing(null)}
-            onSave={(title, xml, removeLinkIds) => {
-              const pid = editing.id;
-              const removeIds = new Set(removeLinkIds);
-              api.apply((m) => {
-                return {
-                  ...m,
-                  processes: m.processes.map((p) => (p.id === pid ? { ...p, title, xml } : p)),
-                  links: m.links.filter((link) => !removeIds.has(link.id)),
-                };
-              });
+            presence={presence}
+            saveState={sync}
+            onChange={(title, xml, removed, restore) => saveProcess(editing.id, title, xml, removed, restore)}
+            onSave={(title, xml, removed) => {
+              saveProcess(editing.id, title, xml, removed);
               setEditing(null);
             }}
           />
@@ -403,9 +424,9 @@ function Workspace({
       )}
 
       {editing?.type === 'model' && api.model.models.find((m) => m.id === editing.id) && <Suspense fallback={<div className="boot">Загрузка редактора…</div>}>
-        <IndependentModelEditor key={editing.id} model={api.model.models.find((m) => m.id === editing.id)!} onClose={() => setEditing(null)} onSave={(title, source) => {
+        <IndependentModelEditor key={editing.id} model={api.model.models.find((m) => m.id === editing.id)!} presence={presence} saveState={sync} onChange={(title, source) => saveIndependentModel(editing.id, title, source)} onClose={() => setEditing(null)} onSave={(title, source) => {
           const id = editing.id;
-          api.apply((m) => ({ ...m, models: m.models.map((item) => item.id === id ? { ...item, title, source } : item) }));
+          saveIndependentModel(id, title, source);
           setEditing(null);
         }} />
       </Suspense>}
