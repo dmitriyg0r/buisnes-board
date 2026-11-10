@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import type { Doc, HtmlObject, IndependentModel, Process, Source } from './data';
 import { Icon } from './Icon';
+import { WorkspaceContextMenu } from './WorkspaceContextMenu';
 import { objectCatalog } from './objectCatalog';
-import { modelDefinitions } from './modeling/registry';
 
 interface Props {
   activeSourceId?: string;
@@ -11,7 +11,8 @@ interface Props {
   processes: Process[];
   models: IndependentModel[];
   onEditModel: (id: string) => void;
-  onDeleteModel: (id: string) => void;
+  onFindCard: (id: string) => void;
+  onDeleteCard: (id: string) => void;
   htmlObjects: HtmlObject[];
   onEditHtml: (id: string) => void;
   /** карточки, выделенные на полотне: их строки подсвечиваются */
@@ -34,8 +35,19 @@ function Group({ title, open, onToggle, children }: { title: string; open: boole
   );
 }
 
-export function Tree({ activeSourceId, sources, docs, processes, models, onEditModel, onDeleteModel, htmlObjects, onEditHtml, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
+export function Tree({ activeSourceId, sources, docs, processes, models, onEditModel, onFindCard, onDeleteCard, htmlObjects, onEditHtml, selectedCards, onAddMaterial, collapsed, onToggle }: Props) {
   const isSel = (id: string) => selectedCards.includes(id);
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number; trigger: HTMLButtonElement } | null>(null);
+  const closeMenu = () => {
+    menu?.trigger.focus({ preventScroll: true });
+    setMenu(null);
+  };
+  const modelMenu = (id: string, title: string) => <button type="button" className="icon-btn tree-model-menu" aria-label={`Действия с моделью: ${title}`} title="Действия с моделью" aria-haspopup="menu" aria-expanded={menu?.id === id} onClick={(event) => {
+    if (menu?.id === id) { closeMenu(); return; }
+    const rect = event.currentTarget.getBoundingClientRect();
+    setMenu({ id, x: rect.right, y: rect.bottom, trigger: event.currentTarget });
+  }}><span aria-hidden="true">⋯</span></button>;
+
   const [open, setOpen] = useState({ src: true, mod: true, proc: true, epc: true, uml: true, other: true, doc: true, html: true });
   const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
@@ -76,7 +88,8 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
           {processes.map((p) => (
             <div key={p.id} className={`tree-row${isSel(`proc:${p.id}`) ? ' sel' : ''}`}>
               <Icon name="model" />
-              <span>{p.title}</span>
+              <span className="tree-model-title">{p.title}</span>
+              {modelMenu(`proc:${p.id}`, p.title)}
             </div>
           ))}
         </Group>
@@ -87,10 +100,9 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
           return <Group key={group} title={title} open={open[group]} onToggle={() => toggle(group)}>
             {entries.length === 0 && <div className="tree-empty">Нет моделей {title}</div>}
             {entries.map((m) => <div key={m.id} className={`tree-row${isSel(`model:${m.id}`) ? ' sel' : ''}`}>
-              <button type="button" onClick={() => onEditModel(m.id)} aria-label={`Открыть модель: ${m.title}`} style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 0, border: 0, background: 'transparent', color: 'inherit', textAlign: 'left', cursor: 'pointer' }}>
-                <Icon name="model" /><span>{m.title}</span><small>{modelDefinitions.find((d) => d.id === m.notation)?.format ?? m.notation}</small>
-              </button>
-              <button type="button" className="icon-btn" aria-label={`Удалить модель: ${m.title}`} onClick={() => { if (window.confirm(`Удалить модель «${m.title}»?`)) onDeleteModel(m.id); }}><Icon name="trash" size={14} /></button>
+              <Icon name="model" />
+              <button type="button" className="tree-model-title tree-model-open" onClick={() => onEditModel(m.id)} aria-label={`Открыть модель: ${m.title}`}>{m.title}</button>
+              {modelMenu(`model:${m.id}`, m.title)}
             </div>)}
           </Group>;
         })}
@@ -115,6 +127,10 @@ export function Tree({ activeSourceId, sources, docs, processes, models, onEditM
         </div>)}
       </Group>
 
+      {menu && <WorkspaceContextMenu x={menu.x} y={menu.y} onClose={closeMenu} actions={[
+        { label: 'Найти на канвасе', run: () => onFindCard(menu.id) },
+        { label: 'Удалить', danger: true, run: () => onDeleteCard(menu.id) },
+      ]} />}
       <div className="grow" />
       <button type="button" className="add-material" onClick={onAddMaterial}>
         <Icon name="plus" size={15} stroke={2.2} />

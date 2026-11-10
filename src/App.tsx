@@ -206,6 +206,7 @@ function Workspace({
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   /** выделенные на полотне карточки: подсвечиваются и в дереве слева */
   const [selCards, setSelCards] = useState<string[]>([]);
+  const [cardRequest, setCardRequest] = useState<{ id: string; action: 'find' | 'delete' } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
   const [editing, setEditing] = useState<{ type: 'process' | 'model' | 'doc' | 'html'; id: string } | null>(null);
@@ -330,11 +331,11 @@ function Workspace({
           processes={api.model.processes}
           models={api.model.models}
           onEditModel={(id) => setEditing({ type: 'model', id })}
-          onDeleteModel={(id) => {
-            const cardId = `model:${id}`;
-            api.apply((m) => ({ ...m, models: m.models.filter((item) => item.id !== id), cardLinks: m.cardLinks.filter((link) => link.from !== cardId && link.to !== cardId) }));
-            setSelCards((selected) => selected.filter((item) => item !== cardId));
+          onFindCard={(id) => {
+            setSelCards([id]);
+            setCardRequest({ id, action: 'find' });
           }}
+          onDeleteCard={(id) => setCardRequest({ id, action: 'delete' })}
           htmlObjects={api.model.htmlObjects}
           onEditHtml={(id) => setEditing({ type: 'html', id })}
           selectedCards={selCards}
@@ -343,6 +344,7 @@ function Workspace({
           onToggle={() => toggleSide('tree')}
         />
         <Canvas issues={issues} issue={selected} onSelect={selectCanvasIssue} api={api} settings={settings} onModel={(aiModel) => patchSettings({ aiModel })} projectId={project.id}
+          cardRequest={cardRequest}
           selCards={selCards}
           onSelCards={setSelCards}
           onAddMaterial={() => setAddOpen(true)}

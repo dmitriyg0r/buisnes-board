@@ -54,6 +54,8 @@ interface Props {
   settings: Settings;
   onModel: (m: AiModel) => void;
   projectId: string;
+  /** Новая ссылка на запрос позволяет повторно выполнить команду для той же карточки. */
+  cardRequest?: { id: string; action: 'find' | 'delete' } | null;
   /** выделенные карточки (proc:…, doc:…, src:…, gw:…): состояние живёт выше, его показывает и дерево слева */
   selCards: string[];
   onSelCards: React.Dispatch<React.SetStateAction<string[]>>;
@@ -546,7 +548,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, onEditModel, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, cardRequest, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, onEditModel, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways, htmlObjects, models } = api.model;
   const pnodes = projectNodes(processes);
@@ -1260,15 +1262,15 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const k = Math.min(c.k, (size.w - 120) / (r.right - r.left), (size.h - 220) / (r.bottom - r.top));
     setCam({ k, x: size.w / 2 - ((r.left + r.right) / 2) * k, y: (size.h - 120) / 2 - ((r.top + r.bottom) / 2) * k });
   };
-  /** подвести камеру к карточке из чата */
+  /** Подвести камеру к карточке из чата или дерева проекта. */
   const draftBuilding = useDraftBuilding();
-  const focusCard = (id: string) => {
+  const focusCard = (id: string, fitCard = false) => {
     if (!cardIds.includes(id)) return;
     const p = posOf(id);
     const sz = cardSize(id);
     const c = camRef.current;
     const area = availableArea();
-    const k = clampK(Math.min(c.k, area.w / sz.w, area.h / sz.h));
+    const k = clampK(Math.min(fitCard ? 1 : c.k, area.w / sz.w, area.h / sz.h));
     setCam({ k, x: area.x + area.w / 2 - (p.x + sz.w / 2) * k, y: area.y + area.h / 2 - (p.y + sz.h / 2) * k });
   };
 
@@ -1317,6 +1319,18 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
   const removeCard = (id: string) => removeCards([id]);
 
+  useEffect(() => {
+    if (!cardRequest || !cardIds.includes(cardRequest.id)) return;
+    if (cardRequest.action === 'delete') removeCard(cardRequest.id);
+    else {
+      focusCard(cardRequest.id, true);
+      setSelLink(null);
+    }
+    // Запрос — отдельная команда: повторный клик по той же модели снова выполняет действие.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardRequest]);
+
+
   const menuItems = (): MenuItem[] => {
     if (!menu) return [];
     const t = menu.target;
@@ -1345,7 +1359,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const el = ev.target as HTMLElement;
-      if (pausedRef.current || propsOpen.current || el.closest('input,textarea,select,.dlg-backdrop,.bpmn-editor')) return;
+      if (ev.defaultPrevented || pausedRef.current || propsOpen.current || el.closest('input,textarea,select,.dlg-backdrop,.bpmn-editor,[role=menu]')) return;
       if (ev.code === 'Space' && !el.closest('button')) {
         ev.preventDefault();
         setSpace(true);
