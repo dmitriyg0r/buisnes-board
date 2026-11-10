@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { acceptModelDrag, type ModelDragEvent, type ModelDragFrame } from './modeling/liveDrag';
 
 export interface Peer {
   id: string;
@@ -23,6 +24,9 @@ export interface Presence {
   send: (x: number | null, y: number | null) => void;
   /** Сохранить признак открытого редактора даже при уходе курсора с диаграммы. */
   sendEditor?: (editing: string | null, x: number | null, y: number | null) => void;
+  /** Живой предпросмотр жеста внутри модели, отдельно от сохранения документа. */
+  sendModelDrag?: (frame: ModelDragFrame) => void;
+  onModelDrag?: (fn: (frame: ModelDragEvent) => void) => () => void;
   /** сообщить положение карточек, которые тащим прямо сейчас */
   sendDrag: (items: DragItem[]) => void;
   /** подписка на чужие перетаскивания; возвращает отписку */
@@ -58,6 +62,42 @@ export function usePresence(projectId: string): Presence {
   const dragPending = useRef<Record<string, DragItem>>({});
   const dragSent = useRef(0);
   const dragTimer = useRef<ReturnType<typeof setTimeout>>();
+  const [modelSession] = useState(() => crypto.randomUUID());
+  const modelSeq = useRef(0);
+  const modelVersions = useRef(new Map<string, number>());
+  const modelListeners = useRef(new Set<(frame: ModelDragEvent) => void>());
+  const modelPending = useRef<ModelDragFrame | null>(null);
+  const modelActive = useRef<ModelDragFrame | null>(null);
+  const modelTimer = useRef<ReturnType<typeof setTimeout>>();
+  const modelSent = useRef(0);
+
+  const postModelDrag = useCallback((frame: ModelDragFrame) => {
+    modelSent.current = Date.now();
+    void fetch(`/api/projects/${encodeURIComponent(projectId)}/presence`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, keepalive: frame.phase !== 'move',
+      body: JSON.stringify({ model_drag: { ...frame, session: modelSession, seq: ++modelSeq.current } }),
+    }).catch(() => undefined);
+  }, [projectId, modelSession]);
+  const sendModelDrag = useCallback((frame: ModelDragFrame) => {
+    modelActive.current = frame.phase === 'move' ? frame : null;
+    const wait = DRAG_GAP_MS - (Date.now() - modelSent.current);
+    if (frame.phase !== 'move' || wait <= 0) {
+      clearTimeout(modelTimer.current); modelTimer.current = undefined; modelPending.current = null;
+      postModelDrag(frame);
+    } else {
+      modelPending.current = frame;
+      if (!modelTimer.current) modelTimer.current = setTimeout(() => {
+        modelTimer.current = undefined;
+        const pending = modelPending.current; modelPending.current = null;
+        if (pending) postModelDrag(pending);
+      }, wait);
+    }
+  }, [postModelDrag]);
+  const onModelDrag = useCallback((fn: (frame: ModelDragEvent) => void) => {
+    modelListeners.current.add(fn);
+    return () => { modelListeners.current.delete(fn); };
+  }, []);
+
 
   const flushDrag = useCallback(() => {
     dragTimer.current = undefined;
@@ -65,10 +105,11 @@ export function usePresence(projectId: string): Presence {
     dragPending.current = {};
     if (!items.length) return;
     dragSent.current = Date.now();
-    void fetch(`/api/projects/${encodeURIComponent(projectId)}/presence`, {
+    // Сервер принимает до 64 карточек в одном кадре, в том числе при групповом переносе.
+    for (let offset = 0; offset < items.length; offset += 64) void fetch(`/api/projects/${encodeURIComponent(projectId)}/presence`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ drag: items }),
+      body: JSON.stringify({ drag: items.slice(offset, offset + 64) }),
     }).catch(() => undefined);
   }, [projectId]);
 
@@ -145,9 +186,13 @@ export function usePresence(projectId: string): Presence {
     const connect = () => {
       es = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/events`);
       es.onmessage = (m) => {
-        let ev: { t: string; u?: string; n?: string; x?: number | null; y?: number | null; mx?: number | null; my?: number | null; editing?: string | null; d?: DragItem[] | string; k?: string };
+        let ev: { t: string; u?: string; n?: string; x?: number | null; y?: number | null; mx?: number | null; my?: number | null; editing?: string | null; d?: DragItem[] | string; model_drag?: Omit<ModelDragEvent, 'user'>; k?: string };
         try { ev = JSON.parse(m.data); } catch { return; }
-        if (ev.t === 'drag' && Array.isArray(ev.d)) dragListeners.current.forEach((fn) => fn(ev.d as DragItem[]));
+        if (ev.t === 'model_drag' && ev.u && ev.model_drag) {
+          const frame = { ...ev.model_drag, user: ev.u };
+          if (acceptModelDrag(modelVersions.current, frame)) modelListeners.current.forEach(fn => fn(frame));
+        }
+        else if (ev.t === 'drag' && Array.isArray(ev.d)) dragListeners.current.forEach((fn) => fn(ev.d as DragItem[]));
         else if (ev.t === 'ai' && ev.u && (ev.k === 'start' || ev.k === 'delta' || ev.k === 'end')) {
           const e: AiEvent = { k: ev.k, user: ev.u, name: ev.n ?? 'Коллега', text: typeof ev.d === 'string' ? ev.d : '' };
           aiListeners.current.forEach((fn) => fn(e));
@@ -173,12 +218,18 @@ export function usePresence(projectId: string): Presence {
     };
     connect();
 
-    const beat = setInterval(() => post(last.current.x, last.current.y), HEARTBEAT_MS);
+    const beat = setInterval(() => {
+      post(last.current.x, last.current.y);
+      if (modelActive.current) sendModelDrag(modelActive.current);
+    }, HEARTBEAT_MS);
     const prune = setInterval(() => {
       const now = Date.now();
       setPeers((p) => (Object.values(p).some((x) => now - x.seen > STALE_MS) ? Object.fromEntries(Object.entries(p).filter(([, x]) => now - x.seen <= STALE_MS)) : p));
     }, 3000);
-    const leave = () => post(null, null, null);
+    const leave = () => {
+      if (modelActive.current) sendModelDrag({ ...modelActive.current, phase: 'cancel', changes: [] });
+      post(null, null, null);
+    };
     window.addEventListener('pagehide', leave);
     return () => {
       dead = true;
@@ -186,12 +237,14 @@ export function usePresence(projectId: string): Presence {
       clearTimeout(retry);
       clearTimeout(trailing.current);
       trailing.current = undefined;
+      clearTimeout(dragTimer.current); dragTimer.current = undefined; dragPending.current = {};
       clearInterval(beat);
       clearInterval(prune);
       window.removeEventListener('pagehide', leave);
-      post(null, null, null);
+      leave();
+      clearTimeout(modelTimer.current); modelTimer.current = undefined; modelPending.current = null;
     };
-  }, [projectId, post]);
+  }, [projectId, post, sendModelDrag]);
 
-  return { peers: Object.values(peers), send, sendEditor, sendDrag, onDrag, onAi };
+  return { peers: Object.values(peers), send, sendEditor, sendModelDrag, onModelDrag, sendDrag, onDrag, onAi };
 }

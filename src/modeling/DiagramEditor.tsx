@@ -10,6 +10,7 @@ import { moveSelectedNodes, nodesInSelection, selectionBounds } from './diagramS
 import { DIAGRAM_GRID_STEP, snapDiagramPoint } from './diagramGrid';
 import { alignDiagramBox, type AlignmentGuide } from './diagramAlignment';
 import { mergeDiagramSource } from './mergeSource';
+import { MODEL_DRAG_TTL, modelDragMatches, previewModelDrag, type ModelDragChange, type ModelDragEvent } from './liveDrag';
 import type { Presence } from '../presence';
 import type { SyncState } from '../sync';
 import type { Diagram, DiagramEdge, DiagramNode, DiagramNotation, DiagramPoint, DiagramSymbol } from './types';
@@ -36,7 +37,7 @@ function markerAtEnd(appearance: ConnectionAppearance): string | undefined {
 }
 type EdgeDrag = { edge: DiagramEdge; pointer: number; start: DiagramPoint; kind: 'point' | 'segment'; index: number; element: SVGElement; points: DiagramPoint[]; from: string; to: string; valid: boolean; moved: boolean };
 type ResizeCorner = 'nw' | 'ne' | 'sw' | 'se';
-type Drag = { kind?: 'region' | 'resize' | 'label-resize'; width?: number; height?: number; corner?: ResizeCorner; square?: boolean; ids?: string[]; id: string; pointer: number; start: DiagramPoint; original: DiagramPoint; current: DiagramPoint; element: SVGGElement; moved: boolean; guides?: AlignmentGuide[] };
+type Drag = { gesture?: string; kind?: 'region' | 'resize' | 'label-resize'; width?: number; height?: number; corner?: ResizeCorner; square?: boolean; ids?: string[]; id: string; pointer: number; start: DiagramPoint; original: DiagramPoint; current: DiagramPoint; element: SVGGElement; moved: boolean; guides?: AlignmentGuide[] };
 type Marquee = { pointer: number; start: DiagramPoint; current: DiagramPoint; client: DiagramPoint; moved: boolean; additive: boolean; previous: string[] };
 
 function resized(item: Drag) {
@@ -288,6 +289,18 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   const [editing, setEditing] = useState<{ id: string; value: string; x: number; y: number; width: number; height: number; multiline: boolean } | null>(null);
   const editingRef = useRef(editing); editingRef.current = editing;
   const [drag, setDrag] = useState<Drag | null>(null);
+  const [remoteDrags, setRemoteDrags] = useState<Record<string, { frame: ModelDragEvent; seen: number }>>({});
+  useEffect(() => presence?.onModelDrag?.(frame => {
+    if (frame.model !== cardId) return;
+    const key = `${frame.user}:${frame.session}`;
+    setRemoteDrags(previous => {
+      const next = { ...previous };
+      if (frame.phase === 'cancel') delete next[key];
+      else next[key] = { frame, seen: Date.now() };
+      return next;
+    });
+  }), [cardId, presence?.onModelDrag]);
+
   const [edgeDrag, setEdgeDrag] = useState<EdgeDrag | null>(null);
   const edgeDragRef = useRef<EdgeDrag | null>(null);
   const dragRef = useRef<Drag | null>(null);
@@ -340,6 +353,29 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       return true;
     } catch (error) { setFailure(error instanceof Error ? error.message : 'Не удалось изменить диаграмму.'); return false; }
   };
+  useEffect(() => {
+    const prune = () => setRemoteDrags(previous => {
+      const entries = Object.entries(previous).filter(([, { frame, seen }]) => Date.now() - seen < MODEL_DRAG_TTL && !(frame.phase === 'end' && modelDragMatches(parsed.diagram, frame.changes)));
+      return entries.length === Object.keys(previous).length ? previous : Object.fromEntries(entries);
+    });
+    prune();
+    const timer = setInterval(prune, 1000);
+    return () => clearInterval(timer);
+  }, [parsed.diagram]);
+  const dragChanges = (item: Drag): ModelDragChange[] => {
+    if (item.kind === 'resize' || item.kind === 'label-resize') return [{ id: item.id, kind: item.kind === 'resize' ? 'resize' : 'label', ...resized(item) }];
+    if (item.kind === 'region') return [{ id: item.id, kind: 'region', ...item.current }];
+    const ids = new Set(item.ids ?? [item.id]);
+    return parsed.diagram.nodes.filter(node => ids.has(node.id)).map(node => ({ id: node.id, kind: 'node', x: node.x + item.current.x - item.original.x, y: node.y + item.current.y - item.original.y }));
+  };
+  const broadcastDrag = (item: Drag, phase: 'move' | 'end' | 'cancel') => {
+    if (!cardId || !item.gesture || !item.moved) return;
+    const changes = phase === 'cancel' ? [] : dragChanges(item);
+    try {
+      if (phase !== 'cancel') previewModelDrag(notation, source, changes);
+      presence?.sendModelDrag?.({ model: cardId, gesture: item.gesture, phase, changes });
+    } catch { /* Недопустимый жест не показываем коллегам. */ }
+  };
   const cancelGesture = () => {
     const seq = sequenceDrag.current; sequenceDrag.current = null; setSequencePreview(null); setSequenceStart(null);
     if (seq?.element.hasPointerCapture(seq.pointer)) seq.element.releasePointerCapture(seq.pointer);
@@ -350,6 +386,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     const activeEdge = edgeDragRef.current; edgeDragRef.current = null; setEdgeDrag(null);
     if (activeEdge?.element.hasPointerCapture(activeEdge.pointer)) activeEdge.element.releasePointerCapture(activeEdge.pointer);
     const active = dragRef.current;
+    if (active) broadcastDrag(active, 'cancel');
     const pan = panRef.current;
     dragRef.current = null; setDrag(null); panRef.current = null;
     if (active?.element.hasPointerCapture(active.pointer)) active.element.releasePointerCapture(active.pointer);
@@ -408,8 +445,12 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   useEffect(() => {
     if (!cardId || !presence?.sendEditor) return;
     presence.sendEditor(cardId, null, null);
-    return () => presence.sendEditor?.(null, null, null);
-  }, [cardId, presence?.sendEditor]);
+    return () => {
+      const active = dragRef.current;
+      if (active?.gesture && cardId) presence.sendModelDrag?.({ model: cardId, gesture: active.gesture, phase: 'cancel', changes: [] });
+      presence.sendEditor?.(null, null, null);
+    };
+  }, [cardId, presence?.sendEditor, presence?.sendModelDrag]);
 
   const connectionTarget = (at: DiagramPoint, from: string) => {
     const scale = Math.abs(svg.current?.getScreenCTM()?.a || 1);
@@ -553,7 +594,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     const ids = groupSelected.includes(node.id) ? groupSelected : undefined;
     if (!ids) setSelected(node.id);
     if (locked) return;
-    const item: Drag = { id: node.id, ids, pointer: event.pointerId, start: point(event.clientX, event.clientY), original: { x: node.x, y: node.y }, current: { x: node.x, y: node.y }, element: event.currentTarget, moved: false };
+    const item: Drag = { gesture: crypto.randomUUID(), id: node.id, ids, pointer: event.pointerId, start: point(event.clientX, event.clientY), original: { x: node.x, y: node.y }, current: { x: node.x, y: node.y }, element: event.currentTarget, moved: false };
     dragRef.current = item; setDrag(item); event.currentTarget.setPointerCapture(event.pointerId);
   };
   const moveGroupWithKeyboard = (event: React.KeyboardEvent<SVGGElement>, id: string) => {
@@ -584,18 +625,17 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     }
     const next = { ...item, moved, current, guides };
     dragRef.current = next; setDrag(next);
+    broadcastDrag(next, 'move');
   };
   const finishNode = (event: React.PointerEvent<SVGElement>, cancel = false) => {
     const item = dragRef.current; if (!item || item.pointer !== event.pointerId) return;
     dragRef.current = null; setDrag(null);
     if (item.element.hasPointerCapture(item.pointer)) item.element.releasePointerCapture(item.pointer);
-    if (!cancel && item.moved) {
-      if (item.kind === 'region' && notation.moveRegion) apply((value) => notation.moveRegion!(value, item.id, item.current));
-      else if (item.kind === 'resize' && notation.resizeNode) { const size = resized(item); apply((value) => { const next = notation.resizeNode!(value, item.id, size.width, size.height); return size.x === item.original.x && size.y === item.original.y ? next : notation.moveNode(next, item.id, { x: size.x, y: size.y }); }); }
-      else if (item.kind === 'label-resize' && notation.setLabelBounds) { const size = resized(item); apply((value) => notation.setLabelBounds!(value, item.id, size)); }
-      else if (!item.kind) apply((value) => item.ids ? moveSelectedNodes(notation, value, item.ids, { x: item.current.x - item.original.x, y: item.current.y - item.original.y }) : notation.moveNode(value, item.id, item.current));
-    }
+    let accepted = false;
+    if (!cancel && item.moved) accepted = apply(value => previewModelDrag(notation, value, dragChanges(item)));
+    broadcastDrag(item, accepted ? 'end' : 'cancel');
   };
+
   const beginEdgeDrag = (event: React.PointerEvent<SVGElement>, edge: DiagramEdge, kind: EdgeDrag['kind'], index: number) => {
     event.stopPropagation(); if (locked || event.button !== 0) return;
     setSelected(edge.id); const item: EdgeDrag = { edge, pointer: event.pointerId, start: point(event.clientX, event.clientY), kind, index, element: event.currentTarget, points: edge.points.map((p) => ({ ...p })), from: edge.from, to: edge.to, valid: true, moved: false };
@@ -664,16 +704,23 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const liveConnectionTarget = connectFrom && cursor ? connectionTarget(cursor, connectFrom) : undefined;
-  let previewDiagram = parsed.diagram;
-  let sequenceSource = sequencePreview ?? source;
+  let previewSource = source;
+  const ownIds = new Set(drag?.moved ? drag.ids ?? [drag.id] : []);
+  for (const { frame } of Object.values(remoteDrags)) {
+    if (frame.model !== cardId) continue;
+    const changes = frame.changes.filter(change => !ownIds.has(change.id));
+    try { previewSource = previewModelDrag(notation, previewSource, changes); } catch { /* Удалённые элементы не восстанавливаем предпросмотром. */ }
+  }
+  let previewDiagram = previewSource === source ? parsed.diagram : notation.read(previewSource).diagram;
+  let sequenceSource = sequencePreview ?? previewSource;
   let previewResize = false;
   if (drag?.moved && (!drag.kind || drag.kind === 'region')) {
-    try { const previewSource = drag.kind === 'region' && notation.moveRegion ? notation.moveRegion(source, drag.id, drag.current) : drag.ids ? moveSelectedNodes(notation, source, drag.ids, { x: drag.current.x - drag.original.x, y: drag.current.y - drag.original.y }) : notation.moveNode(source, drag.id, drag.current); previewDiagram = notation.read(previewSource).diagram; if (sequence) sequenceSource = previewSource; } catch { /* Недопустимое положение не применяется. */ }
+    try { const ownSource = drag.kind === 'region' && notation.moveRegion ? notation.moveRegion(previewSource, drag.id, drag.current) : drag.ids ? moveSelectedNodes(notation, previewSource, drag.ids, { x: drag.current.x - drag.original.x, y: drag.current.y - drag.original.y }) : notation.moveNode(previewSource, drag.id, drag.current); previewDiagram = notation.read(ownSource).diagram; if (sequence) sequenceSource = ownSource; } catch { /* Недопустимое положение не применяется. */ }
   }
   if (drag?.moved && drag.kind === 'resize' && notation.resizeNode) {
     try {
       const size = resized(drag);
-      let xml = notation.resizeNode(source, drag.id, size.width, size.height);
+      let xml = notation.resizeNode(previewSource, drag.id, size.width, size.height);
       if (size.x !== drag.original.x || size.y !== drag.original.y) xml = notation.moveNode(xml, drag.id, { x: size.x, y: size.y });
       previewDiagram = notation.read(xml).diagram; previewResize = true;
     } catch { /* Недопустимое положение не применяется. */ }
@@ -703,7 +750,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   };
   const startSpecialDrag = (event: React.PointerEvent<SVGGElement>, id: string, x: number, y: number, kind: 'region' | 'resize' | 'label-resize', width?: number, height?: number, corner?: ResizeCorner, square?: boolean) => {
     event.stopPropagation(); if (locked || event.button !== 0 || tool !== 'select') return;
-    setSelected(id); const item: Drag = { id, kind, width, height, corner, square, pointer: event.pointerId, start: point(event.clientX, event.clientY), original: { x, y }, current: { x, y }, element: event.currentTarget, moved: false };
+    setSelected(id); const item: Drag = { gesture: crypto.randomUUID(), id, kind, width, height, corner, square, pointer: event.pointerId, start: point(event.clientX, event.clientY), original: { x, y }, current: { x, y }, element: event.currentTarget, moved: false };
     dragRef.current = item; setDrag(item); event.currentTarget.setPointerCapture(event.pointerId);
   };
   const resizeHandles = (node: DiagramNode, bounds: { x: number; y: number; width: number; height: number }, kind: 'resize' | 'label-resize', square = false) => {

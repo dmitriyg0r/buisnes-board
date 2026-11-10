@@ -70,6 +70,18 @@ for payload in [{'editing': 'model:epc', 'x': 120.5, 'y': 210}, {'editing': 'mod
     assert request(owner, 'POST', path + '/presence', payload)[0] == 204
     event = received.get(timeout=5)
     assert isinstance(event, dict) and event['t'] == 'cursor' and event['editing'] == payload['editing'] and event['mx' if payload['editing'] else 'x'] == payload['x'] and event['n'] == 'Анна', event
+# Живые кадры передаются по SSE, не меняя версию/содержимое модели.
+_, before_drag = request(owner, 'GET', path + '/model')
+for seq, phase in enumerate(['move', 'move', 'end', 'cancel'], 1):
+    frame = {'model': 'model:epc', 'gesture': 'test', 'session': 'http', 'seq': seq, 'phase': phase,
+             'changes': [] if phase == 'cancel' else [{'id': 'node', 'kind': 'node', 'x': seq * 20, 'y': 100}]}
+    assert request(owner, 'POST', path + '/presence', {'model_drag': frame})[0] == 204
+    event = received.get(timeout=5)
+    assert event['t'] == 'model_drag' and event['model_drag'] == frame, event
+assert request(owner, 'GET', path + '/model')[1] == before_drag
+assert request(outsider, 'POST', path + '/presence', {'model_drag': frame})[0] == 404
+assert request(owner, 'POST', path + '/presence', {'drag': [{'id': 'model:epc', 'x': 100, 'y': 200}]})[0] == 204
+assert received.get(timeout=5)['t'] == 'drag'
 status, original = request(owner, 'GET', path + '/model')
 assert status == 200
 barrier = threading.Barrier(2)
