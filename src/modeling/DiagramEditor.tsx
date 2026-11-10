@@ -9,6 +9,9 @@ import { snapRouteSegmentDelta } from './diagramRouteSnapping';
 import { moveSelectedNodes, nodesInSelection, selectionBounds } from './diagramSelection';
 import { DIAGRAM_GRID_STEP, snapDiagramPoint } from './diagramGrid';
 import { alignDiagramBox, type AlignmentGuide } from './diagramAlignment';
+import { mergeDiagramSource } from './mergeSource';
+import type { Presence } from '../presence';
+import type { SyncState } from '../sync';
 import type { Diagram, DiagramEdge, DiagramNode, DiagramNotation, DiagramPoint, DiagramSymbol } from './types';
 
 interface Props {
@@ -17,6 +20,9 @@ interface Props {
   source: string;
   onSave: (title: string, source: string, imported: boolean) => void;
   onClose: () => void;
+  live?: { onChange: (title: string, source: string, imported: boolean) => boolean; state: SyncState };
+  presence?: Presence;
+  cardId?: string;
 }
 type View = { x: number; y: number; width: number; height: number };
 type ConnectionAppearance = { lineStyle?: 'solid' | 'dotted' | 'dashed'; startMarker?: 'circle' | 'diamond' | 'diamond-filled'; arrowStart?: boolean; arrowEnd?: boolean; arrowStyle?: 'open' | 'filled' | 'triangle' };
@@ -242,7 +248,7 @@ function NodeShapeContent({ node, symbol, selected, detail }: { node: DiagramNod
   </>;
 }
 
-export function DiagramEditor({ notation, title, source: original, onSave, onClose }: Props) {
+export function DiagramEditor({ notation, title, source: original, onSave, onClose, live, presence, cardId }: Props) {
   const gridId = useId();
   const sequence = Boolean(notation.timeline);
   const [sequenceStart, setSequenceStart] = useState<{ id: string; y: number } | null>(null);
@@ -290,13 +296,28 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   const history = useRef<{ past: { source: string; imported: boolean }[]; future: { source: string; imported: boolean }[] }>({ past: [], future: [] });
   const svg = useRef<SVGSVGElement>(null);
   const file = useRef<HTMLInputElement>(null);
+  const baseline = useRef({ source: original, title });
+  const liveRef = useRef(live); liveRef.current = live;
+  const published = useRef(new Set<string>());
+  const publish = (nextTitle: string, nextSource: string, nextImported: boolean) => {
+    const key = JSON.stringify([nextTitle, nextSource]);
+    published.current.add(key);
+    const accepted = liveRef.current?.onChange(nextTitle, nextSource, nextImported) ?? false;
+    if (!accepted) published.current.delete(key);
+    return accepted;
+  };
+  const draft = useRef({ source, name, imported }); draft.current = { source, name, imported };
+  const [liveFailure, setLiveFailure] = useState<string | null>(null);
+  const liveFailureRef = useRef(liveFailure); liveFailureRef.current = liveFailure;
+
   const parsed = useMemo<{ diagram: Diagram; readOnlyReason?: string; error?: string }>(() => {
     try { return notation.read(source); } catch (error) { return { diagram: { nodes: [], edges: [] } as Diagram, error: error instanceof Error ? error.message : 'Не удалось открыть модель.' }; }
   }, [source, notation]);
   const selectedIds = groupSelected.length ? groupSelected : selected && parsed.diagram.nodes.some(node => node.id === selected) ? [selected] : [];
   const [view, setView] = useState<View>(() => { try { return initialView(notation.read(original).diagram); } catch { return initialView({ nodes: [], edges: [] }); } });
   const locked = Boolean(parsed.error || parsed.readOnlyReason);
-  const dirty = source !== original || name !== title;
+  const canPublish = useRef(!locked); canPublish.current = !locked;
+  const dirty = source !== original || (live ? name.trim() : name) !== title;
   const selectedNode = parsed.diagram.nodes.find((node) => node.id === selected);
   const selectedSymbol = notation.symbols.find((symbol) => symbol.type === selectedNode?.type);
   const selectedLabelBounds = selectedNode ? nodeLabelBounds(selectedNode, selectedSymbol) : undefined;
@@ -342,6 +363,54 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     const p = element.createSVGPoint(); p.x = clientX; p.y = clientY; const out = p.matrixTransform(matrix.inverse());
     return { x: out.x, y: out.y };
   };
+
+  useLayoutEffect(() => {
+    if (!liveRef.current) return;
+    const before = baseline.current;
+    if (before.source === original && before.title === title) return;
+    try {
+      const own = published.current.delete(JSON.stringify([title, original])) || (source === original && name.trim() === title);
+      if (imported && original !== before.source && !own) throw new Error('Модель изменилась у коллеги во время импорта. Экспортируйте свою копию перед закрытием.');
+      const merged = mergeDiagramSource(before.source, source, original, notation.id);
+      const rebase = (item: { source: string; imported: boolean }) => ({ ...item, source: mergeDiagramSource(before.source, item.source, original, notation.id) });
+      if (!own) {
+        const compatible = (items: { source: string; imported: boolean }[]) => items.flatMap(item => {
+          try { return [rebase(item)]; }
+          catch { return []; } // Шаги, относящиеся к уже удалённым коллегой элементам, больше неприменимы.
+        });
+        history.current = { past: compatible(history.current.past), future: compatible(history.current.future) };
+      }
+      baseline.current = { source: original, title };
+      setSource(merged);
+      if (name === before.title) setName(title);
+      if (source === original) setImported(false);
+      setLiveFailure(null);
+    } catch (error) {
+      setLiveFailure(error instanceof Error ? error.message : 'Не удалось объединить изменения коллеги. Экспортируйте свою копию модели.');
+    }
+    // Входящая версия объединяется с текущим локальным черновиком только при изменении версии модели.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [original, title]);
+
+  useEffect(() => {
+    if (!liveRef.current || !dirty || locked || liveFailure) return;
+    const timer = setTimeout(() => publish(name.trim() || title, source, imported), 300);
+    return () => clearTimeout(timer);
+  }, [source, name, imported, original, title, dirty, locked, liveFailure]);
+
+  useEffect(() => () => {
+    const value = draft.current, base = baseline.current;
+    if (liveRef.current && canPublish.current && !liveFailureRef.current && (value.source !== base.source || value.name !== base.title)) {
+      publish(value.name.trim() || base.title, value.source, value.imported);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!cardId || !presence?.sendEditor) return;
+    presence.sendEditor(cardId, null, null);
+    return () => presence.sendEditor?.(null, null, null);
+  }, [cardId, presence?.sendEditor]);
+
   const connectionTarget = (at: DiagramPoint, from: string) => {
     const scale = Math.abs(svg.current?.getScreenCTM()?.a || 1);
     const nodes = parsed.diagram.nodes.filter((node) => node.id !== from).map((node) => {
@@ -391,7 +460,15 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     const ids = groupSelected.length ? groupSelected : selected ? [selected] : [];
     if (ids.length && apply((value) => ids.reduce((xml, id) => notation.remove(xml, id), value))) { setSelected(null); setConnectFrom(null); }
   };
-  const close = () => { if (dirty && !confirmClose) setConfirmClose(true); else onClose(); };
+  const flush = () => {
+    if (!liveRef.current || !dirty) return true;
+    if (locked || liveFailure) return false;
+    return publish(name.trim() || title, source, imported);
+  };
+  const close = () => {
+    if (liveRef.current && flush()) { onClose(); return; }
+    if (dirty && !confirmClose) setConfirmClose(true); else onClose();
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -658,12 +735,14 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
       <span className="dlg-icon"><Icon name="model" size={18} /></span>
       <input className="bpmn-title" value={name} aria-label="Название модели" disabled={locked} onChange={(event) => setName(event.target.value)} />
       <span className="diagram-notation">{notation.title}</span><span className="diagram-experimental" title="Редактор находится в разработке">Ранняя версия</span><div className="grow" />
+      <div className="peer-avatars">{presence?.peers.filter(peer => peer.editing === cardId).map(peer => <span key={peer.id} className="peer-avatar" title={`${peer.name} редактирует модель`} style={{ background: peer.color }}>{peer.name.split(/\s+/).filter(Boolean).slice(0, 2).map(part => part[0]).join('')}</span>)}</div>
       <input ref={file} type="file" accept={notation.fileAccept} hidden onChange={(event) => { setPendingImport(event.target.files?.[0] ?? null); event.target.value = ''; }} />
       <button type="button" className="btn" onClick={() => file.current?.click()}>Импорт</button>
       <button type="button" className="btn" onClick={exportFile}>Экспорт</button>
-      {confirmClose ? <><span className="bpmn-warn">Есть несохранённые изменения</span><button type="button" className="btn btn-danger" onClick={onClose}>Закрыть без сохранения</button><button type="button" className="btn" onClick={() => setConfirmClose(false)}>Продолжить правку</button></> : <><button type="button" className="btn" onClick={close}>Закрыть</button><button type="button" className="btn btn-dark" disabled={locked || !dirty} onClick={() => onSave(name.trim() || 'Модель', source, imported)}>Сохранить</button></>}
+      {live && <span className="diagram-save-state" role="status">{liveFailure || live.state === 'error' ? 'Ошибка сохранения' : live.state === 'offline' ? 'Нет связи · сохранено на устройстве' : live.state === 'revoked' ? 'Доступ закрыт' : dirty || live.state === 'saving' || live.state === 'connecting' ? 'Сохраняется…' : 'Сохранено'}</span>}
+      {confirmClose ? <><span className="bpmn-warn">Есть несохранённые изменения</span><button type="button" className="btn btn-danger" onClick={onClose}>Закрыть без сохранения</button><button type="button" className="btn" onClick={() => setConfirmClose(false)}>Продолжить правку</button></> : <><button type="button" className="btn" onClick={close}>Закрыть</button>{!live && <button type="button" className="btn btn-dark" disabled={locked || !dirty} onClick={() => onSave(name.trim() || 'Модель', source, imported)}>Сохранить</button>}</>}
     </header>
-    {(failure || parsed.error || parsed.readOnlyReason) && <div className="diagram-alert" role="alert">{failure || parsed.error || parsed.readOnlyReason}</div>}
+    {(liveFailure || failure || parsed.error || parsed.readOnlyReason) && <div className="diagram-alert" role="alert">{liveFailure || failure || parsed.error || parsed.readOnlyReason}</div>}
     {!parsed.error && notation.validateDiagram && (() => { const warnings = notation.validateDiagram(parsed.diagram); return warnings.length > 0 && <details className="diagram-validation"><summary>Замечания к модели: {warnings.length}</summary><ul>{warnings.map((warning, index) => <li key={`${warning.id}-${index}`}><button type="button" onClick={() => setSelected(warning.id)}>{warning.message}</button></li>)}</ul><small>Замечания не мешают сохранять незавершённую модель.</small></details>; })()}
     <div className="diagram-workspace">
       <aside className="diagram-sidebar" aria-label="Инструменты диаграммы">
@@ -697,6 +776,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
         {tool === 'connect' && <div className="diagram-connect-hint" aria-live="polite"><b>{notation.connectionTypes?.find((item) => item.id === connectionType)?.title ?? 'Автоматическая связь'}</b><span>{sequence ? (sequenceStart ? 'Выберите вторую линию жизни на том же уровне' : 'Выберите время на линии жизни') : connectFrom ? 'Выберите конечный элемент' : 'Выберите начальный элемент'}</span></div>}
         <svg ref={svg} className={`diagram-surface${tool !== 'select' ? ' placing' : ''}${placingObject ? ' placing-object' : ''}`} viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} role="application" tabIndex={0} aria-label="Полотно диаграммы"
           onPointerMove={(event) => {
+            if (cardId) { const at = point(event.clientX, event.clientY); presence?.sendEditor?.(cardId, at.x, at.y); }
             const pan = panRef.current;
             if (pan?.pointer === event.pointerId) setView({ ...pan.view, x: pan.view.x - (event.clientX - pan.x) / pan.scale, y: pan.view.y - (event.clientY - pan.y) / pan.scale });
             else if (portDragRef.current?.pointer === event.pointerId && !portDragRef.current.element.contains(event.target as Node)) movePort(event);
@@ -715,7 +795,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
               setHoveredNode(hovered?.id ?? null);
             }
           }}
-          onPointerLeave={() => { placementClient.current = null; setPlacementCursor(null); setHoveredNode(null); }}
+          onPointerLeave={() => { if (cardId) presence?.sendEditor?.(cardId, null, null); placementClient.current = null; setPlacementCursor(null); setHoveredNode(null); }}
           onPointerDownCapture={(event) => {
             if (event.button === 1 && !(event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]'))) {
               if (dragRef.current || edgeDragRef.current || portDragRef.current || marqueeRef.current || panRef.current) return;
@@ -920,6 +1000,14 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
             return <g className="diagram-placement-preview" data-placement-preview={placementSymbol.type} aria-hidden="true" pointerEvents="none" transform={`translate(${node.x} ${node.y})`}><NodeShape node={node} symbol={placementSymbol} selected={false} detail={notation.renderSymbolDetail?.(placementSymbol)} />{sequence && <line x1={node.width / 2} y1={node.height} x2={node.width / 2} y2={450} stroke="#424858" strokeDasharray="6 4" />}</g>;
           })() : placementSize && <g className="diagram-placement-preview" data-placement-preview={tool} aria-hidden="true" pointerEvents="none" transform={`translate(${Math.round(placementCursor.x)} ${Math.round(placementCursor.y)})`}><rect className="diagram-shape" width={placementSize.width} height={placementSize.height} /><path className="diagram-kind" d={`M30 0 V${placementSize.height}`} /></g>)}
           {editing && <foreignObject x={editing.x} y={editing.y} width={editing.width} height={editing.height}>{editing.multiline ? <textarea className="diagram-inline-textarea" aria-label="Редактировать текст" title="Enter — сохранить, Shift+Enter — перенос строки, Escape — отменить" autoFocus value={editing.value} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onBlur={() => finishEdit(true, false)} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); finishEdit(true); } else if (event.key === 'Escape') { event.preventDefault(); finishEdit(false); } }} /> : <input className="pinput diagram-inline-input" aria-label="Редактировать название" autoFocus value={editing.value} onPointerDown={(event) => event.stopPropagation()} onChange={(event) => setEditing({ ...editing, value: event.target.value })} onBlur={() => finishEdit(true, false)} onKeyDown={(event) => { event.stopPropagation(); if (event.key === 'Enter') { event.preventDefault(); finishEdit(true); } else if (event.key === 'Escape') { event.preventDefault(); finishEdit(false); } }} />}</foreignObject>}
+          {presence?.peers.filter(peer => peer.editing === cardId && peer.x !== null && peer.y !== null).map(peer => {
+            const scale = Math.abs(svg.current?.getScreenCTM()?.a || 1);
+            return <g key={peer.id} className="diagram-peer-cursor" data-peer-cursor={peer.id} transform={`translate(${peer.x} ${peer.y}) scale(${1 / scale})`} pointerEvents="none" aria-label={`Курсор: ${peer.name}`}>
+              <path d="M1 1l6.5 17 2.4-7 7-2.4z" fill={peer.color} stroke="#fff" strokeWidth="1.5" />
+              <rect x="12" y="18" width={Math.max(60, peer.name.length * 7 + 14)} height="21" rx="8" fill={peer.color} />
+              <text x="19" y="32" fill="#fff" fontSize="12">{peer.name}</text>
+            </g>;
+          })}
         </svg>
         <span className="diagram-selection-status" aria-live="polite">{groupSelected.length ? `Выбрано объектов: ${groupSelected.length}` : ''}</span>
         <div className="zoom-ui diagram-zoom" role="group" aria-label="Масштаб"><button type="button" className="tool-btn" aria-label="Уменьшить" title="Уменьшить" onClick={() => zoom(1.25)}><Icon name="minus" size={15} /></button><button type="button" className="tool-text" onClick={() => setView(initialView(parsed.diagram))}>Вписать</button><button type="button" className="tool-btn" aria-label="Увеличить" title="Увеличить" onClick={() => zoom(0.8)}><Icon name="plus" size={15} /></button></div>

@@ -25,7 +25,8 @@ import { PropertiesDialog, type PropTarget } from './PropertiesDialog';
 import type { ModelApi } from './useModel';
 import { MAX_ZOOM, MIN_ZOOM, ZoomCtx } from './zoom';
 import { loadView, saveView, type CardSizes } from './viewState';
-import type { Presence } from './presence';
+import type { Peer, Presence } from './presence';
+import { initials } from './settings';
 
 /** карточки, которые коллега тащит прямо сейчас: их движение сглаживается */
 const LiveCtx = createContext<Set<string>>(new Set());
@@ -55,6 +56,8 @@ interface Props {
   settings: Settings;
   onModel: (m: AiModel) => void;
   projectId: string;
+  /** Новая ссылка на запрос позволяет повторно выполнить команду для той же карточки. */
+  cardRequest?: { id: string; action: 'find' | 'delete' } | null;
   /** выделенные карточки (proc:…, doc:…, src:…, gw:…): состояние живёт выше, его показывает и дерево слева */
   selCards: string[];
   onSelCards: React.Dispatch<React.SetStateAction<string[]>>;
@@ -134,8 +137,10 @@ function DragCard({
   onEdit,
   onResizeStart,
   children,
+  editors = [],
 }: {
   id: string;
+  editors?: Peer[];
   pos: Pos;
   onMove: (id: string, p: Pos) => void;
   onGrab: (id: string, shift: boolean) => void;
@@ -217,6 +222,7 @@ function DragCard({
       }}
     >
       <span className="pin" />
+      {editors.length > 0 && <div className="card-editors" style={{ transform: `scale(${1 / k})` }}>{editors.map(peer => <span key={peer.id} role="img" aria-label={`${peer.name} редактирует модель`} title={`${peer.name} редактирует модель`} style={{ background: peer.color }}>{initials(peer.name)}</span>)}</div>}
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
         // Как в EPC: у прямоугольных карточек три точки, у шлюза одна.
@@ -540,7 +546,7 @@ function labelSpot(pts: Pos[]): Pos {
 
 /* ---------- полотно ---------- */
 
-export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, onEditModel, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
+export function Canvas({ issues, issue, onSelect, api, settings, onModel, projectId, cardRequest, selCards, onSelCards: setSelCards, onAddMaterial, onEditProcess, onEditDoc, onEditHtml, onEditModel, paused, presence, aiPanels, onAiWorkspaceEffect }: Props) {
   const saved = useRef(loadView(projectId)).current;
   const { sources, docs, processes, gateways, htmlObjects, models } = api.model;
   const pnodes = projectNodes(processes);
@@ -1034,7 +1040,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (portDragRef.current?.pointer !== e.pointerId) return;
     portDragRef.current = null; setPortDrag(null);
   };
-  const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
+  const linkProps = (id: string, linkLabel: string) => ({ editors: presence?.peers.filter(peer => peer.editing === id), linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
     setLinkFailure(null);
@@ -1286,15 +1292,15 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const k = Math.min(c.k, (size.w - 120) / (r.right - r.left), (size.h - 220) / (r.bottom - r.top));
     setCam({ k, x: size.w / 2 - ((r.left + r.right) / 2) * k, y: (size.h - 120) / 2 - ((r.top + r.bottom) / 2) * k });
   };
-  /** подвести камеру к карточке из чата */
+  /** Подвести камеру к карточке из чата или дерева проекта. */
   const draftBuilding = useDraftBuilding();
-  const focusCard = (id: string) => {
+  const focusCard = (id: string, fitCard = false) => {
     if (!cardIds.includes(id)) return;
     const p = posOf(id);
     const sz = cardSize(id);
     const c = camRef.current;
     const area = availableArea();
-    const k = clampK(Math.min(c.k, area.w / sz.w, area.h / sz.h));
+    const k = clampK(Math.min(fitCard ? 1 : c.k, area.w / sz.w, area.h / sz.h));
     setCam({ k, x: area.x + area.w / 2 - (p.x + sz.w / 2) * k, y: area.y + area.h / 2 - (p.y + sz.h / 2) * k });
   };
 
@@ -1343,6 +1349,18 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   };
   const removeCard = (id: string) => removeCards([id]);
 
+  useEffect(() => {
+    if (!cardRequest || !cardIds.includes(cardRequest.id)) return;
+    if (cardRequest.action === 'delete') removeCard(cardRequest.id);
+    else {
+      focusCard(cardRequest.id, true);
+      setSelLink(null);
+    }
+    // Запрос — отдельная команда: повторный клик по той же модели снова выполняет действие.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardRequest]);
+
+
   const menuItems = (): MenuItem[] => {
     if (!menu) return [];
     const t = menu.target;
@@ -1371,7 +1389,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       const el = ev.target as HTMLElement;
-      if (pausedRef.current || propsOpen.current || el.closest('input,textarea,select,.dlg-backdrop,.bpmn-editor')) return;
+      if (ev.defaultPrevented || pausedRef.current || propsOpen.current || el.closest('input,textarea,select,.dlg-backdrop,.bpmn-editor,[role=menu]')) return;
       if (ev.code === 'Space' && !el.closest('button')) {
         ev.preventDefault();
         setSpace(true);
@@ -1574,7 +1592,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       <ZoomCtx.Provider value={cam.k}><LiveCtx.Provider value={liveIds}>
         <div ref={world} className="world" style={{ transform: `translate(${cam.x}px, ${cam.y}px) scale(${cam.k})` }}>
           <AiDraftLayer procPos={procPos} docPos={docPos} />
-          {presence?.peers.filter((p) => p.x !== null && p.y !== null).map((p) => (
+          {presence?.peers.filter((p) => !p.editing && p.x !== null && p.y !== null).map((p) => (
             <div key={p.id} className="peer-cursor" style={{ left: p.x!, top: p.y!, transform: `scale(${1 / cam.k})`, color: p.color }} aria-hidden="true">
               <svg width="18" height="20" viewBox="0 0 18 20"><path d="M1 1l6.5 17 2.4-7 7-2.4z" fill="currentColor" stroke="#fff" strokeWidth="1.5" strokeLinejoin="round"/></svg>
               <span style={{ background: p.color }}>{p.name}</span>

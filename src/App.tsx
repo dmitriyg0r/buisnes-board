@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
-import { blankXml } from './bpmn';
-import { emptyModel, NO_ISSUE, type Issue, type IssueStatus } from './data';
+import { blankXml, parseProcess } from './bpmn';
+import { emptyModel, NO_ISSUE, type DocLink, type Issue, type IssueStatus } from './data';
 import { reconcileSections, sectionTitles, starterMarkdown } from './markdown';
 import { autoIssues, coverage } from './coverage';
 import { Tree } from './Tree';
+import { useTreeWidth } from './TreeResizeHandle';
 import { Canvas } from './Canvas';
 import { IssuePanel } from './IssuePanel';
 import { Icon } from './Icon';
@@ -47,7 +48,7 @@ const syncHint: Record<SyncState, string> = {
   offline: 'Работаем локально, изменения отправятся при следующей попытке',
   conflict: 'Модель была изменена другим участником, правки объединены',
   revoked: 'Владелец закрыл вам доступ к проекту или удалил проект',
-  error: 'Сервер отклонил сохранение; локальные изменения не отправлены',
+  error: 'Не удалось сохранить или объединить изменения; локальная копия сохранена на устройстве',
 };
 
 export function App() {
@@ -203,12 +204,18 @@ function Workspace({
     }
     if (Object.keys(rest).length) patch(rest);
   };
+  const [treeWidth, setTreeWidth] = useTreeWidth();
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
   /** выделенные на полотне карточки: подсвечиваются и в дереве слева */
   const [selCards, setSelCards] = useState<string[]>([]);
+  const [cardRequest, setCardRequest] = useState<{ id: string; action: 'find' | 'delete' } | null>(null);
   const [addOpen, setAddOpen] = useState(false);
   // что сейчас открыто в редакторе: модель или документ
   const [editing, setEditing] = useState<{ type: 'process' | 'model' | 'doc' | 'html'; id: string } | null>(null);
+  useEffect(() => {
+    if (editing?.type === 'model' && !api.model.models.some(model => model.id === editing.id)) setEditing(null);
+    if (editing?.type === 'process' && !api.model.processes.some(process => process.id === editing.id)) setEditing(null);
+  }, [editing, api.model.models, api.model.processes]);
   // свёрнутые боковые панели запоминаются в браузере
   const [layout, setLayout] = useState<{ tree: boolean; panel: boolean }>(() => {
     try {
@@ -256,6 +263,28 @@ function Workspace({
   };
 
   const selectCanvasIssue = (id: string) => { setSelectedId(id); if (!layout.panel) toggleSide('panel'); };
+  const saveProcess = (id: string, title: string, xml: string, removeLinkIds: string[], restoreLinks: DocLink[] = []) => {
+    const current = api.getModel().processes.find(item => item.id === id);
+    if (!current) return false;
+    if (current.title === title && current.xml === xml && !removeLinkIds.length && !restoreLinks.length) return true;
+    const removed = new Set(removeLinkIds);
+    const nodes = new Set(parseProcess(xml).nodes.map(node => `${id}:${node.id}`));
+    api.apply(model => {
+      const sections = new Set(model.docs.flatMap(doc => doc.sections.map(section => section.id)));
+      const links = model.links.filter(link => !removed.has(link.id));
+      const restore = restoreLinks.filter(link => nodes.has(link.nodeId) && sections.has(link.sectionId) && !links.some(current => current.id === link.id));
+      return { ...model, processes: model.processes.map(item => item.id === id ? { ...item, title, xml } : item), links: [...links, ...restore] };
+    });
+    return true;
+  };
+  const saveIndependentModel = (id: string, title: string, source: string) => {
+    const current = api.getModel().models.find(item => item.id === id);
+    if (!current) return false;
+    if (current.title === title && current.source === source) return true;
+    api.apply(model => ({ ...model, models: model.models.map(item => item.id === id ? { ...item, title, source } : item) }));
+    return true;
+  };
+
   const transition = (id: string, status: IssueStatus, fields?: IssueFields) => {
     const issue = issues.find((i) => i.id === id);
     if (issue) store.update(issue, status, fields);
@@ -322,19 +351,21 @@ function Workspace({
       </header>
 
       {sync === 'revoked' && <div className="auth-error" role="alert" style={{ margin: 12 }}>Доступ к проекту закрыт: владелец отозвал его или удалил проект. Ваши последние правки не сохранены. <button type="button" onClick={onBack}>К списку проектов</button></div>}
-      <div className="workspace" style={{ gridTemplateColumns: `${layout.tree ? 232 : 44}px minmax(0, 1fr) ${layout.panel ? 300 : 44}px` }}>
+      <div className="workspace" style={{ gridTemplateColumns: `${layout.tree ? `clamp(192px, ${treeWidth}px, calc(100% - ${(layout.panel ? 300 : 44) + 320}px))` : '44px'} minmax(0, 1fr) ${layout.panel ? 300 : 44}px` }}>
         <Tree
+          width={treeWidth}
+          onWidthChange={setTreeWidth}
           activeSourceId={selected.basis?.sourceId}
           sources={api.model.sources}
           docs={api.model.docs}
           processes={api.model.processes}
           models={api.model.models}
           onEditModel={(id) => setEditing({ type: 'model', id })}
-          onDeleteModel={(id) => {
-            const cardId = `model:${id}`;
-            api.apply((m) => ({ ...m, models: m.models.filter((item) => item.id !== id), cardLinks: m.cardLinks.filter((link) => link.from !== cardId && link.to !== cardId) }));
-            setSelCards((selected) => selected.filter((item) => item !== cardId));
+          onFindCard={(id) => {
+            setSelCards([id]);
+            setCardRequest({ id, action: 'find' });
           }}
+          onDeleteCard={(id) => setCardRequest({ id, action: 'delete' })}
           htmlObjects={api.model.htmlObjects}
           onEditHtml={(id) => setEditing({ type: 'html', id })}
           selectedCards={selCards}
@@ -343,6 +374,7 @@ function Workspace({
           onToggle={() => toggleSide('tree')}
         />
         <Canvas issues={issues} issue={selected} onSelect={selectCanvasIssue} api={api} settings={settings} onModel={(aiModel) => patchSettings({ aiModel })} projectId={project.id}
+          cardRequest={cardRequest}
           selCards={selCards}
           onSelCards={setSelCards}
           onAddMaterial={() => setAddOpen(true)}
@@ -380,16 +412,11 @@ function Workspace({
             processId={editing.id}
             links={api.model.links}
             onClose={() => setEditing(null)}
-            onSave={(title, xml, removeLinkIds) => {
-              const pid = editing.id;
-              const removeIds = new Set(removeLinkIds);
-              api.apply((m) => {
-                return {
-                  ...m,
-                  processes: m.processes.map((p) => (p.id === pid ? { ...p, title, xml } : p)),
-                  links: m.links.filter((link) => !removeIds.has(link.id)),
-                };
-              });
+            presence={presence}
+            saveState={sync}
+            onChange={(title, xml, removed, restore) => saveProcess(editing.id, title, xml, removed, restore)}
+            onSave={(title, xml, removed) => {
+              saveProcess(editing.id, title, xml, removed);
               setEditing(null);
             }}
           />
@@ -397,9 +424,9 @@ function Workspace({
       )}
 
       {editing?.type === 'model' && api.model.models.find((m) => m.id === editing.id) && <Suspense fallback={<div className="boot">Загрузка редактора…</div>}>
-        <IndependentModelEditor key={editing.id} model={api.model.models.find((m) => m.id === editing.id)!} onClose={() => setEditing(null)} onSave={(title, source) => {
+        <IndependentModelEditor key={editing.id} model={api.model.models.find((m) => m.id === editing.id)!} presence={presence} saveState={sync} onChange={(title, source) => saveIndependentModel(editing.id, title, source)} onClose={() => setEditing(null)} onSave={(title, source) => {
           const id = editing.id;
-          api.apply((m) => ({ ...m, models: m.models.map((item) => item.id === id ? { ...item, title, source } : item) }));
+          saveIndependentModel(id, title, source);
           setEditing(null);
         }} />
       </Suspense>}

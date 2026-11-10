@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { http, HttpError } from './api';
 import { emptyModel, type Model } from './data';
 import { mergeModel } from './mergeModel';
+import { DiagramMergeError } from './modeling/mergeSource';
 import { InvalidModelsError, normalizeModel } from './normalize';
 import type { Settings } from './settings';
 import type { ModelApi } from './useModel';
@@ -57,9 +58,10 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
     const base = normalize(JSON.parse(lastModel.current || '{}'));
     const local = modelRef.current;
     const hasLocal = JSON.stringify(local) !== lastModel.current;
+    const next = hasLocal ? mergeModel(base, local, remote) : remote;
     version.current = r.version;
     lastModel.current = JSON.stringify(remote);
-    mApi.setRemote(hasLocal ? mergeModel(base, local, remote) : remote);
+    mApi.setRemote(next);
     return hasLocal;
   };
 
@@ -94,7 +96,7 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
         setState('saved');
       } catch (error) {
         if (dead) return;
-        if (error instanceof InvalidModelsError) { setState('error'); return; }
+        if (error instanceof InvalidModelsError || error instanceof DiagramMergeError) { setState('error'); return; }
         setState('offline');
         retryLater();
       }
@@ -127,7 +129,7 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
               setState('conflict');
               setTimeout(() => setState((st) => (st === 'conflict' ? 'saved' : st)), 4000);
             } catch (error) {
-              if (error instanceof InvalidModelsError) { setState('error'); return; }
+              if (error instanceof InvalidModelsError || error instanceof DiagramMergeError) { setState('error'); return; }
               setState('offline');
               retryLater();
             }
@@ -156,7 +158,7 @@ export function useSync(mApi: ModelApi, settings: Settings, patch: (p: Partial<S
           if (v === version.current) return;
           if (await pull()) setState('saving');
         } catch (e) {
-          if (e instanceof InvalidModelsError) { setState('error'); return; }
+          if (e instanceof InvalidModelsError || e instanceof DiagramMergeError) { setState('error'); return; }
           if (e instanceof HttpError && (e.status === 404 || e.status === 403)) {
             revoked.current = true;
             setState('revoked');

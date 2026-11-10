@@ -6,6 +6,8 @@ export interface Peer {
   /** положение курсора в координатах доски; null — курсор вне доски */
   x: number | null;
   y: number | null;
+  /** ID открытой модели; x/y заданы в её координатах, а не на доске. */
+  editing?: string | null;
   color: string;
   seen: number;
 }
@@ -19,6 +21,8 @@ export interface Presence {
   peers: Peer[];
   /** сообщить своё положение (координаты доски) или null, если курсор ушёл */
   send: (x: number | null, y: number | null) => void;
+  /** Сохранить признак открытого редактора даже при уходе курсора с диаграммы. */
+  sendEditor?: (editing: string | null, x: number | null, y: number | null) => void;
   /** сообщить положение карточек, которые тащим прямо сейчас */
   sendDrag: (items: DragItem[]) => void;
   /** подписка на чужие перетаскивания; возвращает отписку */
@@ -46,7 +50,7 @@ const DRAG_GAP_MS = 40;
  */
 export function usePresence(projectId: string): Presence {
   const [peers, setPeers] = useState<Record<string, Peer>>({});
-  const last = useRef<{ x: number | null; y: number | null }>({ x: null, y: null });
+  const last = useRef<{ x: number | null; y: number | null; editing: string | null }>({ x: null, y: null, editing: null });
   const lastSent = useRef(0);
   const trailing = useRef<ReturnType<typeof setTimeout>>();
   const dragListeners = useRef(new Set<(items: DragItem[]) => void>());
@@ -89,12 +93,12 @@ export function usePresence(projectId: string): Presence {
   }, []);
 
   const post = useCallback(
-    (x: number | null, y: number | null) => {
+    (x: number | null, y: number | null, editing: string | null = last.current.editing) => {
       lastSent.current = Date.now();
       void fetch(`/api/projects/${encodeURIComponent(projectId)}/presence`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ x, y }),
+        body: JSON.stringify({ x, y, editing }),
         keepalive: true,
       }).catch(() => undefined);
     },
@@ -103,10 +107,11 @@ export function usePresence(projectId: string): Presence {
 
   const send = useCallback(
     (x: number | null, y: number | null) => {
-      last.current = { x, y };
+      if (last.current.editing) return;
+      last.current = { x, y, editing: null };
       const wait = MIN_GAP_MS - (Date.now() - lastSent.current);
       if (wait <= 0) {
-        clearTimeout(trailing.current);
+        clearTimeout(trailing.current); trailing.current = undefined;
         post(x, y);
       } else if (!trailing.current) {
         // последнее положение уйдёт, когда пройдёт пауза между отправками
@@ -119,6 +124,19 @@ export function usePresence(projectId: string): Presence {
     [post],
   );
 
+  const sendEditor = useCallback((editing: string | null, x: number | null, y: number | null) => {
+    const changedScope = last.current.editing !== editing;
+    last.current = { x, y, editing };
+    const wait = MIN_GAP_MS - (Date.now() - lastSent.current);
+    if (changedScope || wait <= 0) {
+      clearTimeout(trailing.current); trailing.current = undefined;
+      post(x, y, editing);
+    } else if (!trailing.current) trailing.current = setTimeout(() => {
+      trailing.current = undefined;
+      post(last.current.x, last.current.y, last.current.editing);
+    }, wait);
+  }, [post]);
+
   useEffect(() => {
     let es: EventSource | null = null;
     let retry: ReturnType<typeof setTimeout> | undefined;
@@ -127,7 +145,7 @@ export function usePresence(projectId: string): Presence {
     const connect = () => {
       es = new EventSource(`/api/projects/${encodeURIComponent(projectId)}/events`);
       es.onmessage = (m) => {
-        let ev: { t: string; u?: string; n?: string; x?: number | null; y?: number | null; d?: DragItem[] | string; k?: string };
+        let ev: { t: string; u?: string; n?: string; x?: number | null; y?: number | null; mx?: number | null; my?: number | null; editing?: string | null; d?: DragItem[] | string; k?: string };
         try { ev = JSON.parse(m.data); } catch { return; }
         if (ev.t === 'drag' && Array.isArray(ev.d)) dragListeners.current.forEach((fn) => fn(ev.d as DragItem[]));
         else if (ev.t === 'ai' && ev.u && (ev.k === 'start' || ev.k === 'delta' || ev.k === 'end')) {
@@ -137,7 +155,7 @@ export function usePresence(projectId: string): Presence {
         else if (ev.t === 'model') window.dispatchEvent(new Event('bb:model-hint'));
         else if (ev.t === 'cursor' && ev.u) {
           const id = ev.u;
-          setPeers((p) => ({ ...p, [id]: { id, name: ev.n ?? 'Участник', x: ev.x ?? null, y: ev.y ?? null, color: peerColor(id), seen: Date.now() } }));
+          setPeers((p) => ({ ...p, [id]: { id, name: ev.n ?? 'Участник', x: (ev.editing ? ev.mx : ev.x) ?? null, y: (ev.editing ? ev.my : ev.y) ?? null, editing: typeof ev.editing === 'string' ? ev.editing : null, color: peerColor(id), seen: Date.now() } }));
         } else if (ev.t === 'left' && ev.u) {
           const id = ev.u;
           setPeers((p) => { const { [id]: _gone, ...rest } = p; return rest; });
@@ -160,7 +178,7 @@ export function usePresence(projectId: string): Presence {
       const now = Date.now();
       setPeers((p) => (Object.values(p).some((x) => now - x.seen > STALE_MS) ? Object.fromEntries(Object.entries(p).filter(([, x]) => now - x.seen <= STALE_MS)) : p));
     }, 3000);
-    const leave = () => post(null, null);
+    const leave = () => post(null, null, null);
     window.addEventListener('pagehide', leave);
     return () => {
       dead = true;
@@ -171,9 +189,9 @@ export function usePresence(projectId: string): Presence {
       clearInterval(beat);
       clearInterval(prune);
       window.removeEventListener('pagehide', leave);
-      post(null, null);
+      post(null, null, null);
     };
   }, [projectId, post]);
 
-  return { peers: Object.values(peers), send, sendDrag, onDrag, onAi };
+  return { peers: Object.values(peers), send, sendEditor, sendDrag, onDrag, onAi };
 }
