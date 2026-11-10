@@ -196,7 +196,7 @@ function updateRoutes(doc: Document, before: Diagram, id: string | ReadonlySet<s
     const newCollision = after.nodes.some(n => intersects(points, [n], flow) && !intersects(flow.points, before.nodes.filter(old => old.id === n.id), flow));
     if (diagonal) {
       // Импортированные диагонали не преобразуем в ортогональные автоматически.
-      if (newCollision) throw new Error('Перемещение пересекает импортированную диагональную связь.');
+      // Наложение допустимо: исходные диагонали и остальные связи не меняем.
       if (incident) setWaypoints(doc, ref(doc, 'BPMNEdge', flow.id)!, points);
       continue;
     }

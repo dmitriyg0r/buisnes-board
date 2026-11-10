@@ -38,6 +38,26 @@ for (const [notation, first, second] of [[epcNotation, 'event', 'function'], [um
   assert.deepEqual(resizedEdge.points[0], start);
   assert.ok(resizedEdge.points.length <= 6);
 }
+// Связанные элементы можно перекрывать и разносить, не теряя ID или якоря.
+for (const [notation, first, second] of [[epcNotation, 'event', 'function'], [umlClassNotation, 'class', 'class'], [umlActivityNotation, 'action', 'action'], [umlUseCaseNotation, 'actor', 'use-case']] as const) {
+  let { source, a, b } = create(notation, first, second);
+  const edge = notation.read(source).diagram.edges[0];
+  const fixed = edge.points.at(-1);
+  source = notation.moveNode(source, a.id, { x: b.x, y: b.y });
+  let diagram = notation.read(source).diagram;
+  assert.deepEqual({ x: diagram.nodes[0].x, y: diagram.nodes[0].y }, { x: b.x, y: b.y }, `${notation.id}: полное наложение`);
+  assert.equal(diagram.edges[0].id, edge.id);
+  assert.deepEqual(diagram.edges[0].points.at(-1), fixed);
+  source = notation.resizeNode!(source, a.id, a.width + 150, a.height + 100);
+  diagram = notation.read(JSON.stringify(JSON.parse(source))).diagram;
+  assert.equal(diagram.nodes[0].width, a.width + 150);
+  assert.equal(diagram.edges[0].id, edge.id);
+  assert.deepEqual(diagram.edges[0].points.at(-1), fixed);
+  source = notation.moveNode(source, a.id, { x: 100, y: 100 });
+  diagram = notation.read(source).diagram;
+  assert.equal(diagram.nodes[0].x, 100);
+  assert.equal(diagram.edges[0].id, edge.id);
+}
 {
   const n = epcNotation;
   let { source, a, b } = create(n, 'event', 'function');

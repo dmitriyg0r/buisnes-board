@@ -124,18 +124,31 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
       const anchor = { x: node.x + (old.x - before.x) / before.width * node.width, y: node.y + (old.y - before.y) / before.height * node.height };
       if (!isPoint(anchor)) throw new Error('Некорректная привязка связи.');
       if (points.length === 2) {
-        edge.points = reverse ? route(graph, from, to, points[1], anchor) : route(graph, from, to, anchor, points[1]);
+        const start = reverse ? points[1] : anchor, end = reverse ? anchor : points[1];
+        const clear = routeBetweenNodes(graph.nodes, from, to, start, end, shapeOf);
+        // При наложении фигур свободного обхода может не быть. Сохраняем обе
+        // привязки и даём объекту двигаться; пересечение временно допустимо.
+        const horizontal = points[0].y === points[1].y;
+        const middle = horizontal ? (start.x + end.x) / 2 : (start.y + end.y) / 2;
+        const fallback = horizontal ? [start, { x: middle, y: start.y }, { x: middle, y: end.y }, end]
+          : [start, { x: start.x, y: middle }, { x: end.x, y: middle }, end];
+        const projected = simplifyRoute(fallback);
+        edge.points = clear ?? (projected.length >= 2 ? projected : [start, end]);
         continue;
       }
       const next = points[1];
       if (old.x === next.x) next.x = anchor.x;
       else if (old.y === next.y) next.y = anchor.y;
-      else throw new Error('Диагональный маршрут нельзя автоматически изменить.');
+      // Импортированный диагональный участок не перестраиваем без запроса.
       points[0] = anchor;
-      const candidate = simplifyRoute(reverse ? points.reverse() : points);
+      const ordered = reverse ? points.reverse() : points;
+      const simplified = simplifyRoute(ordered);
+      const candidate = simplified.length >= 2 ? simplified : [ordered[0], ordered[ordered.length - 1]];
       if (validRoute(graph, from, to, candidate)) edge.points = candidate;
-      else if (points.length <= 4) edge.points = route(graph, from, to, candidate[0], candidate[candidate.length - 1]);
-      else throw new Error('Невозможно безопасно сохранить маршрут связи при изменении элемента.');
+      else if (points.length <= 4) edge.points = routeBetweenNodes(graph.nodes, from, to, candidate[0], candidate[candidate.length - 1], shapeOf) ?? candidate;
+      // Ручные изгибы не удаляем: если путь перекрыт, сохраняем его как есть
+      // и позволяем разнести объекты позже.
+      else edge.points = candidate;
     }
   };
   return {
