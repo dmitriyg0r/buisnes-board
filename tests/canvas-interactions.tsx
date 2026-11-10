@@ -71,8 +71,22 @@ try {
   const expected = routeOrthogonal({ start: { point: { x: 220, y: 500 }, normal: 'down', bounds: { x: 40, y: 100, width: 360, height: 400 } }, end: { point: { x: 1180, y: 500 }, normal: 'down', bounds: { x: 1000, y: 100, width: 360, height: 400 } }, obstacles: [{ x: 520, y: 80, width: 360, height: 440 }] });
   assert(JSON.stringify(actual) === JSON.stringify(expected), 'Маршрут отличается от маршрутизатора EPC');
   assert(a.querySelectorAll('[data-link-port]').length === 12, 'Изменились точки прямоугольной карточки');
+  const originalPath = path.getAttribute('d');
+  await drag(b, -800 * k, 0);
+  assert(document.querySelectorAll('.card-link-layer .clink').length === 1, 'Связь исчезла при частичном наложении');
+  assert(document.querySelector<SVGPathElement>('.card-link-layer .clink')!.getTotalLength() > 100, 'Маршрут наложения невидим');
+  await drag(b, -160 * k, 0);
+  assert(Number.parseFloat(b.style.left) === Number.parseFloat(a.style.left), 'Не получено полное наложение');
+  assert(document.querySelector<SVGPathElement>('.card-link-layer .clink')!.getTotalLength() > 100, 'Совпавшие порты скрыли связь');
+  await drag(b, 960 * k, 0);
+  assert(document.querySelector('.card-link-layer .clink')!.getAttribute('d') === originalPath, 'После разнесения не восстановился маршрут EPC');
+  await drag(card('obstacle'), -480 * k, 20 * k);
+  assert(document.querySelectorAll('.card-link-layer .clink').length === 1, 'Посторонняя карточка скрыла связь');
+  port(card('obstacle'), 'bottom').click(); await pause(); port(a, 'bottom').click(); await pause();
+  assert(document.querySelectorAll('.card-link-layer .clink').length === 2, 'Не создана связь уже наложенных карточек');
+
   const result = document.querySelector<HTMLOutputElement>('#result')!;
-  result.textContent = 'Пройдено: перенос через объект, наложение, добавление, сохранение, отмена/повтор, связь и маршрут EPC.';
+  result.textContent = 'Пройдено: перенос через объект, наложение, добавление, сохранение, отмена/повтор, связи при частичном/полном наложении и восстановление маршрута EPC.';
   result.dataset.status = 'passed';
 } catch (error) {
   const result = document.querySelector<HTMLOutputElement>('#result')!;

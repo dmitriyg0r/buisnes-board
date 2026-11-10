@@ -7,6 +7,7 @@ import type { AiModel, Settings } from './settings';
 import { AiChat } from './AiChat';
 import { routeOrthogonal, type Direction } from './modeling/orthogonalRouting';
 import { routeBetweenNodes } from './modeling/diagramRouting';
+import { overlappingCardRoute } from './canvasLinkFallback';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
@@ -421,7 +422,9 @@ const cardIdsOf = (m: Model) => [
 function routeCards(a: Box, b: Box, avoid: Box[] = []): Pos[] {
   const node = (box: Box, id: string) => ({ ...box, id, type: 'card', label: '', width: box.w, height: box.h });
   const from = node(a, 'from'), to = node(b, 'to');
-  return routeBetweenNodes([from, to, ...avoid.map((box, i) => node(box, `obstacle-${i}`))], from, to) ?? [];
+  const route = routeBetweenNodes([from, to, ...avoid.map((box, i) => node(box, `obstacle-${i}`))], from, to);
+  if (route) return route;
+  return overlappingCardRoute(sidePoint(a, 'right'), 'right', sidePoint(b, 'left'), 'left', [a, b, ...avoid]);
 }
 
 const validSide = (side: unknown): side is CardSide => side === 'top' || side === 'right' || side === 'bottom' || side === 'left';
@@ -457,10 +460,10 @@ function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: C
     return routeOrthogonal({
       start: endpoint(a, aSide, aAngle, aOffset), end: endpoint(b, bSide, bAngle, bOffset),
       obstacles: avoid.map(box => ({ x: box.x, y: box.y, width: box.w, height: box.h })),
-    }) ?? [];
+    }) ?? overlappingCardRoute(sidePoint(a, aSide, aAngle, aOffset), aSide, sidePoint(b, bSide, bAngle, bOffset), bSide, [a, b, ...avoid]);
   } catch (error) {
-    if (error instanceof RangeError) return [];
-    throw error;
+    if (!(error instanceof RangeError)) throw error;
+    return overlappingCardRoute(sidePoint(a, aSide, aAngle, aOffset), aSide, sidePoint(b, bSide, bAngle, bOffset), bSide, [a, b, ...avoid]);
   }
 }
 
