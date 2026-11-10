@@ -5,7 +5,8 @@ import { DOC_SIZE, GATEWAY_SIZE, HTML_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLi
 import { splitMarkdown } from './markdown';
 import type { AiModel, Settings } from './settings';
 import { AiChat } from './AiChat';
-import { rectOf, routeAround, routeHits } from './linkRoute';
+import { routeOrthogonal, type Direction } from './modeling/orthogonalRouting';
+import { routeBetweenNodes } from './modeling/diagramRouting';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
@@ -197,9 +198,11 @@ function DragCard({
         if (moved.current) onMove(id, { x: d.ox + dx, y: d.oy + dy });
       }}
       onPointerUp={(e) => {
-        if (moved.current && e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
         drag.current = null;
       }}
+      onPointerCancel={() => { drag.current = null; }}
+      onLostPointerCapture={() => { drag.current = null; }}
       onClickCapture={(e) => {
         if ((e.target as HTMLElement).closest('[data-link-port]')) return;
         if (moved.current) {
@@ -214,8 +217,8 @@ function DragCard({
       <span className="pin" />
       {children}
       {([['top', 'сверху'], ['right', 'справа'], ['bottom', 'снизу'], ['left', 'слева']] as const).flatMap(([side, label]) => {
-        // У всех объектов три точки на каждой стороне независимо от типа и размера.
-        const count = 3;
+        // Как в EPC: у прямоугольных карточек три точки, у шлюза одна.
+        const count = id.startsWith('gw:') ? 1 : 3;
         return Array.from({ length: count }, (_, i) => {
           const offset = (i + 1) / (count + 1);
           const anchor = { side, offset };
@@ -414,24 +417,11 @@ const cardIdsOf = (m: Model) => [
   ...m.gateways.map((g) => `gw:${g.id}`),
 ];
 
-/** Ортогональная стрелка от края одной карточки к краю другой. */
-function routeCards(a: Box, b: Box): Pos[] {
-  const ac = { x: a.x + a.w / 2, y: a.y + a.h / 2 };
-  const bc = { x: b.x + b.w / 2, y: b.y + b.h / 2 };
-  const dx = bc.x - ac.x;
-  const dy = bc.y - ac.y;
-  if (Math.abs(dx) >= Math.abs(dy)) {
-    const sx = dx >= 0 ? a.x + a.w : a.x;
-    const tx = dx >= 0 ? b.x : b.x + b.w;
-    if (Math.abs(dy) < 2) return [{ x: sx, y: ac.y }, { x: tx, y: ac.y }];
-    const mx = (sx + tx) / 2;
-    return [{ x: sx, y: ac.y }, { x: mx, y: ac.y }, { x: mx, y: bc.y }, { x: tx, y: bc.y }];
-  }
-  const sy = dy >= 0 ? a.y + a.h : a.y;
-  const ty = dy >= 0 ? b.y : b.y + b.h;
-  if (Math.abs(dx) < 2) return [{ x: ac.x, y: sy }, { x: ac.x, y: ty }];
-  const my = (sy + ty) / 2;
-  return [{ x: ac.x, y: sy }, { x: ac.x, y: my }, { x: bc.x, y: my }, { x: bc.x, y: ty }];
+/** Автоматический выбор сторон тем же маршрутизатором, что и в EPC. */
+function routeCards(a: Box, b: Box, avoid: Box[] = []): Pos[] {
+  const node = (box: Box, id: string) => ({ ...box, id, type: 'card', label: '', width: box.w, height: box.h });
+  const from = node(a, 'from'), to = node(b, 'to');
+  return routeBetweenNodes([from, to, ...avoid.map((box, i) => node(box, `obstacle-${i}`))], from, to) ?? [];
 }
 
 const validSide = (side: unknown): side is CardSide => side === 'top' || side === 'right' || side === 'bottom' || side === 'left';
@@ -447,30 +437,31 @@ function sidePoint(box: Box, side: CardSide, degrees = 0, offset = 0.5): Pos {
   return { x: box.x + box.w / 2 + x * Math.cos(angle) - y * Math.sin(angle), y: box.y + box.h / 2 + x * Math.sin(angle) + y * Math.cos(angle) };
 }
 
-/**
- * Прокладывает связь через выбранные стороны. Простой маршрут остаётся, пока он не заходит на карточки;
- * если заходит (на исходную, на целевую или на любую из `avoid`), строится обход.
- */
+/** Общий с EPC ортогональный обход с выбранными точками привязки. */
 function routeAnchored(a: Box, aSide: CardSide, aAngle: number, b: Box, bSide: CardSide, bAngle: number, aOffset = 0.5, bOffset = 0.5, avoid: Box[] = []): Pos[] {
-  const start = sidePoint(a, aSide, aAngle, aOffset);
-  const end = sidePoint(b, bSide, bAngle, bOffset);
-  const av = sideVector[aSide];
-  const bv = sideVector[bSide];
-  const out = { x: start.x + av.x * 24, y: start.y + av.y * 24 };
-  const into = { x: end.x + bv.x * 24, y: end.y + bv.y * 24 };
-  let base: Pos[];
-  if (av.x && bv.x) {
-    const mx = av.x === bv.x ? (av.x > 0 ? Math.max(out.x, into.x) + 24 : Math.min(out.x, into.x) - 24) : (out.x + into.x) / 2;
-    base = [start, out, { x: mx, y: out.y }, { x: mx, y: into.y }, into, end];
-  } else if (av.y && bv.y) {
-    const my = av.y === bv.y ? (av.y > 0 ? Math.max(out.y, into.y) + 24 : Math.min(out.y, into.y) - 24) : (out.y + into.y) / 2;
-    base = [start, out, { x: out.x, y: my }, { x: into.x, y: my }, into, end];
-  } else base = [start, out, av.x ? { x: into.x, y: out.y } : { x: out.x, y: into.y }, into, end];
-
-  const rects = [a, b, ...avoid].map((box) => rectOf(box));
-  if (!routeHits(base, rects)) return base;
-  const around = routeAround(out, into, rects, av, { x: -bv.x, y: -bv.y });
-  return around ? [start, ...around, end] : base;
+  const normals: Record<CardSide, Direction> = { top: 'up', right: 'right', bottom: 'down', left: 'left' };
+  const endpoint = (box: Box, side: CardSide, angle: number, offset: number) => {
+    const point = sidePoint(box, side, angle, offset);
+    // Источники слегка повёрнуты: сохраняем точную привязку и внешнее направление.
+    const width = Math.max(0.001, box.w), height = Math.max(0.001, box.h);
+    const bounds = { x: box.x, y: box.y, width, height };
+    if (side === 'left') bounds.x = point.x;
+    if (side === 'right') bounds.x = point.x - width;
+    if (side === 'top') bounds.y = point.y;
+    if (side === 'bottom') bounds.y = point.y - height;
+    if (side === 'right') point.x = bounds.x + width;
+    if (side === 'bottom') point.y = bounds.y + height;
+    return { point, normal: normals[side], bounds };
+  };
+  try {
+    return routeOrthogonal({
+      start: endpoint(a, aSide, aAngle, aOffset), end: endpoint(b, bSide, bAngle, bOffset),
+      obstacles: avoid.map(box => ({ x: box.x, y: box.y, width: box.w, height: box.h })),
+    }) ?? [];
+  } catch (error) {
+    if (error instanceof RangeError) return [];
+    throw error;
+  }
 }
 
 /** Убирает повторяющиеся и лишние точки, сохраняя развороты маршрута. */
@@ -665,10 +656,6 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     gestureCk.current = true;
     api.checkpoint();
   };
-  /** карточки не должны заходить друг на друга: между ними остаётся зазор CARD_GAP */
-  const CARD_GAP = 12;
-  const clash = (a: Box, b: Box) =>
-    a.x < b.x + b.w + CARD_GAP && a.x + a.w + CARD_GAP > b.x && a.y < b.y + b.h + CARD_GAP && a.y + a.h + CARD_GAP > b.y;
   const boxOf = (s: Record<string, Pos>, i: string): Box => ({ ...(s[i] ?? defaultPos(i)), ...cardSize(i) });
 
   type Guide = { v: boolean; at: number; from: number; to: number };
@@ -700,72 +687,48 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       const dy = p.y - cur(id).y;
       const ids = selCards.includes(id) ? selCards : [id];
       const others = cardIds.filter((i) => !ids.includes(i));
-      const free = (ox: number, oy: number) =>
-        !ids.some((i) => {
-          const b = boxOf(s, i);
-          return others.some((o) => clash({ ...b, x: b.x + ox, y: b.y + oy }, boxOf(s, o)));
-        });
       let mx = dx;
       let my = dy;
-      // уже пересекаются (старое состояние) — не мешаем двигать; иначе ведём карточку до касания соседа
-      if (free(0, 0) && !free(dx, dy)) {
-        const reach = (axisX: boolean, d: number, baseX: number, baseY: number) => {
-          let lo = 0;
-          let hi = 1;
-          for (let n = 0; n < 10; n++) {
-            const mid = (lo + hi) / 2;
-            if (free(axisX ? baseX + d * mid : baseX, axisX ? baseY : baseY + d * mid)) lo = mid;
-            else hi = mid;
-          }
-          return d * lo;
-        };
-        mx = reach(true, dx, 0, 0);
-        my = reach(false, dy, mx, 0);
-      }
       // прилипание к краям и центрам соседних карточек, как направляющие в Figma
       const lines: Guide[] = [];
-      if (free(0, 0) || free(mx, my)) {
-        const gb = ids.map((i) => boxOf(s, i));
-        const g0 = { x: Math.min(...gb.map((b) => b.x)) + mx, y: Math.min(...gb.map((b) => b.y)) + my };
-        const g1 = { x: Math.max(...gb.map((b) => b.x + b.w)) + mx, y: Math.max(...gb.map((b) => b.y + b.h)) + my };
-        const ob = others.map((o) => boxOf(s, o));
-        const T = SNAP_PX / camRef.current.k;
-        const snapAxis = (axisX: boolean) => {
-          const mine = axisX ? [g0.x, (g0.x + g1.x) / 2, g1.x] : [g0.y, (g0.y + g1.y) / 2, g1.y];
-          let best: number | null = null;
-          for (const o of ob) {
-            const theirs = axisX ? [o.x, o.x + o.w / 2, o.x + o.w] : [o.y, o.y + o.h / 2, o.y + o.h];
-            for (const a of mine) for (const b of theirs) if (Math.abs(b - a) <= T && (best === null || Math.abs(b - a) < Math.abs(best))) best = b - a;
-          }
-          if (best !== null && best !== 0) {
-            const nx = axisX ? mx + best : mx;
-            const ny = axisX ? my : my + best;
-            if (free(nx, ny) || !free(mx, my)) {
-              if (axisX) {
-                mx = nx;
-                g0.x += best;
-                g1.x += best;
-              } else {
-                my = ny;
-                g0.y += best;
-                g1.y += best;
-              }
-            }
-          }
-        };
-        snapAxis(true);
-        snapAxis(false);
-        const eq = (a: number, b: number) => Math.abs(a - b) < 0.5;
-        const mineX = [g0.x, (g0.x + g1.x) / 2, g1.x];
-        const mineY = [g0.y, (g0.y + g1.y) / 2, g1.y];
-        for (const a of mineX) {
-          const hit = ob.filter((o) => [o.x, o.x + o.w / 2, o.x + o.w].some((b) => eq(a, b)));
-          if (hit.length) lines.push({ v: true, at: a, from: Math.min(g0.y, ...hit.map((o) => o.y)), to: Math.max(g1.y, ...hit.map((o) => o.y + o.h)) });
+      const gb = ids.map((i) => boxOf(s, i));
+      const g0 = { x: Math.min(...gb.map((b) => b.x)) + mx, y: Math.min(...gb.map((b) => b.y)) + my };
+      const g1 = { x: Math.max(...gb.map((b) => b.x + b.w)) + mx, y: Math.max(...gb.map((b) => b.y + b.h)) + my };
+      const ob = others.map((o) => boxOf(s, o));
+      const T = SNAP_PX / camRef.current.k;
+      const snapAxis = (axisX: boolean) => {
+        const mine = axisX ? [g0.x, (g0.x + g1.x) / 2, g1.x] : [g0.y, (g0.y + g1.y) / 2, g1.y];
+        let best: number | null = null;
+        for (const o of ob) {
+          const theirs = axisX ? [o.x, o.x + o.w / 2, o.x + o.w] : [o.y, o.y + o.h / 2, o.y + o.h];
+          for (const a of mine) for (const b of theirs) if (Math.abs(b - a) <= T && (best === null || Math.abs(b - a) < Math.abs(best))) best = b - a;
         }
-        for (const a of mineY) {
-          const hit = ob.filter((o) => [o.y, o.y + o.h / 2, o.y + o.h].some((b) => eq(a, b)));
-          if (hit.length) lines.push({ v: false, at: a, from: Math.min(g0.x, ...hit.map((o) => o.x)), to: Math.max(g1.x, ...hit.map((o) => o.x + o.w)) });
+        if (best !== null && best !== 0) {
+          const nx = axisX ? mx + best : mx;
+          const ny = axisX ? my : my + best;
+          if (axisX) {
+            mx = nx;
+            g0.x += best;
+            g1.x += best;
+          } else {
+            my = ny;
+            g0.y += best;
+            g1.y += best;
+          }
         }
+      };
+      snapAxis(true);
+      snapAxis(false);
+      const eq = (a: number, b: number) => Math.abs(a - b) < 0.5;
+      const mineX = [g0.x, (g0.x + g1.x) / 2, g1.x];
+      const mineY = [g0.y, (g0.y + g1.y) / 2, g1.y];
+      for (const a of mineX) {
+        const hit = ob.filter((o) => [o.x, o.x + o.w / 2, o.x + o.w].some((b) => eq(a, b)));
+        if (hit.length) lines.push({ v: true, at: a, from: Math.min(g0.y, ...hit.map((o) => o.y)), to: Math.max(g1.y, ...hit.map((o) => o.y + o.h)) });
+      }
+      for (const a of mineY) {
+        const hit = ob.filter((o) => [o.y, o.y + o.h / 2, o.y + o.h].some((b) => eq(a, b)));
+        if (hit.length) lines.push({ v: false, at: a, from: Math.min(g0.x, ...hit.map((o) => o.x)), to: Math.max(g1.x, ...hit.map((o) => o.x + o.w)) });
       }
       guideRef.current = lines;
       const next = { ...s };
@@ -774,35 +737,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     });
   };
 
-  /** раздвигает уже пересекающиеся карточки (старые сохранения, новые карточки) */
-  const settle = (s: Record<string, Pos>, last: string[] = []) => {
-    const out = { ...s };
-    const placed: Box[] = [];
-    let changed = false;
-    // новые карточки ставятся последними: двигаются они, а не уже лежащие на полотне
-    for (const id of [...cardIds.filter((i) => !last.includes(i)), ...cardIds.filter((i) => last.includes(i))]) {
-      const start = boxOf(out, id);
-      let b = start;
-      for (let n = 0; n < 60; n++) {
-        const hit = placed.find((o) => clash(b, o));
-        if (!hit) break;
-        const opts = [
-          { ...b, x: hit.x + hit.w + CARD_GAP },
-          { ...b, x: hit.x - b.w - CARD_GAP },
-          { ...b, y: hit.y + hit.h + CARD_GAP },
-          { ...b, y: hit.y - b.h - CARD_GAP },
-        ];
-        b = opts.reduce((best, o) => (Math.abs(o.x - start.x) + Math.abs(o.y - start.y) < Math.abs(best.x - start.x) + Math.abs(best.y - start.y) ? o : best));
-      }
-      if (b.x !== start.x || b.y !== start.y) {
-        out[id] = { x: b.x, y: b.y };
-        changed = true;
-      }
-      placed.push(b);
-    }
-    return changed ? out : s;
-  };
-  /** ручка в углу: тянем размер, упираясь в соседей и в минимальный размер */
+  /** Растягивание с направляющими и минимальным размером, включая наложение на соседей. */
   const startResize = (id: string, e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0) return;
     e.preventDefault();
@@ -814,7 +749,6 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const min = MIN_CARD(id);
     const p = posOf(id);
     const others = cardIds.filter((i) => i !== id).map((i) => boxOf(pos, i));
-    const free = (w: number, h: number) => !others.some((o) => clash({ ...p, w, h }, o));
     const k = camRef.current.k;
     const onMoveEv = (ev: PointerEvent) => {
       checkpointOnce();
@@ -827,21 +761,6 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       const sy = snap(p.y + h, others.flatMap((o) => [o.y, o.y + o.h / 2, o.y + o.h]));
       if (sx !== null && sx - p.x >= min.w) w = sx - p.x;
       if (sy !== null && sy - p.y >= min.h) h = sy - p.y;
-      if (free(start.w, start.h)) {
-        const reach = (from: number, to: number, ok: (v: number) => boolean) => {
-          if (ok(to)) return to;
-          let lo = from;
-          let hi = to;
-          for (let n = 0; n < 12; n++) {
-            const mid = (lo + hi) / 2;
-            if (ok(mid)) lo = mid;
-            else hi = mid;
-          }
-          return lo;
-        };
-        w = reach(start.w, w, (v) => free(v, start.h));
-        h = reach(start.h, h, (v) => free(w, v));
-      }
       // направляющие там, где край совпал с краем или центром соседа
       const lines: Guide[] = [];
       const eq = (a: number, b: number) => Math.abs(a - b) < 0.5;
@@ -895,6 +814,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const [selLink, setSelLink] = useState<string | null>(null);
   const [editLink, setEditLink] = useState<string | null>(null);
   const [showReconnect, setShowReconnect] = useState(false);
+  const [linkFailure, setLinkFailure] = useState<string | null>(null);
   type LinkGesture = { kind: 'segment' | 'from' | 'to'; link: CardLink; pointer: number; element: SVGElement; start: Pos; startClient: Pos; points: Pos[]; index: number; delta: number; draft: Pos[]; target: string | null; candidate: CardLink | null; moved: boolean };
   const [linkGesture, setLinkGesture] = useState<LinkGesture | null>(null);
   const linkGestureRef = useRef<LinkGesture | null>(null);
@@ -911,8 +831,13 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const pointsForLink = (link: CardLink) => {
     const base = validSide(link.fromSide) && validSide(link.toSide)
       ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset, obstaclesFor(link.from, link.to))
-      : routeCards(boxForLink(link.from), boxForLink(link.to));
+      : routeCards(boxForLink(link.from), boxForLink(link.to), obstaclesFor(link.from, link.to));
     const points = Array.isArray(link.routePoints) ? link.routePoints.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)) : [];
+    if (points.length && validSide(link.fromSide) && validSide(link.toSide)) return routeVia(
+      sidePoint(boxForLink(link.from), link.fromSide, angleForLink(link.from), link.fromOffset),
+      sidePoint(boxForLink(link.to), link.toSide, angleForLink(link.to), link.toOffset), points,
+    );
+    if (base.length < 2) return [];
     const automatic = simplifyRoute(base);
     return points.length ? routeVia(base[0], base[base.length - 1], points) : automatic.length > 1 ? automatic : base;
   };
@@ -931,6 +856,11 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   /** true, если связь создана */
   const addCardLink = (from: string, to: string, a: CardAnchor, b: CardAnchor): boolean => {
     if (from === to || !cardIds.includes(from) || !cardIds.includes(to) || api.model.cardLinks.some((l) => l.from === from && l.to === to)) return false;
+    if (!routeAnchored(boxForLink(from), a.side, angleForLink(from), boxForLink(to), b.side, angleForLink(to), a.offset, b.offset, obstaclesFor(from, to)).length) {
+      setLinkFailure('Не удалось проложить связь. Передвиньте объекты или выберите другие точки.');
+      return false;
+    }
+    setLinkFailure(null);
     const lid = 'c' + Math.random().toString(36).slice(2, 7);
     api.apply((m) => ({ ...m, cardLinks: [...m.cardLinks, { id: lid, from, to, label: '', fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset }] }));
     setSelLink(lid);
@@ -978,8 +908,13 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const cards = Array.from(world.current?.querySelectorAll<HTMLElement>('[data-card]') ?? []).filter((card) => card.dataset.card !== from && cardIds.includes(card.dataset.card ?? ''));
     const candidates = cards.map((card) => {
       const r = card.getBoundingClientRect();
-      return { card, distance: Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom)) };
-    }).filter((item) => item.distance <= 36).sort((a, b) => a.distance - b.distance);
+      const distance = Math.hypot(Math.max(r.left - x, 0, x - r.right), Math.max(r.top - y, 0, y - r.bottom));
+      const portDistance = Math.min(...Array.from(card.querySelectorAll<HTMLElement>('[data-link-port]')).map(port => {
+        const p = port.getBoundingClientRect();
+        return Math.hypot(x - p.left - p.width / 2, y - p.top - p.height / 2);
+      }));
+      return { card, distance: Math.min(distance, Math.max(0, portDistance - 7 * camRef.current.k)) };
+    }).filter((item) => item.distance <= 18).sort((a, b) => a.distance - b.distance);
     const card = candidates[0]?.card;
     if (!card?.dataset.card) return { target: null, toAnchor: null };
     return { target: card.dataset.card, toAnchor: nearestAnchor(card, x, y) };
@@ -989,8 +924,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const to = end === 'to' ? id : link.to;
     if (from === to || !cardIds.includes(id) || api.model.cardLinks.some((item) => item.id !== link.id && item.from === from && item.to === to)) return null;
     const old = pointsForLink(link);
-    const fixedFrom = validSide(link.fromSide) ? { side: link.fromSide, offset: link.fromOffset ?? 0.5 } : anchorAt(link.from, old[0]);
-    const fixedTo = validSide(link.toSide) ? { side: link.toSide, offset: link.toOffset ?? 0.5 } : anchorAt(link.to, old[old.length - 1]);
+    const fixedFrom = validSide(link.fromSide) ? { side: link.fromSide, offset: link.fromOffset ?? 0.5 } : anchorAt(link.from, old[0] ?? posOf(link.from));
+    const fixedTo = validSide(link.toSide) ? { side: link.toSide, offset: link.toOffset ?? 0.5 } : anchorAt(link.to, old[old.length - 1] ?? posOf(link.to));
     const a = end === 'from' ? anchor : fixedFrom;
     const b = end === 'to' ? anchor : fixedTo;
     return { ...link, from, to, fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset };
@@ -1000,6 +935,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (e.button !== 0) return;
     e.preventDefault(); e.stopPropagation();
     const points = pointsForLink(link);
+    if (points.length < 2) return;
     const gesture: LinkGesture = { kind, link, pointer: e.pointerId, element: e.currentTarget, start: pointOnCanvas(e.clientX, e.clientY), startClient: { x: e.clientX, y: e.clientY }, points, index, delta: 0, draft: points, target: null, candidate: null, moved: false };
     linkGestureRef.current = gesture; setLinkGesture(gesture);
     e.currentTarget.setPointerCapture(e.pointerId);
@@ -1074,6 +1010,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const linkProps = (id: string, linkLabel: string) => ({ linking: mode === 'link', onLinkPick: pickForLink, linkSource: linkFrom === id, onPortDown: startPortDrag, onPortMove: movePortDrag, onPortUp: finishPortDrag, onPortCancel: cancelPortDrag, draggingLink: Boolean(portDrag?.moved || linkPointer || linkGesture?.moved), linkTarget: (portDrag?.target ?? linkPointer?.target ?? linkGesture?.target) === id, snapPort: (portDrag?.target ?? linkPointer?.target) === id ? (portDrag?.toAnchor ?? linkPointer?.toAnchor ?? null) : null, linkLabel });
   const switchMode = (m: 'select' | 'link' | 'gateway') => {
     setMode(m);
+    setLinkFailure(null);
     setLinkFrom(null);
     setLinkFromAnchor(null);
     setLinkPointer(null);
@@ -1160,7 +1097,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           n[i] = { x: Math.max(left, at.x - w / 2), y: Math.max(top, at.y - h / 2) };
         }
       }
-      return settle(n, fresh);
+      return n;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardsKey]);
@@ -1761,6 +1698,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
               </defs>
               {cardLinks.map((l) => {
                 const pts = pointsForLink(l);
+                if (pts.length < 2) return null;
                 const visible = linkGesture?.link.id === l.id && linkGesture.moved ? linkGesture.draft : pts;
                 const d = visible.map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.y}`).join(' ');
                 const on = selLink === l.id;
@@ -1813,6 +1751,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                       const active = linkGesture?.link.id === l.id && linkGesture.kind === end && linkGesture.moved;
                       const path = active ? linkGesture.draft : pts;
                       const point = end === 'from' ? path[0] : path[path.length - 1];
+                      if (!point) return null;
                       return <circle key={end} className="clink-handle endpoint" cx={point.x} cy={point.y} r={7 / cam.k} role="button" tabIndex={0}
                         aria-label={end === 'from' ? 'Переподключить начало связи' : 'Переподключить конец связи'}
                         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setShowReconnect(true); } }} {...handleEvents(end, 0)}><title>Перетащите для переподключения</title></circle>;
@@ -1824,6 +1763,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           )}
           {cardLinks.map((l) => {
             const pts = pointsForLink(l);
+            if (pts.length < 2) return null;
             const m = labelSpot(pts);
             if (editLink === l.id)
               return (
@@ -1907,6 +1847,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
           <button type="button" className="tool-btn" aria-label="Шаг вперёд" title="Шаг вперёд (Ctrl+Shift+Z)" disabled={!api.canRedo} onClick={api.redo}>
             <Icon name="redo" size={17} stroke={1.9} />
           </button>
+          {linkFailure && <span className="tools-hint" role="status">{linkFailure}</span>}
+          {selectedLink && pointsForLink(selectedLink).length < 2 && <span className="tools-hint" role="status">Для связи нет свободного маршрута. Передвиньте объекты.</span>}
           {mode === 'gateway' && <span className="tools-hint">Кликните по полотну, куда поставить шлюз</span>}
           {mode === 'link' && (
             <span className="tools-hint">{linkFrom ? 'Выберите карточку, куда ведёт связь' : 'Выберите карточку, откуда идёт связь'}</span>
@@ -1925,7 +1867,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                   <select className="pinput" value={selectedLink[end]} onChange={(e) => {
                     const points = pointsForLink(selectedLink);
                     const oldPoint = end === 'from' ? points[0] : points[points.length - 1];
-                    const next = reconnectLink(selectedLink, end, e.target.value, anchorAt(e.target.value, oldPoint));
+                    const next = reconnectLink(selectedLink, end, e.target.value, anchorAt(e.target.value, oldPoint ?? posOf(e.target.value)));
                     if (next) commitLink(next);
                   }}>
                     {cardIds.map((id) => {

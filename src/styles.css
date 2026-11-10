@@ -284,7 +284,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--blue); outl
 .canvas { cursor: default; }
 .canvas.hand { cursor: grab; }
 .marquee { position: absolute; z-index: 9; box-sizing: border-box; border: 1px solid var(--blue); background: rgba(37, 99, 235, 0.08); pointer-events: none; }
-.card.sel { box-shadow: 0 0 0 2px var(--blue), 0 0 0 6px rgba(37, 99, 235, 0.14), var(--shadow); }
+.card.sel { z-index: 3; box-shadow: 0 0 0 2px var(--blue), 0 0 0 6px rgba(37, 99, 235, 0.14), var(--shadow); }
 .doc-card.sel { box-shadow: 0 0 0 2px var(--blue), 0 0 0 7px rgba(37, 99, 235, 0.2), 0 14px 32px rgba(31, 36, 48, 0.1); }
 .tools-count { margin: 0 6px 0 4px; padding: 0 10px; height: 24px; border-radius: 999px; background: var(--blue-soft); color: var(--blue-ink); font-size: 12.5px; font-weight: 600; display: flex; align-items: center; white-space: nowrap; }
 .node.picked { z-index: 1; }
@@ -637,7 +637,7 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 
 /* ---------- связи между карточками ---------- */
 .card-port { position: absolute; z-index: 6; width: 14px; height: 14px; padding: 0; border: 2px solid var(--blue); border-radius: 50%; background: #fff; cursor: crosshair; touch-action: none; visibility: hidden; pointer-events: none; }
-.card.sel .card-port, .card.link-target .card-port { visibility: visible; pointer-events: auto; }
+.card:hover .card-port, .card.sel .card-port, .card.link-target .card-port { visibility: visible; pointer-events: auto; }
 .card-port.snap { background: var(--blue); outline: 4px solid rgba(37, 99, 235, .25); scale: 1.3; }
 .card-port:hover, .card-port:focus-visible { background: var(--blue); outline: 3px solid rgba(37, 99, 235, .2); }
 .card-port-top { top: 0; transform: translate(-50%, -50%); }
