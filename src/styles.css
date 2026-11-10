@@ -1007,9 +1007,11 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ai-doclist li.more { background: transparent; border-color: transparent; color: var(--muted); }
 .ai-more { align-self: center; font-size: 12px; color: var(--muted); }
 
-.diagram-edge-handle, .diagram-segment-handle { fill: #fff; stroke: #4266c8; stroke-width: 2; cursor: move; vector-effect: non-scaling-stroke; }
-.diagram-segment-handle { fill: #4266c8; cursor: grab; }
-.diagram-edge-handle:focus-visible, .diagram-segment-handle:focus-visible { outline: none; stroke: #101d50; stroke-width: 4; }
+.diagram-edge-handle, .diagram-segment-handle { fill: #4266c8; stroke: #fff; stroke-width: 1; cursor: grab; vector-effect: non-scaling-stroke; }
+.diagram-edge-handle:focus-visible, .diagram-segment-handle:focus-visible { outline: none; stroke: #101d50; stroke-width: 2; }
+.diagram-waypoint-keyboard { opacity: 0; pointer-events: none; fill: #4266c8; stroke: #fff; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.diagram-waypoint-keyboard:focus-visible { opacity: 1; outline: none; stroke: #101d50; stroke-width: 2; }
+.diagram-edge-control-guide { stroke: #4266c8; stroke-width: 1; vector-effect: non-scaling-stroke; }
 .diagram-edge.invalid { stroke: #ba3030; }
 .diagram-edge-help { font-size: 12px; line-height: 1.4; color: #555e70; }
 .diagram-region { pointer-events: none; }

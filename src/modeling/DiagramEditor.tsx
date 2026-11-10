@@ -5,6 +5,7 @@ import { WorkspaceContextMenu } from '../WorkspaceContextMenu';
 import { connectionPortCount } from '../connectionPorts';
 import { hasSelfIntersections, simplifyRoute } from './orthogonalRouting';
 import { endpointsFaceOutward, routeBetweenNodes } from './diagramRouting';
+import { snapRouteSegmentDelta } from './diagramRouteSnapping';
 import { moveSelectedNodes, nodesInSelection, selectionBounds } from './diagramSelection';
 import { DIAGRAM_GRID_STEP, snapDiagramPoint } from './diagramGrid';
 import { alignDiagramBox, type AlignmentGuide } from './diagramAlignment';
@@ -122,6 +123,7 @@ function portCount(node: DiagramNode, symbol?: DiagramSymbol, horizontal = true)
 function orthogonal(points: DiagramPoint[]): boolean {
   return points.length >= 2 && points.slice(1).every((p, i) => p.x === points[i].x || p.y === points[i].y);
 }
+
 
 function moveRoutePoint(points: DiagramPoint[], index: number, at: DiagramPoint): DiagramPoint[] {
   const next = points.map((p) => ({ ...p }));
@@ -352,7 +354,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
           const local = { x: horizontal ? node.width * offset : side === 'left' ? 0 : node.width, y: horizontal ? side === 'top' ? 0 : node.height : node.height * offset };
           const edge = anchor({ x: 0, y: 0, width: node.width, height: node.height }, local, symbol?.shape);
           const endpoint = { x: node.x + edge.x, y: node.y + edge.y };
-          const center = { x: endpoint.x + (side === 'left' ? -14 : side === 'right' ? 14 : 0), y: endpoint.y + (side === 'top' ? -14 : side === 'bottom' ? 14 : 0) };
+          const center = { x: endpoint.x + (side === 'left' ? -1 : side === 'right' ? 1 : 0), y: endpoint.y + (side === 'top' ? -1 : side === 'bottom' ? 1 : 0) };
           return { endpoint, distance: Math.hypot(center.x - at.x, center.y - at.y) * scale };
         });
       });
@@ -522,21 +524,40 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
     setSelected(edge.id); const item: EdgeDrag = { edge, pointer: event.pointerId, start: point(event.clientX, event.clientY), kind, index, element: event.currentTarget, points: edge.points.map((p) => ({ ...p })), from: edge.from, to: edge.to, valid: true, moved: false };
     edgeDragRef.current = item; setEdgeDrag(item); event.currentTarget.setPointerCapture(event.pointerId);
   };
+  const reconnectRoute = (edge: DiagramEdge, end: 'from' | 'to', nodeId: string, endpoint: DiagramPoint): DiagramPoint[] | null => {
+    const from = end === 'from' ? nodeId : edge.from, to = end === 'to' ? nodeId : edge.to;
+    const index = end === 'from' ? 0 : edge.points.length - 1;
+    const points = moveRoutePoint(edge.points, index, endpoint);
+    const allowed = (candidate: DiagramPoint[]) => {
+      if (!validRoute(candidate, parsed.diagram.nodes, from, to, notation.symbols)) return false;
+      try { notation.editEdge(source, edge.id, from, to, candidate); return true; } catch { return false; }
+    };
+    if (allowed(points)) return points;
+    const a = parsed.diagram.nodes.find(n => n.id === from), b = parsed.diagram.nodes.find(n => n.id === to);
+    if (!a || !b) return null;
+    const route = routeBetweenNodes(parsed.diagram.nodes, a, b, points[0], points[points.length - 1], n => notation.symbols.find(symbol => symbol.type === n.type)?.shape);
+    return route && allowed(route) ? route : null;
+  };
   const updateEdgeDrag = (event: React.PointerEvent<SVGElement>) => {
     const item = edgeDragRef.current; if (!item || item.pointer !== event.pointerId) return;
     const at = point(event.clientX, event.clientY); const dx = at.x - item.start.x; const dy = at.y - item.start.y;
     let points = item.edge.points.map((p) => ({ ...p })); let from = item.edge.from; let to = item.edge.to; let valid = true;
     if (item.kind === 'point' && (item.index === 0 || item.index === points.length - 1)) {
-      const scale = svg.current?.getScreenCTM()?.a || 1; const tolerance = 18 / Math.abs(scale);
-      const candidates = parsed.diagram.nodes.map((node) => ({ node, distance: Math.hypot(Math.max(node.x - at.x, 0, at.x - node.x - node.width), Math.max(node.y - at.y, 0, at.y - node.y - node.height)) })).filter((candidate) => candidate.distance <= tolerance).sort((a, b) => a.distance - b.distance);
-      const node = candidates[0]?.node;
-      if (node) {
-        points = moveRoutePoint(points, item.index, anchor(node, at, notation.symbols.find((symbol) => symbol.type === node.type)?.shape));
-        if (item.index === 0) from = node.id; else to = node.id;
-        try { notation.editEdge(source, item.edge.id, from, to, points); } catch { valid = false; }
+      const first = item.index === 0;
+      const target = connectionTarget(at, first ? item.edge.to : item.edge.from);
+      const node = parsed.diagram.nodes.find(n => n.id === target?.id);
+      if (node && target?.endpoint) {
+        if (first) from = node.id; else to = node.id;
+        const route = reconnectRoute(item.edge, first ? 'from' : 'to', node.id, target.endpoint);
+        if (route) points = route; else { points = moveRoutePoint(points, item.index, target.endpoint); valid = false; }
       } else { points = moveRoutePoint(points, item.index, at); valid = false; }
     } else if (item.kind === 'point') points = moveRoutePoint(points, item.index, { x: item.edge.points[item.index].x + dx, y: item.edge.points[item.index].y + dy });
-    else points = moveRouteSegment(points, item.index, dx, dy);
+    else {
+      const tolerance = 7 / Math.abs(svg.current?.getScreenCTM()?.a || 1);
+      const snapped = snapRouteSegmentDelta(points, item.index, dx, dy, tolerance);
+      const candidate = moveRouteSegment(points, item.index, snapped.dx, snapped.dy);
+      points = validRoute(candidate, parsed.diagram.nodes, from, to, notation.symbols) ? candidate : moveRouteSegment(points, item.index, dx, dy);
+    }
     if (!validRoute(points, parsed.diagram.nodes, from, to, notation.symbols)) valid = false;
     const next = { ...item, points, from, to, valid, moved: item.moved || Math.hypot(dx, dy) > 3 }; edgeDragRef.current = next; setEdgeDrag(next);
   };
@@ -548,10 +569,9 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
   };
   const reconnectByKeyboard = (edge: DiagramEdge, end: 'from' | 'to', nodeId: string) => {
     const node = parsed.diagram.nodes.find((item) => item.id === nodeId); if (!node) return;
-    const index = end === 'from' ? 0 : edge.points.length - 1;
     const neighbor = edge.points[end === 'from' ? 1 : edge.points.length - 2];
-    const points = moveRoutePoint(edge.points, index, anchor(node, neighbor, notation.symbols.find((symbol) => symbol.type === node.type)?.shape));
-    if (!validRoute(points, parsed.diagram.nodes, end === 'from' ? nodeId : edge.from, end === 'to' ? nodeId : edge.to, notation.symbols)) return;
+    const points = reconnectRoute(edge, end, nodeId, anchor(node, neighbor, notation.symbols.find((symbol) => symbol.type === node.type)?.shape));
+    if (!points) { setFailure('Не удалось перепривязать связь к выбранному элементу.'); return; }
     apply((value) => notation.editEdge(value, edge.id, end === 'from' ? nodeId : edge.from, end === 'to' ? nodeId : edge.to, points));
   };
   const importFile = async (input: File | undefined) => {
@@ -766,17 +786,7 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
             });
             return <g key={edge.id} data-diagram-edge={edge.id} onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); openMenu(edge.id, event.clientX, event.clientY); }} onDoubleClick={() => { if (edge.labelEditable !== false) startEdit(edge.id, edge.label, middle.x - 70, middle.y - 22, 140); }} onPointerMove={updateEdgeDrag} onPointerUp={(event) => finishEdgeDrag(event)} onPointerCancel={(event) => finishEdgeDrag(event, true)} onLostPointerCapture={(event) => finishEdgeDrag(event, true)}><polyline points={coords} className={`diagram-edge${selected === edge.id ? ' selected' : ''}${edgeDrag?.edge.id === edge.id && !edgeDrag.valid ? ' invalid' : ''}`} strokeDasharray={edge.lineStyle === 'dashed' ? '6 4' : edge.lineStyle === 'dotted' ? '2 5' : undefined} strokeLinecap={edge.lineStyle === 'dotted' ? 'round' : undefined} markerStart={markerAtStart(edge)} markerEnd={markerAtEnd(edge)} /><polyline points={coords} className="diagram-edge-hit" tabIndex={0} role="button" aria-label={`Связь${edge.label ? `: ${edge.label}` : ''}`} onPointerDown={(event) => { event.stopPropagation(); setSelected(edge.id); }} onKeyDown={(event) => { if (menuKey(event, edge.id)) return; if (event.key === 'Enter') setSelected(edge.id); }} />{edge.stereotype && <text x={middle.x} y={middle.y - (edge.label ? 22 : 8)} className="diagram-edge-label" textAnchor="middle">{edge.stereotype}</text>}{edge.label && <text x={middle.x} y={middle.y - 8} className="diagram-edge-label">{edge.label}</text>}
               {endAnnotations}
-              {selected === edge.id && !locked && edge.routeEditable !== false && orthogonal(edge.points) && edge.points.map((p, i) => <g key={`point-${i}`}><circle cx={p.x} cy={p.y} r="6" className="diagram-edge-handle" tabIndex={0} role="button" aria-label={i === 0 ? 'Начало связи; перетащите на элемент' : i === edge.points.length - 1 ? 'Конец связи; перетащите на элемент' : `Точка маршрута ${i}; используйте стрелки`} onPointerDown={(event) => beginEdgeDrag(event, edge, 'point', i)} onKeyDown={(event) => {
-                if (i === 0 || i === edge.points.length - 1) return;
-                const delta: Record<string, DiagramPoint> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } }; const d = delta[event.key]; if (!d) return; event.preventDefault(); event.stopPropagation();
-                const next = moveRoutePoint(edge.points, i, { x: p.x + d.x * (event.shiftKey ? 10 : 1), y: p.y + d.y * (event.shiftKey ? 10 : 1) }); if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to, notation.symbols)) apply((value) => notation.editEdge(value, edge.id, edge.from, edge.to, next));
-              }} />{i < edge.points.length - 1 && <circle cx={(p.x + edge.points[i + 1].x) / 2} cy={(p.y + edge.points[i + 1].y) / 2} r="5" className="diagram-segment-handle" tabIndex={0} role="button" aria-label={`Сегмент ${i + 1}; используйте стрелки`} onPointerDown={(event) => beginEdgeDrag(event, edge, 'segment', i)} onKeyDown={(event) => {
-                  const horizontal = edge.points[i + 1].y === p.y;
-                  const direction = horizontal ? (event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0) : (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0);
-                  if (!direction) return; event.preventDefault(); event.stopPropagation(); const amount = direction * (event.shiftKey ? 10 : 1);
-                  const next = moveRouteSegment(edge.points, i, horizontal ? 0 : amount, horizontal ? amount : 0);
-                  if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to, notation.symbols)) apply((value) => notation.editEdge(value, edge.id, edge.from, edge.to, next));
-                }} />}</g>)}
+
             </g>;
           })}
           {sequenceProjection && <g data-sequence-layer="true">
@@ -855,12 +865,53 @@ export function DiagramEditor({ notation, title, source: original, onSave, onClo
                   const offset = (i + 1) / (count + 1);
                   const local = { x: horizontal ? node.width * offset : side === 'left' ? 0 : node.width, y: horizontal ? side === 'top' ? 0 : node.height : node.height * offset };
                   const edge = anchor({ x: 0, y: 0, width: node.width, height: node.height }, local, symbol?.shape);
-                  const x = edge.x + (side === 'left' ? -14 : side === 'right' ? 14 : 0), y = edge.y + (side === 'top' ? -14 : side === 'bottom' ? 14 : 0);
+                  const x = edge.x + (side === 'left' ? -1 : side === 'right' ? 1 : 0), y = edge.y + (side === 'top' ? -1 : side === 'bottom' ? 1 : 0);
                   return <g key={`${side}-${i}`} className="diagram-connection-port" style={connectFrom === node.id && portDragRef.current ? { opacity: 0, pointerEvents: 'none' } : undefined} data-connection-port={label} data-port-side={side} data-port-offset={offset} transform={`translate(${x} ${y})`} role="button" tabIndex={connectFrom === node.id && portDragRef.current ? -1 : selected === node.id || tool === 'connect' ? 0 : -1} aria-label={`Создать связь ${label}: точка ${i + 1} из ${count}`} onPointerDown={(event) => beginPort(event, originalNode, { x: node.x + edge.x, y: node.y + edge.y })} onPointerMove={movePort} onPointerUp={(event) => finishPort(event)} onPointerCancel={(event) => finishPort(event, true)} onLostPointerCapture={(event) => finishPort(event, true)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); if (tool === 'connect' && connectFrom) connectNode(originalNode, { x: node.x + edge.x, y: node.y + edge.y }); else { setTool('connect'); connectNode(originalNode, { x: node.x + edge.x, y: node.y + edge.y }); } } }}><circle r="4" /><path d="M-2 0H2M0 -2V2" /></g>;
                 });
               })}
             </g>;
           })}
+          {selectedEdge && !locked && selectedEdge.routeEditable !== false && orthogonal(selectedEdge.points) && (() => {
+            const edge = selectedEdge, bounds = svg.current?.getBoundingClientRect();
+            const scale = bounds?.width && bounds.height ? Math.min(bounds.width / view.width, bounds.height / view.height) : Math.abs(svg.current?.getScreenCTM()?.a || 1);
+            const currentPoints = edgeDrag?.edge.id === edge.id ? edgeDrag.points : edge.points;
+            const short = edge.points.length === 2 && Math.hypot(edge.points[1].x - edge.points[0].x, edge.points[1].y - edge.points[0].y) * scale < 22;
+            return <g data-diagram-edge-controls={edge.id} onPointerMove={updateEdgeDrag} onPointerUp={(event) => finishEdgeDrag(event)} onPointerCancel={(event) => finishEdgeDrag(event, true)} onLostPointerCapture={(event) => finishEdgeDrag(event, true)}>
+              {edge.points.slice(0, -1).map((p, i) => {
+                const nextPoint = edge.points[i + 1], horizontal = p.y === nextPoint.y;
+                const length = Math.hypot(nextPoint.x - p.x, nextPoint.y - p.y) * scale;
+                return <g key={`segment-${i}`}>
+                  <line x1={p.x} y1={p.y} x2={nextPoint.x} y2={nextPoint.y} stroke="transparent" strokeWidth={10 / scale} pointerEvents="stroke" style={{ cursor: 'grab' }} onPointerDown={event => beginEdgeDrag(event, edge, 'segment', i)} />
+                  <circle cx={(p.x + nextPoint.x) / 2} cy={(p.y + nextPoint.y) / 2} r={3 / scale} className={length < 22 ? 'diagram-waypoint-keyboard' : 'diagram-segment-handle'} tabIndex={0} role="button" aria-label={`Сегмент ${i + 1}; используйте стрелки`} onPointerDown={event => beginEdgeDrag(event, edge, 'segment', i)} onKeyDown={event => {
+                    const direction = horizontal ? (event.key === 'ArrowUp' ? -1 : event.key === 'ArrowDown' ? 1 : 0) : (event.key === 'ArrowLeft' ? -1 : event.key === 'ArrowRight' ? 1 : 0);
+                    if (!direction) return; event.preventDefault(); event.stopPropagation(); const amount = direction * (event.shiftKey ? 10 : 1);
+                    const next = moveRouteSegment(edge.points, i, horizontal ? 0 : amount, horizontal ? amount : 0);
+                    if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to, notation.symbols)) apply(value => notation.editEdge(value, edge.id, edge.from, edge.to, next));
+                  }} />
+                </g>;
+              })}
+              {edge.points.slice(1, -1).map((p, offset) => {
+                const i = offset + 1;
+                return <circle key={`point-${i}`} cx={p.x} cy={p.y} r={3 / scale} className="diagram-waypoint-keyboard" tabIndex={0} role="button" aria-label={`Точка маршрута ${i}; используйте стрелки`} onKeyDown={event => {
+                  const delta: Record<string, DiagramPoint> = { ArrowLeft: { x: -1, y: 0 }, ArrowRight: { x: 1, y: 0 }, ArrowUp: { x: 0, y: -1 }, ArrowDown: { x: 0, y: 1 } };
+                  const d = delta[event.key]; if (!d) return; event.preventDefault(); event.stopPropagation();
+                  const next = moveRoutePoint(edge.points, i, { x: p.x + d.x * (event.shiftKey ? 10 : 1), y: p.y + d.y * (event.shiftKey ? 10 : 1) });
+                  if (validRoute(next, parsed.diagram.nodes, edge.from, edge.to, notation.symbols)) apply(value => notation.editEdge(value, edge.id, edge.from, edge.to, next));
+                }} />;
+              })}
+              {(['from', 'to'] as const).map(side => {
+                const index = side === 'from' ? 0 : edge.points.length - 1;
+                const p = side === 'from' ? currentPoints[0] : currentPoints[currentPoints.length - 1];
+                const horizontal = edge.points[0].y === edge.points[1].y;
+                const offset = short ? (side === 'from' ? -7 : 7) / scale : 0;
+                const x = p.x + (horizontal ? 0 : offset), y = p.y + (horizontal ? offset : 0);
+                return <g key={side}>
+                  {short && <line x1={p.x} y1={p.y} x2={x} y2={y} className="diagram-edge-control-guide" pointerEvents="none" />}
+                  <circle cx={x} cy={y} r={4 / scale} className="diagram-edge-handle" tabIndex={0} role="button" aria-label={`${side === 'from' ? 'Начало' : 'Конец'} связи; перетащите на элемент`} onPointerDown={event => beginEdgeDrag(event, edge, 'point', index)} onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setProperties(true); } }} />
+                </g>;
+              })}
+            </g>;
+          })()}
           {marquee?.moved && <rect {...selectionBounds(marquee.start, marquee.current)} data-selection-marquee="true" className="diagram-selection-marquee" pointerEvents="none" />}
           {placingObject && placementCursor && (placementSymbol ? (() => {
             const raw = { x: placementCursor.x - placementSymbol.width / 2, y: placementCursor.y - placementSymbol.height / 2 };

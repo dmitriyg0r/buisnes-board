@@ -21,7 +21,7 @@ try {
   const nearBody = doc.querySelector('[data-connection-preview]')?.getAttribute('points')?.split(' ').at(-1)?.split(',').map(Number);
   const firstPort = dst.querySelector<SVGGElement>('[data-port-side="top"][data-port-offset="0.25"]')!;
   const portMatrix = firstPort.ownerSVGElement!.getCTM()!.inverse().multiply(firstPort.getCTM()!);
-  assert(nearBody && Math.abs(nearBody[0] - portMatrix.e) < .01 && Math.abs(nearBody[1] - (portMatrix.f + 14)) < .01, 'Возле фигуры предпросмотр не прилип к ближайшей точке');
+  assert(nearBody && Math.abs(nearBody[0] - portMatrix.e) < .01 && Math.abs(nearBody[1] - (portMatrix.f + 1)) < .01, 'Возле фигуры предпросмотр не прилип к ближайшей точке');
   const targetPort = dst.querySelector<SVGGElement>('[data-port-side="top"]')!, target = rect(targetPort);
   const scale = Math.abs(targetPort.getScreenCTM()!.a), near = { x: target.x, y: target.y - 7 * scale - 17 };
   pointer(surface, 'pointermove', near.x, near.y); await pause();
@@ -48,7 +48,7 @@ try {
   assert(keyboard, 'Связь с клавиатуры не создана');
   const line = keyboard!.split(' ').map(item => item.split(',').map(Number));
 
-  assert(Math.abs(line[0][0] - a.x) < .01 && Math.abs(line[0][1] - (a.y - 14)) < .01 && Math.abs(line[line.length - 1][0] - b.x) < .01 && Math.abs(line[line.length - 1][1] - (b.y + 14)) < .01, 'Клавиатура не сохранила выбранные точки');
+  assert(Math.abs(line[0][0] - a.x) < .01 && Math.abs(line[0][1] - (a.y - 1)) < .01 && Math.abs(line[line.length - 1][0] - b.x) < .01 && Math.abs(line[line.length - 1][1] - (b.y + 1)) < .01, 'Клавиатура не сохранила выбранные точки');
   win.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'z', code: 'KeyZ', metaKey: true, bubbles: true })); await pause();
   pointer(src, 'pointermove', p.x, p.y); await pause();
   const dragPort = src.querySelector<SVGGElement>('[data-port-side="left"]')!;
