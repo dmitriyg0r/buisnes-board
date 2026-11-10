@@ -94,6 +94,11 @@ try {
   const original = notation.read(xml).diagram.edges.find(e => e.id === originalId)!;
   const diagonal = [original.points[0], original.points[original.points.length - 1]];
   const diagonalXml = notation.editEdge(xml, original.id, original.from, original.to, diagonal);
+  const mid = { x: (diagonal[0].x + diagonal[1].x) / 2, y: (diagonal[0].y + diagonal[1].y) / 2 };
+  const coveredDiagonal = notation.moveNode(diagonalXml, blocker.id, { x: mid.x - blocker.width / 2, y: mid.y - blocker.height / 2 });
+  const afterCover = notation.read(coveredDiagonal).diagram;
+  assert(afterCover.nodes.find(n => n.id === blocker.id)?.x === Math.round(mid.x - blocker.width / 2), 'Пересечение диагонали заблокировало перемещение');
+  assert(JSON.stringify(afterCover.edges.find(e => e.id === originalId)!.points) === JSON.stringify(diagonal), 'Посторонняя диагональная связь изменилась');
   const movedDiagonal = notation.moveNode(diagonalXml, target.id, { x: b.x + 10, y: b.y + 10 });
   const imported = notation.read(movedDiagonal).diagram.edges.find(e => e.id === originalId)!;
   assert(imported.points.length === 2 && imported.points[0].x !== imported.points[1].x && imported.points[0].y !== imported.points[1].y, 'Импортированная диагональ молча перестроена');
