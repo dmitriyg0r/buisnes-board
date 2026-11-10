@@ -597,17 +597,20 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   layoutRef.current = { pos, sizes };
   // перетаскивание в реальном времени: свои позиции уходят сразу, чужие применяются без ожидания записи в модель
   const sentDrag = useRef<Record<string, string>>({});
+  const movingIds = useRef<string[]>([]);
+  const livePresence = useRef(presence); livePresence.current = presence;
   const [liveIds, setLiveIds] = useState<Set<string>>(new Set());
   const liveTimer = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => {
     if (!presence || !gestureCk.current) return;
-    const items = Object.entries(pos).filter(([id, p]) => fmtPos(p) !== sentDrag.current[id]).map(([id, p]) => ({ id, x: Math.round(p.x), y: Math.round(p.y) }));
+    const items = Object.entries(pos).filter(([id, p]) => movingIds.current.includes(id) && fmtPos(p) !== sentDrag.current[id]).map(([id, p]) => ({ id, x: Math.round(p.x), y: Math.round(p.y) }));
     if (!items.length) return;
     for (const i of items) sentDrag.current[i.id] = `${i.x},${i.y}`;
     presence.sendDrag(items);
   }, [pos]);
   useEffect(() => presence?.onDrag((items) => {
-    if (gestureCk.current) return; // свою карточку не дёргаем
+    items = items.filter(item => !gestureCk.current || !movingIds.current.includes(item.id));
+    if (!items.length) return;
     for (const i of items) sentDrag.current[i.id] = `${Math.round(i.x)},${Math.round(i.y)}`;
     setPos((s) => { const n = { ...s }; for (const i of items) n[i.id] = { x: i.x, y: i.y }; return n; });
     setLiveIds(new Set(items.map((i) => i.id)));
@@ -657,6 +660,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const checkpointOnce = () => {
     if (gestureCk.current) return;
     gestureCk.current = true;
+    movingIds.current = [];
     api.checkpoint();
   };
   const boxOf = (s: Record<string, Pos>, i: string): Box => ({ ...(s[i] ?? defaultPos(i)), ...cardSize(i) });
@@ -668,6 +672,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   useEffect(() => {
     // карточку отпустили — направляющие исчезают
     const up = () => {
+      if (gestureCk.current && movingIds.current.length) {
+        const items = movingIds.current.flatMap(id => { const p = layoutRef.current.pos[id]; return p ? [{ id, x: Math.round(p.x), y: Math.round(p.y) }] : []; });
+        livePresence.current?.sendDrag(items);
+      }
       gestureCk.current = false;
       if (guideRef.current.length) {
         guideRef.current = [];
@@ -684,6 +692,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
 
   const move = (id: string, p: Pos) => {
     checkpointOnce();
+    movingIds.current = selCards.includes(id) ? selCards : [id];
     setPos((s) => {
       const cur = (i: string) => s[i] ?? defaultPos(i);
       const dx = p.x - cur(id).x;

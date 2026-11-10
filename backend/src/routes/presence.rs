@@ -86,6 +86,7 @@ pub struct Cursor {
     editing: Option<String>,
     /// карточки, которые участник сейчас тащит: показываем их другим в реальном времени
     drag: Option<Vec<DragItem>>,
+    model_drag: Option<ModelDrag>,
 }
 
 #[derive(Deserialize, serde::Serialize)]
@@ -93,6 +94,33 @@ pub struct DragItem {
     id: String,
     x: f64,
     y: f64,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum DragPhase { Move, End, Cancel }
+
+#[derive(Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ChangeKind { Node, Region, Resize, Label }
+
+#[derive(Deserialize, serde::Serialize)]
+struct ModelDragChange {
+    id: String, kind: ChangeKind, x: f64, y: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    width: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<f64>,
+}
+
+#[derive(Deserialize, serde::Serialize)]
+struct ModelDrag {
+    model: String, gesture: String, session: String, seq: u64,
+    phase: DragPhase, changes: Vec<ModelDragChange>,
+}
+
+fn valid_model(model: &str) -> bool {
+    model.len() <= 200 && model.strip_prefix("model:").or_else(|| model.strip_prefix("proc:")).is_some_and(|key| !key.is_empty())
 }
 
 pub async fn display_name(s: &AppState, id: Uuid) -> AppResult<String> {
@@ -117,6 +145,19 @@ pub async fn cursor(State(s): State<AppState>, user: AuthUser, Path(id): Path<Uu
 
 fn cursor_event(b: Cursor, user: Uuid, name: &str) -> AppResult<Value> {
     let ok = |v: f64| v.is_finite() && v.abs() < 1e7;
+    if let Some(frame) = b.model_drag {
+        let mut ids = std::collections::HashSet::new();
+        let sized = |value: Option<f64>| value.is_some_and(|v| ok(v) && v > 0.0);
+        if !valid_model(&frame.model) || frame.gesture.is_empty() || frame.gesture.len() > 100
+            || frame.session.is_empty() || frame.session.len() > 100 || frame.seq == 0 || frame.seq > 9_007_199_254_740_991
+            || frame.changes.len() > 256
+            || (matches!(frame.phase, DragPhase::Cancel) != frame.changes.is_empty())
+            || frame.changes.iter().any(|c| c.id.is_empty() || c.id.len() > 200 || !ids.insert(&c.id) || !ok(c.x) || !ok(c.y)
+                || if matches!(c.kind, ChangeKind::Resize | ChangeKind::Label) { !sized(c.width) || !sized(c.height) } else { c.width.is_some() || c.height.is_some() }) {
+            return Err(AppError::BadRequest("некорректный предпросмотр перетаскивания модели".into()));
+        }
+        return Ok(json!({ "t": "model_drag", "u": user, "model_drag": frame }));
+    }
     if let Some(items) = b.drag {
         if items.len() > 64 || items.iter().any(|i| i.id.is_empty() || i.id.len() > 200 || !ok(i.x) || !ok(i.y)) {
             return Err(AppError::BadRequest("некорректные данные перетаскивания".into()));
@@ -124,8 +165,7 @@ fn cursor_event(b: Cursor, user: Uuid, name: &str) -> AppResult<Value> {
         return Ok(json!({ "t": "drag", "u": user, "d": items }));
     }
     if let Some(ref editing) = b.editing {
-        let key = editing.strip_prefix("model:").or_else(|| editing.strip_prefix("proc:"));
-        if editing.len() > 200 || key.is_none_or(str::is_empty) {
+        if !valid_model(editing) {
             return Err(AppError::BadRequest("некорректная модель присутствия".into()));
         }
     }
@@ -144,6 +184,24 @@ fn cursor_event(b: Cursor, user: Uuid, name: &str) -> AppResult<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_model_drag_frames_and_validation() {
+        let user = Uuid::new_v4();
+        let frame = json!({"model":"model:epc", "gesture":"g", "session":"s", "seq":1, "phase":"move", "changes":[{"id":"node", "kind":"node", "x":10.5,"y":-20.0}]});
+        for phase in ["move", "end", "cancel"] {
+            let mut value = frame.clone(); value["phase"] = json!(phase);
+            if phase == "cancel" { value["changes"] = json!([]); }
+            let event = cursor_event(serde_json::from_value(json!({"model_drag":value})).unwrap(), user, "Имя").unwrap();
+            assert_eq!(event["t"], "model_drag"); assert_eq!(event["model_drag"], value);
+        }
+        for (key, invalid) in [("model", json!("doc:1")), ("session", json!("")), ("gesture", json!("")), ("seq", json!(0)), ("changes", json!([])), ("changes", json!([{"id":"n", "kind":"resize", "x":0,"y":0,"width":-10,"height":20}])), ("changes", json!([{"id":"n", "kind":"node", "x":1e8,"y":0}]))] {
+            let mut value = frame.clone(); value[key] = invalid;
+            assert!(cursor_event(serde_json::from_value(json!({"model_drag":value})).unwrap(), user, "Имя").is_err());
+        }
+        let mut duplicate = frame.clone(); duplicate["changes"] = json!([frame["changes"][0], frame["changes"][0]]);
+        assert!(cursor_event(serde_json::from_value(json!({"model_drag":duplicate})).unwrap(), user, "Имя").is_err());
+    }
 
     #[test]
     fn scoped_cursor_keeps_editor_when_pointer_leaves() {
