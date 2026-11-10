@@ -8,6 +8,7 @@ import { AiChat } from './AiChat';
 import { routeOrthogonal, type Direction } from './modeling/orthogonalRouting';
 import { routeBetweenNodes } from './modeling/diagramRouting';
 import { overlappingCardRoute } from './canvasLinkFallback';
+import { editLinkSegment, validCardRoute } from './canvasLinkEditing';
 import { AiDraftLayer, ghostRect, useDraftBuilding } from './AiDraft';
 import { Icon } from './Icon';
 import { ProcessCard } from './ProcessCard';
@@ -171,7 +172,7 @@ function DragCard({
       tabIndex={0}
       role="group"
       aria-label={linkLabel}
-      className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}${linkTarget && draggingLink ? ' link-target' : ''}`}
+      className={`card ${className}${selected ? ' sel' : ''}${linkSource ? ' link-src' : ''}${draggingLink ? ' link-dragging' : ''}${linkTarget && draggingLink ? ' link-target' : ''}`}
       style={{ left: pos.x, top: pos.y, ...(live ? { transition: 'left .08s linear, top .08s linear' } : null), ...style }}
       onContextMenu={(e) => onContext({ type: 'card', id }, e)}
       onFocus={(e) => { if (e.target === e.currentTarget) onGrab(id, false); }}
@@ -226,7 +227,7 @@ function DragCard({
           const style = side === 'top' || side === 'bottom' ? { left: `${offset * 100}%` } : { top: `${offset * 100}%` };
           return <button
             key={`${side}-${i}`} type="button" className={`card-port card-port-${side}${snapPort && snapPort.side === side && Math.abs(snapPort.offset - offset) < 1e-6 ? ' snap' : ''}`} style={style} data-link-port={side} data-link-offset={offset} data-nodrag
-            tabIndex={selected || linkTarget ? 0 : -1}
+            tabIndex={draggingLink ? (linkTarget ? 0 : -1) : selected ? 0 : -1}
             aria-label={`Связь от «${linkLabel}», точка ${label} ${i + 1} из ${count}`} title={`Создать связь ${label}`}
             onPointerDown={(e) => onPortDown(id, anchor, e)} onPointerMove={onPortMove} onPointerUp={onPortUp} onPointerCancel={onPortCancel} onLostPointerCapture={onPortCancel}
             onClick={(e) => { e.stopPropagation(); if (e.detail === 0) onLinkPick(id, anchor); }}
@@ -485,9 +486,20 @@ function simplifyRoute(points: Pos[]): Pos[] {
 }
 
 /** Ручной маршрут сохраняет точки при перемещении карточек, дополняя прямые углы. */
-function routeVia(start: Pos, end: Pos, points: Pos[]): Pos[] {
+export function routeVia(start: Pos, end: Pos, points: Pos[], fromSide?: CardSide, toSide?: CardSide): Pos[] {
+  // Крайние изгибы скользят по соседнему участку, а не остаются позади
+  // сдвинутого порта: иначе добавленный угол создаёт обратный ход.
+  const bends = points.map(point => ({ ...point }));
+  if (bends.length >= 2) {
+    const first = bends[0], next = bends[1];
+    if ((fromSide === 'left' || fromSide === 'right') && Math.abs(first.x - next.x) < 0.01) first.y = start.y;
+    if ((fromSide === 'top' || fromSide === 'bottom') && Math.abs(first.y - next.y) < 0.01) first.x = start.x;
+    const last = bends[bends.length - 1], prev = bends[bends.length - 2];
+    if ((toSide === 'left' || toSide === 'right') && Math.abs(last.x - prev.x) < 0.01) last.y = end.y;
+    if ((toSide === 'top' || toSide === 'bottom') && Math.abs(last.y - prev.y) < 0.01) last.x = end.x;
+  }
   const result: Pos[] = [start];
-  for (const point of [...points, end]) {
+  for (const point of [...bends, end]) {
     const prev = result[result.length - 1];
     if (Math.abs(prev.x - point.x) > 0.01 && Math.abs(prev.y - point.y) > 0.01) result.push({ x: point.x, y: prev.y });
     if (Math.abs(prev.x - point.x) > 0.01 || Math.abs(prev.y - point.y) > 0.01) result.push(point);
@@ -496,24 +508,6 @@ function routeVia(start: Pos, end: Pos, points: Pos[]): Pos[] {
   return simplified.length > 1 ? simplified : [start, end];
 }
 
-/** Сдвиг отрезка не перемещает закреплённые на карточках концы. */
-function moveRouteSegment(points: Pos[], index: number, delta: number): Pos[] {
-  const a = points[index];
-  const b = points[index + 1];
-  const horizontal = Math.abs(a.y - b.y) < Math.abs(a.x - b.x);
-  const shift = (p: Pos) => horizontal ? { x: p.x, y: p.y + delta } : { x: p.x + delta, y: p.y };
-  const sign = Math.sign(horizontal ? b.x - a.x : b.y - a.y) || 1;
-  const length = Math.hypot(b.x - a.x, b.y - a.y);
-  const stub = Math.min(24, length / 3) * sign;
-  const first = horizontal ? { x: a.x + stub, y: a.y } : { x: a.x, y: a.y + stub };
-  const last = horizontal ? { x: b.x - stub, y: b.y } : { x: b.x, y: b.y - stub };
-  return [
-    ...points.slice(0, index),
-    ...(index === 0 ? [a, first, shift(first)] : [shift(a)]),
-    ...(index + 1 === points.length - 1 ? [shift(last), last, b] : [shift(b)]),
-    ...points.slice(index + 2),
-  ];
-}
 
 /** Номер ближайшего отрезка для перетаскивания линии целиком. */
 function nearestRouteSegment(points: Pos[], point: Pos): number {
@@ -831,15 +825,30 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const angleForLink = (id: string) => { const i = sources.findIndex((s) => `src:${s.id}` === id); return i < 0 ? 0 : i % 2 ? 1.2 : -1.4; };
   /** Остальные карточки: связь старается не заходить и на них. */
   const obstaclesFor = (a: string, b: string | null) => cardIds.filter((id) => id !== a && id !== b).map(boxForLink);
+  const routeIsValid = (link: CardLink, points: Pos[]) => {
+    if (!validSide(link.fromSide) || !validSide(link.toSide)) return false;
+    const rect = (box: Box) => ({ x: box.x, y: box.y, width: box.w, height: box.h });
+    return validCardRoute(points, link.fromSide, link.toSide, rect(boxForLink(link.from)), rect(boxForLink(link.to)), obstaclesFor(link.from, link.to).map(rect));
+  };
+  const editSegment = (link: CardLink, points: Pos[], index: number, dx: number, dy: number) => {
+    const rect = (box: Box) => ({ x: box.x, y: box.y, width: box.w, height: box.h });
+    return editLinkSegment({ points, index, dx, dy, tolerance: 7 / camRef.current.k,
+      startBounds: rect(boxForLink(link.from)), endBounds: rect(boxForLink(link.to)),
+      obstacles: obstaclesFor(link.from, link.to).map(rect) });
+  };
   const pointsForLink = (link: CardLink) => {
     const base = validSide(link.fromSide) && validSide(link.toSide)
       ? routeAnchored(boxForLink(link.from), link.fromSide, angleForLink(link.from), boxForLink(link.to), link.toSide, angleForLink(link.to), link.fromOffset, link.toOffset, obstaclesFor(link.from, link.to))
       : routeCards(boxForLink(link.from), boxForLink(link.to), obstaclesFor(link.from, link.to));
     const points = Array.isArray(link.routePoints) ? link.routePoints.filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.y)) : [];
-    if (points.length && validSide(link.fromSide) && validSide(link.toSide)) return routeVia(
-      sidePoint(boxForLink(link.from), link.fromSide, angleForLink(link.from), link.fromOffset),
-      sidePoint(boxForLink(link.to), link.toSide, angleForLink(link.to), link.toOffset), points,
-    );
+    if (points.length && validSide(link.fromSide) && validSide(link.toSide)) {
+      const manual = routeVia(
+        sidePoint(boxForLink(link.from), link.fromSide, angleForLink(link.from), link.fromOffset),
+        sidePoint(boxForLink(link.to), link.toSide, angleForLink(link.to), link.toOffset), points, link.fromSide, link.toSide,
+      );
+      // При движении карточки показываем безопасный обход, не изменяя сохранённые изгибы.
+      return routeIsValid(link, manual) || !routeIsValid(link, base) ? manual : base;
+    }
     if (base.length < 2) return [];
     const automatic = simplifyRoute(base);
     return points.length ? routeVia(base[0], base[base.length - 1], points) : automatic.length > 1 ? automatic : base;
@@ -931,9 +940,21 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     const fixedTo = validSide(link.toSide) ? { side: link.toSide, offset: link.toOffset ?? 0.5 } : anchorAt(link.to, old[old.length - 1] ?? posOf(link.to));
     const a = end === 'from' ? anchor : fixedFrom;
     const b = end === 'to' ? anchor : fixedTo;
-    return { ...link, from, to, fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset };
+    const next = { ...link, from, to, fromSide: a.side, fromOffset: a.offset, toSide: b.side, toOffset: b.offset };
+    const manual = link.routePoints?.length ? routeVia(
+      sidePoint(boxForLink(from), a.side, angleForLink(from), a.offset),
+      sidePoint(boxForLink(to), b.side, angleForLink(to), b.offset), link.routePoints, a.side, b.side,
+    ) : null;
+    if (manual && routeIsValid(next, manual)) return next;
+    const automatic = { ...next, routePoints: undefined };
+    return routeIsValid(automatic, pointsForLink(automatic)) ? automatic : null;
   };
   const commitLink = (next: CardLink) => api.apply((m) => ({ ...m, cardLinks: m.cardLinks.map((item) => item.id === next.id ? next : item) }));
+  const commitReconnection = (previous: CardLink, next: CardLink) => {
+    setLinkFailure(previous.routePoints?.length && !next.routePoints?.length
+      ? 'Маршрут перестроен: прежние изгибы мешали переподключению. Для возврата используйте отмену.' : null);
+    commitLink(next);
+  };
   const beginLinkGesture = (link: CardLink, kind: LinkGesture['kind'], index: number, e: React.PointerEvent<SVGElement>) => {
     if (e.button !== 0) return;
     e.preventDefault(); e.stopPropagation();
@@ -957,7 +978,7 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       const a = gesture.points[gesture.index], b = gesture.points[gesture.index + 1];
       const horizontal = Math.abs(a.y - b.y) < Math.abs(a.x - b.x);
       delta = horizontal ? point.y - gesture.start.y : point.x - gesture.start.x;
-      draft = moveRouteSegment(gesture.points, gesture.index, delta);
+      draft = editSegment(gesture.link, gesture.points, gesture.index, point.x - gesture.start.x, point.y - gesture.start.y) ?? gesture.points;
     } else if (moved && gesture.kind !== 'segment') {
       const hit = portTargetAt(e.clientX, e.clientY, gesture.kind === 'from' ? gesture.link.to : gesture.link.from);
       if (hit.target && hit.toAnchor) candidate = reconnectLink(gesture.link, gesture.kind, hit.target, hit.toAnchor);
@@ -974,12 +995,15 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     linkGestureRef.current = null; setLinkGesture(null);
     if (gesture.element.hasPointerCapture(gesture.pointer)) gesture.element.releasePointerCapture(gesture.pointer);
     if (cancelled || !gesture.moved) return;
-    if (gesture.kind === 'segment') commitLink({ ...gesture.link, routePoints: simplifyRoute(gesture.draft).slice(1, -1) });
-    else if (gesture.candidate) commitLink(gesture.candidate);
+    if (gesture.kind === 'segment' && gesture.draft !== gesture.points && JSON.stringify(gesture.draft) !== JSON.stringify(gesture.points)) commitLink({ ...gesture.link, routePoints: simplifyRoute(gesture.draft).slice(1, -1) });
+    else if (gesture.candidate) commitReconnection(gesture.link, gesture.candidate);
+    else if (gesture.kind !== 'segment') setLinkFailure('Не удалось безопасно переподключить связь. Выберите другую точку.');
   };
   const startPortDrag = (from: string, fromAnchor: CardAnchor, e: React.PointerEvent<HTMLButtonElement>) => {
     if (e.button !== 0 || portDragRef.current) return;
     e.preventDefault(); e.stopPropagation();
+    // При уже выбранном начале второй порт завершает связь, как в редакторе диаграмм.
+    if (mode === 'link' && linkFrom) { pickForLink(from, fromAnchor); return; }
     const r = e.currentTarget.getBoundingClientRect();
     const start = pointOnCanvas(r.left + r.width / 2, r.top + r.height / 2);
     const drag: PortDrag = { from, fromAnchor, pointer: e.pointerId, startX: e.clientX, startY: e.clientY, start, point: start, target: null, toAnchor: null, moved: false, element: e.currentTarget };
@@ -1187,6 +1211,11 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   const rootDown = (e: React.PointerEvent<HTMLElement>) => {
     const t = e.target as HTMLElement;
     if (e.button !== 0 || (t !== root.current && t !== world.current)) return;
+    if (mode === 'link' && linkFrom) {
+      const target = portTargetAt(e.clientX, e.clientY, linkFrom);
+      if (target.target && target.toAnchor) pickForLink(target.target, target.toAnchor);
+      return;
+    }
     if (mode === 'gateway') {
       // инструмент «Шлюз»: клик по пустому месту ставит шлюз, затем возвращается выбор
       addGateway(worldPt(e));
@@ -1201,11 +1230,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
     if (mode === 'link' && linkFrom && !portDragRef.current) {
       const target = portTargetAt(e.clientX, e.clientY, linkFrom);
       const point = pointOnCanvas(e.clientX, e.clientY);
-      const hit = document.elementFromPoint(e.clientX, e.clientY);
-      const card = hit?.closest<HTMLElement>('[data-card]');
-      // курсор над карточкой: предпросмотр липнет к её ближайшей точке (как и итоговая связь)
-      const toAnchor = card?.dataset.card === target.target ? target.toAnchor : null;
-      setLinkPointer({ point, target: target.target, toAnchor });
+      // Магнит одинаково работает над карточкой и рядом с её границей.
+      setLinkPointer({ point, target: target.target, toAnchor: target.toAnchor });
     }
     const g = gest.current;
     if (!g) return;
@@ -1458,14 +1484,17 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
       ? { from: linkFrom, anchor: linkFromAnchor, ...linkPointer }
       : null;
   const previewPoints = preview && (() => {
-    const opposite: Record<CardSide, CardSide> = { top: 'bottom', right: 'left', bottom: 'top', left: 'right' };
     const attached = preview.target && preview.toAnchor;
+    if (!attached) {
+      const start = sidePoint(boxForLink(preview.from), preview.anchor.side, angleForLink(preview.from), preview.anchor.offset);
+      const middle = (start.x + preview.point.x) / 2;
+      return simplifyRoute([start, { x: middle, y: start.y }, { x: middle, y: preview.point.y }, preview.point]);
+    }
     return routeAnchored(
       boxForLink(preview.from), preview.anchor.side, angleForLink(preview.from),
-      attached ? boxForLink(preview.target!) : { ...preview.point, w: 0, h: 0 },
-      attached ? preview.toAnchor!.side : opposite[preview.anchor.side], attached ? angleForLink(preview.target!) : 0,
-      preview.anchor.offset, attached ? preview.toAnchor!.offset : 0.5,
-      obstaclesFor(preview.from, attached ? preview.target : null),
+      boxForLink(preview.target!), preview.toAnchor!.side, angleForLink(preview.target!),
+      preview.anchor.offset, preview.toAnchor!.offset,
+      obstaclesFor(preview.from, preview.target),
     );
   })();
 
@@ -1740,14 +1769,15 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                       const active = linkGesture?.link.id === l.id && linkGesture.kind === 'segment' && linkGesture.index === i && linkGesture.moved;
                       const dx = active && !horizontal ? linkGesture.delta : 0;
                       const dy = active && horizontal ? linkGesture.delta : 0;
-                      return <circle key={`segment-${i}`} className={`clink-handle segment ${horizontal ? 'horizontal' : 'vertical'}`} cx={(a.x + b.x) / 2 + dx} cy={(a.y + b.y) / 2 + dy} r={5 / cam.k}
+                      return <circle key={`segment-${i}`} className={`clink-handle segment ${horizontal ? 'horizontal' : 'vertical'}`} cx={(a.x + b.x) / 2 + dx} cy={(a.y + b.y) / 2 + dy} r={3 / cam.k}
                         role="button" tabIndex={0} aria-label={`Переместить участок связи ${i + 1}`} aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight" {...handleEvents('segment', i)}
                         onKeyDown={(e) => {
                           const amount = e.shiftKey ? 20 : 5;
                           const delta = horizontal ? (e.key === 'ArrowUp' ? -amount : e.key === 'ArrowDown' ? amount : 0) : (e.key === 'ArrowLeft' ? -amount : e.key === 'ArrowRight' ? amount : 0);
                           if (!delta) return;
                           e.preventDefault(); e.stopPropagation();
-                          commitLink({ ...l, routePoints: simplifyRoute(moveRouteSegment(pts, i, delta)).slice(1, -1) });
+                          const next = editSegment(l, pts, i, horizontal ? 0 : delta, horizontal ? delta : 0);
+                          if (next && JSON.stringify(next) !== JSON.stringify(pts)) commitLink({ ...l, routePoints: simplifyRoute(next).slice(1, -1) });
                         }}><title>Перетащите участок связи</title></circle>;
                     })}
                     {on && (['from', 'to'] as const).map((end) => {
@@ -1755,7 +1785,10 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                       const path = active ? linkGesture.draft : pts;
                       const point = end === 'from' ? path[0] : path[path.length - 1];
                       if (!point) return null;
-                      return <circle key={end} className="clink-handle endpoint" cx={point.x} cy={point.y} r={7 / cam.k} role="button" tabIndex={0}
+                      const short = pts.length === 2 && Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y) * cam.k < 22;
+                      const horizontal = Math.abs(pts[1].y - pts[0].y) < Math.abs(pts[1].x - pts[0].x);
+                      const offset = short ? (end === 'from' ? -7 : 7) / cam.k : 0;
+                      return <circle key={end} className="clink-handle endpoint" cx={point.x + (horizontal ? 0 : offset)} cy={point.y + (horizontal ? offset : 0)} r={4 / cam.k} role="button" tabIndex={0}
                         aria-label={end === 'from' ? 'Переподключить начало связи' : 'Переподключить конец связи'}
                         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); setShowReconnect(true); } }} {...handleEvents(end, 0)}><title>Перетащите для переподключения</title></circle>;
                     })}
@@ -1871,7 +1904,8 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
                     const points = pointsForLink(selectedLink);
                     const oldPoint = end === 'from' ? points[0] : points[points.length - 1];
                     const next = reconnectLink(selectedLink, end, e.target.value, anchorAt(e.target.value, oldPoint ?? posOf(e.target.value)));
-                    if (next) commitLink(next);
+                    if (next) commitReconnection(selectedLink, next);
+                    else setLinkFailure('Не удалось безопасно переподключить связь. Выберите другую карточку.');
                   }}>
                     {cardIds.map((id) => {
                       const from = end === 'from' ? id : selectedLink.from;
