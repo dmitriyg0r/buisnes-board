@@ -979,6 +979,7 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 }
 
 /* ---------- чат с ИИ ---------- */
+.ai-bar { touch-action: pan-y; overscroll-behavior: contain; }
 .ai-bar.open { gap: 6px; }
 .canvas.compact-controls .ai-bar { bottom: 124px; }
 .canvas.compact-controls .ai-log { max-height: min(32vh, 220px); }
@@ -990,7 +991,7 @@ body.gesturing, body.gesturing * { -webkit-user-select: none !important; user-se
 .ai-ic:hover:not(:disabled), .ai-toggle:hover { background: #efede6; color: var(--ink); }
 .ai-ic:disabled { opacity: 0.4; cursor: default; }
 .ai-toggle { height: 32px; width: 30px; }
-.ai-log { max-height: min(52vh, 440px); min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 4px 6px; scroll-behavior: smooth; overscroll-behavior: contain; }
+.ai-log { max-height: min(52vh, 440px); min-height: 80px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 4px 4px 6px; scroll-behavior: smooth; overscroll-behavior: contain; touch-action: pan-y; }
 .ai-msg { max-width: 88%; display: flex; flex-direction: column; gap: 8px; padding: 9px 12px; border-radius: 14px; font-size: 13.5px; line-height: 1.45; }
 .ai-msg.user { align-self: flex-end; background: var(--ink); color: #fff; border-bottom-right-radius: 5px; }
 .ai-msg.assistant { align-self: flex-start; background: #f3f1ea; color: var(--ink); border-bottom-left-radius: 5px; }

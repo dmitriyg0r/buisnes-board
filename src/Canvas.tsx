@@ -1163,7 +1163,15 @@ export function Canvas({ issues, issue, onSelect, api, settings, onModel, projec
   useEffect(() => {
     const el = root.current!;
     const onWheel = (e: WheelEvent) => {
-      if ((e.target as HTMLElement).closest('.zoom-ui,.minimap')) return;
+      const target = e.target instanceof Element ? e.target : null;
+      // Нативная прокрутка истории/поля ввода должна дойти до браузера.
+      if (target?.closest('.ai-bar')) {
+        if (e.ctrlKey || e.metaKey) e.preventDefault();
+        return;
+      }
+      // Пока чат раскрыт, колесо и щипок не двигают доску даже вне его области.
+      if (el.querySelector('.ai-bar.open')) { e.preventDefault(); return; }
+      if (target?.closest('.zoom-ui,.minimap')) return;
       e.preventDefault();
       const lines = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
       const zoomKey = e.ctrlKey || e.metaKey;
