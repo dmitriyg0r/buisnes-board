@@ -45,8 +45,8 @@ pub struct AppState {
     pub limiter: Arc<Mutex<HashMap<String, (u32, Instant)>>>,
     pub http: reqwest::Client,
     /// начатые входы через ChatGPT (device-code): по одному на пользователя, живут в памяти
-    /// пользователи, у которых сейчас идёт генерация (по одной на человека)
-    pub ai_busy: Arc<Mutex<std::collections::HashSet<uuid::Uuid>>>,
+    /// Последовательное выполнение генераций пользователя; слабые ссылки не удерживают завершённые сеансы.
+    pub ai_busy: Arc<Mutex<HashMap<uuid::Uuid, std::sync::Weak<tokio::sync::Mutex<()>>>>>,
     /// комнаты присутствия: по одной на открытый проект, живут в памяти
     pub rooms: Arc<Mutex<HashMap<uuid::Uuid, tokio::sync::broadcast::Sender<routes::presence::Ev>>>>,
     /// имена пользователей для курсоров: (имя, когда загружено)

@@ -150,6 +150,15 @@ async fn emit(tx: &Tx, v: Value) -> bool {
     tx.send(Ok(Bytes::from(line))).await.is_ok()
 }
 
+/// Отмена работает также при ожидании заголовков и во время молчания модели.
+async fn until_disconnected<F: std::future::Future>(tx: &Tx, work: F) -> Option<F::Output> {
+    tokio::select! {
+        biased;
+        _ = tx.closed() => None,
+        result = work => Some(result),
+    }
+}
+
 /// Текст ошибки для события потока.
 fn message(e: AppError) -> String {
     match e {
@@ -193,29 +202,31 @@ pub async fn generate(State(s): State<AppState>, user: AuthUser, Json(b): Json<G
         input.push_str(&serde_json::to_string(&observations).map_err(|_| AppError::Internal)?);
     }
 
-    // одна генерация на человека: токен и лимиты ChatGPT общие
-    if !s.ai_busy.lock().map_err(|_| AppError::Internal)?.insert(user.id) {
-        return Err(AppError::BadRequest("предыдущая генерация ещё идёт: дождитесь результата".into()));
-    }
-
+    // Запросы одного пользователя идут последовательно, включая короткий промежуток отмены.
+    let gate = {
+        let mut gates = s.ai_busy.lock().map_err(|_| AppError::Internal)?;
+        gates.retain(|_, gate| gate.strong_count() > 0);
+        let gate = gates.get(&user.id).and_then(std::sync::Weak::upgrade)
+            .unwrap_or_else(|| std::sync::Arc::new(tokio::sync::Mutex::new(())));
+        gates.insert(user.id, std::sync::Arc::downgrade(&gate));
+        gate
+    };
     let (tx, rx) = tokio::sync::mpsc::channel(64);
     let uid = user.id;
     tokio::spawn(async move {
-        emit(&tx, json!({ "type": "start" })).await;
+        let Some(guard) = until_disconnected(&tx, gate.lock_owned()).await else { return; };
+        if !emit(&tx, json!({ "type": "start" })).await { return; }
         let mut relay = Relay::new(room);
         relay.send("start", "");
-        let done = match stream_codex(&s, uid, model, &input, &tx, &mut relay).await {
-            Ok(text) => finish(&text),
-            Err(m) => Err(m),
-        };
+        let done = until_disconnected(&tx, stream_codex(&s, uid, model, &input, &tx, &mut relay)).await;
         relay.finish();
-        match done {
+        // Следующий шаг агента может начаться сразу после result, поэтому освобождаем до отправки.
+        drop(guard);
+        let Some(done) = done else { return; };
+        match done.and_then(|text| finish(&text)) {
             Ok(data) => emit(&tx, json!({ "type": "result", "data": data })).await,
             Err(m) => emit(&tx, json!({ "type": "error", "message": m })).await,
         };
-        if let Ok(mut busy) = s.ai_busy.lock() {
-            busy.remove(&uid);
-        }
     });
 
     Ok((
@@ -545,6 +556,33 @@ mod tests {
 
 
     /// Черновик ИИ уходит участникам проекта пачками: начало, текст, конец; автору события не возвращаются (фильтр в потоке).
+    #[tokio::test]
+    async fn disconnect_cancels_silent_work_and_releases_generation_gate() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(1);
+        let gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = gate.clone().lock_owned().await;
+        let task = tokio::spawn(async move {
+            let result = until_disconnected(&tx, std::future::pending::<()>()).await;
+            drop(guard);
+            assert!(result.is_none());
+        });
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(1), task).await.unwrap().unwrap();
+        assert!(gate.try_lock().is_ok());
+    }
+
+    #[tokio::test]
+    async fn queued_generation_is_cancelled_without_starting_and_completed_work_returns() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(1);
+        let gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        let guard = gate.clone().lock_owned().await;
+        drop(rx);
+        assert!(until_disconnected(&tx, gate.clone().lock_owned()).await.is_none());
+        drop(guard);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Result<Bytes, Infallible>>(1);
+        assert_eq!(until_disconnected(&tx, async { 42 }).await, Some(42));
+    }
+
     #[tokio::test]
     async fn relay_sends_start_text_end() {
         use crate::routes::presence::Ev;
