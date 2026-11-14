@@ -31,6 +31,8 @@ interface Msg {
 
 const MAX_MSGS = 100;
 const HISTORY_TURNS = 10;
+// Согласовано с MAX_PROMPT в backend/src/ai.rs. Превышение показываем, а не обрезаем.
+const MAX_PROMPT_CHARS = 100_000;
 const SUGGEST = ['Создай процесс согласования договора и регламент', 'Создай интерактивный HTML-калькулятор стоимости', 'Проверь связи шагов с документами и замечания'];
 
 /* История чата хранится в браузере: она нужна только тому, кто её ведёт. Хранилище может быть недоступно. */
@@ -157,6 +159,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
   toolsRef.current = tools;
   const [msgs, setMsgs] = useState<Msg[]>(() => loadMsgs(projectId));
   const [text, setText] = useState('');
+  const promptTooLong = [...text.trim()].length > MAX_PROMPT_CHARS;
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   const msgsRef = useRef(msgs);
@@ -271,7 +274,7 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
 
   const send = async (raw?: string) => {
     const prompt = (raw ?? text).trim();
-    if (!prompt) return;
+    if (!prompt || [...prompt].length > MAX_PROMPT_CHARS) return;
     const history = toTurns(msgsRef.current);
     updateMsgs((m) => [...m, mk('user', prompt)]);
     setText('');
@@ -350,7 +353,8 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
           }}
           placeholder={busy ? 'Уточните задачу…' : 'Что сделать на доске?'}
           aria-label="Сообщение ИИ"
-          maxLength={24000}
+          aria-invalid={promptTooLong || undefined}
+          aria-describedby={promptTooLong ? 'ai-prompt-limit' : undefined}
         />
         <select className="ai-model" value={aiModel} onChange={(e) => onModel(e.target.value as AiModel)} aria-label="Модель ИИ" disabled={busy}>
           {aiModels.map((m) => (
@@ -359,10 +363,11 @@ export function AiChat({ projectId, presence, api, aiModel, onModel, onReveal, o
             </option>
           ))}
         </select>
-        <button type="submit" className="ai-send" disabled={!text.trim()} title={busy ? 'Отправить уточнение' : 'Отправить'} aria-label="Отправить">
+        <button type="submit" className="ai-send" disabled={!text.trim() || promptTooLong} title={busy ? 'Отправить уточнение' : 'Отправить'} aria-label="Отправить">
           <Icon name="arrowUp" size={16} />
         </button>
       </form>
+      {promptTooLong && <p id="ai-prompt-limit" role="alert">Сообщение превышает лимит 100 000 символов. Сократите его или отправьте частями. Введённый текст сохранён в поле.</p>}
       {/* свёрнутый чат всё равно показывает, что ИИ работает */}
       {!open && busy && <AiProgress onCancel={() => abort.current?.abort()} />}
     </div>

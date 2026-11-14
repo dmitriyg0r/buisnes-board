@@ -23,7 +23,7 @@ use crate::integrations::access_token;
 use crate::AppState;
 
 const CODEX_URL: &str = "https://chatgpt.com/backend-api/codex/responses";
-const MAX_PROMPT: usize = 24000;
+const MAX_PROMPT: usize = 100_000;
 const MAX_CONTEXT: usize = 60_000;
 const MAX_NODES: usize = 60;
 const MAX_FLOWS: usize = 120;
@@ -123,7 +123,12 @@ fn build_input(prompt: &str, context: &str, history: &[Turn]) -> String {
                 "assistant" => "ИИ",
                 _ => return None,
             };
-            let text: String = t.text.trim().chars().take(MAX_TURN_CHARS).collect();
+            // Пользовательские требования нельзя молча обрезать при продолжении задачи.
+            let text = if t.role == "user" {
+                t.text.trim().to_string()
+            } else {
+                t.text.trim().chars().take(MAX_TURN_CHARS).collect()
+            };
             (!text.is_empty()).then(|| format!("{who}: {text}"))
         })
         .collect();
@@ -720,6 +725,14 @@ mod tests {
         assert!(s.contains("Новое сообщение пользователя:\nДобавь отказ"));
         assert!(s.ends_with("Что уже есть на доске:\nПроцесс «Отпуск»"));
         assert_eq!(build_input("Привет", "", &[]), "Новое сообщение пользователя:\nПривет");
+    }
+
+    #[test]
+    fn long_user_messages_are_preserved_in_history() {
+        let text = format!("{}\nПоследнее требование: создать калькулятор и замечания.", "Подробное описание процесса. ".repeat(200));
+        let history = vec![Turn { role: "user".into(), text: text.clone() }];
+        let input = build_input("Продолжай", "", &history);
+        assert!(input.contains(&text), "Длинное сообщение пользователя обрезано в истории");
     }
 
     #[test]
