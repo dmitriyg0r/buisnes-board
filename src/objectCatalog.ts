@@ -2,7 +2,7 @@ import { modelDefinitions } from './modeling/registry';
 
 /** Каталог доступных типов отделён от реализации редакторов и хранения проекта. */
 export type ObjectKind = 'process' | 'document' | 'html' | 'source';
-export type ObjectCategoryId = 'processes' | 'uml' | 'epc' | 'documents' | 'html' | 'sources';
+export type ObjectCategoryId = 'processes' | 'uml' | 'epc' | 'archimate' | 'documents' | 'html' | 'sources';
 export type ObjectTypeId = string;
 
 interface ObjectType {
@@ -40,6 +40,12 @@ export const objectCatalog: ObjectCategory[] = [
     title: 'EPC',
     description: 'Диаграммы событийных цепочек процессов',
     types: modelDefinitions.filter((definition) => definition.id === 'epc').map((definition) => ({ ...definition, kind: 'process' as const, icon: 'model' as const })),
+  },
+  {
+    id: 'archimate',
+    title: 'ArchiMate',
+    description: 'Архитектурные схемы с переключаемыми палитрами слоёв',
+    types: modelDefinitions.filter((definition) => definition.id === 'archimate').map((definition) => ({ ...definition, kind: 'process' as const, icon: 'model' as const })),
   },
   {
     id: 'documents',

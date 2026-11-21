@@ -51,7 +51,7 @@ export function Tree({ width = 232, onWidthChange, activeSourceId, sources, docs
     setMenu({ id, x: rect.right, y: rect.bottom, trigger: event.currentTarget });
   }}><span aria-hidden="true">⋯</span></button>;
 
-  const [open, setOpen] = useState({ src: true, mod: true, proc: true, epc: true, uml: true, other: true, doc: true, html: true });
+  const [open, setOpen] = useState({ src: true, mod: true, proc: true, epc: true, uml: true, archimate: true, other: true, doc: true, html: true });
   const toggle = (k: keyof typeof open) => setOpen((o) => ({ ...o, [k]: !o[k] }));
 
   if (collapsed) {
@@ -97,10 +97,11 @@ export function Tree({ width = 232, onWidthChange, activeSourceId, sources, docs
             </div>
           ))}
         </Group>
-        {(['epc', 'uml', 'other'] as const).map((group) => {
-          const entries = models.filter((m) => group === 'uml' ? m.notation.startsWith('uml-') : group === 'epc' ? m.notation === 'epc' : !m.notation.startsWith('uml-') && m.notation !== 'epc');
+        {(['epc', 'uml', 'archimate', 'other'] as const).map((group) => {
+          const family = (id: string) => id.startsWith('uml-') ? 'uml' : id === 'epc' || id === 'archimate' ? id : 'other';
+          const entries = models.filter((m) => family(m.notation) === group);
           if (group === 'other' && !entries.length) return null;
-          const title = group === 'uml' ? 'UML' : group === 'epc' ? 'EPC' : 'Другие нотации';
+          const title = objectCatalog.find(item => item.id === group)?.title ?? 'Другие нотации';
           return <Group key={group} title={title} open={open[group]} onToggle={() => toggle(group)}>
             {entries.length === 0 && <div className="tree-empty">Нет моделей {title}</div>}
             {entries.map((m) => <div key={m.id} className={`tree-row${isSel(`model:${m.id}`) ? ' sel' : ''}`}>

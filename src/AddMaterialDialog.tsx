@@ -17,6 +17,7 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddHtml, onA
   const [categoryId, setCategoryId] = useState<ObjectCategoryId>('processes');
   const [typeId, setTypeId] = useState<ObjectTypeId>(objectCatalog[0].types[0].id);
   const [modelName, setModelName] = useState(counts.processes ? `Модель процесса ${counts.processes + 1}` : 'Модель процесса');
+  const [architectureName, setArchitectureName] = useState('Архитектурная диаграмма');
   const [title, setTitle] = useState(counts.docs ? `Документ ${counts.docs + 1}` : 'Регламент');
   const [htmlName, setHtmlName] = useState(counts.htmlObjects ? `HTML-объект ${counts.htmlObjects + 1}` : 'HTML-объект');
   const [name, setName] = useState('');
@@ -24,7 +25,7 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddHtml, onA
   const [pages, setPages] = useState(1);
   const category = objectCatalog.find((item) => item.id === categoryId)!;
   const type = category.types.find((item) => item.id === typeId) ?? category.types[0];
-  const value = type.kind === 'process' ? modelName : type.kind === 'document' ? title : type.kind === 'html' ? htmlName : name;
+  const value = type.id === 'archimate' ? architectureName : type.kind === 'process' ? modelName : type.kind === 'document' ? title : type.kind === 'html' ? htmlName : name;
   const valid = value.trim().length > 0;
 
   useEffect(() => {
@@ -47,7 +48,7 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddHtml, onA
       case 'markdown': onAddDoc(title.trim()); break;
       case 'interactive-html': onAddHtml(htmlName.trim()); break;
       case 'source-reference': onAddSource({ name: name.trim(), ext, pages: Math.max(1, Math.round(pages) || 1) }); break;
-      default: if (type.kind === 'process') onAddModel(modelName.trim(), type.id); else throw new Error('Неизвестный тип объекта');
+      default: if (type.kind === 'process') onAddModel(value.trim(), type.id); else throw new Error('Неизвестный тип объекта');
     }
     onClose();
   };
@@ -83,7 +84,7 @@ export function AddMaterialDialog({ counts, onAddModel, onAddDoc, onAddHtml, onA
             </fieldset>
             <div className="create-object-fields">
               <label className="create-object-field"><span>{type.kind === 'process' ? 'Название модели' : type.kind === 'document' ? 'Название документа' : type.kind === 'html' ? 'Название HTML-объекта' : 'Название источника'}</span>
-                <input className="pinput" value={value} onChange={(event) => type.kind === 'process' ? setModelName(event.target.value) : type.kind === 'document' ? setTitle(event.target.value) : type.kind === 'html' ? setHtmlName(event.target.value) : setName(event.target.value)} placeholder={type.kind === 'source' ? 'Название файла' : undefined} required />
+                <input className="pinput" value={value} onChange={(event) => type.id === 'archimate' ? setArchitectureName(event.target.value) : type.kind === 'process' ? setModelName(event.target.value) : type.kind === 'document' ? setTitle(event.target.value) : type.kind === 'html' ? setHtmlName(event.target.value) : setName(event.target.value)} placeholder={type.kind === 'source' ? 'Название файла' : undefined} required />
               </label>
               {type.kind === 'html' && <p className="pnote">Откроется редактор кода с интерактивным предпросмотром. Можно вставить готовый HTML или импортировать файл .html.</p>}
               {type.kind === 'source' && <>

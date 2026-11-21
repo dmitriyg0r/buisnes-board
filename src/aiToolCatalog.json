@@ -180,6 +180,7 @@
             "type": "string",
             "enum": [
               "epc",
+              "archimate",
               "uml-class",
               "uml-use-case",
               "uml-activity",

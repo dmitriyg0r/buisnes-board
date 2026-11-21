@@ -1,5 +1,6 @@
 import { NodeShape, nodeLabelBounds, labelLines } from './modeling/DiagramEditor';
-import { createContext, lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, lazy, Suspense, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { ConnectionMarkers, connectionStroke } from './modeling/ConnectionMarkers';
 import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, HTML_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source, type Model } from './data';
 import { splitMarkdown } from './markdown';
@@ -78,6 +79,7 @@ interface Props {
 
 /** Только чтение: адаптер не изменяет исходные данные карточки. */
 export function IndependentModelPreview({ model }: { model: IndependentModel }) {
+  const scope = useId();
   try {
     const notation = getModelNotation(model.notation);
     if (!notation) return <p className="pnote" style={{ padding: 20 }}>Неизвестная нотация: предпросмотр недоступен.</p>;
@@ -99,7 +101,8 @@ export function IndependentModelPreview({ model }: { model: IndependentModel }) 
       {regions.map(r => <g key={r.id}><rect x={r.x} y={r.y} width={r.width} height={r.height} fill="#f8fafc" stroke="#94a3b8" /><text x={r.x + 8} y={r.y + 18} fontSize="13" fill="#334155">{r.label}</text></g>)}
       {timeline?.lifelines.map(line => <line key={line.id} x1={line.lineStart.x} y1={line.lineStart.y} x2={line.lineEnd.x} y2={line.lineEnd.y} stroke="#475569" strokeDasharray="6 4" />)}
       {timeline?.messages.map(message => <polyline key={message.id} points={message.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={message.lineStyle === 'dashed' ? '8 5' : undefined} />)}
-      {edges.map(e => <polyline key={e.id} points={e.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={e.lineStyle === 'dashed' ? '8 5' : e.lineStyle === 'dotted' ? '2 4' : undefined} />)}
+      {edges.length > 0 && <ConnectionMarkers scope={scope} color="#475569" />}
+      {edges.map(e => <polyline key={e.id} points={e.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" {...connectionStroke(e, scope)} />)}
       {nodes.map(n => {
         const symbol = notation.symbols.find(s => s.type === n.type);
         const bounds = nodeLabelBounds(n, symbol);

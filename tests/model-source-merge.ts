@@ -33,7 +33,7 @@ export function testSourceMerge() {
       const remaining = notation.read(removed).diagram.nodes;
       assert(!remaining.some(n => n.id === a.id) && remaining.find(n => n.id === b.id)?.label === 'Правка Бориса', `${definition.id}: удаление с чужой правкой`);
     }
-    if (definition.id === 'bpmn' || definition.id === 'uml-class') {
+    if (definition.id === 'bpmn' || definition.id === 'uml-class' || definition.id === 'archimate') {
       const connected = notation.connect(base, a.id, b.id);
       const left = notation.moveNode(connected, a.id, { x: 160, y: 120 });
       const right = notation.moveNode(connected, b.id, { x: 560, y: 330 });

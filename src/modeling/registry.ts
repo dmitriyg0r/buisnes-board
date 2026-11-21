@@ -1,5 +1,6 @@
 import type { DiagramNotation } from './types';
 import { epcNotation } from './epc';
+import { archimateNotation } from './archimate';
 import { umlClassNotation } from './umlClass';
 import { umlUseCaseNotation } from './umlUseCase';
 import { umlActivityNotation } from './umlActivity';
@@ -13,6 +14,7 @@ const registered: { notation: RegisteredNotation; title: string; description: st
   { notation: umlActivityNotation, title: 'Диаграмма деятельности', description: 'Действия и потоки управления.', format: 'UML' },
   { notation: { ...umlSequenceNotation, createEmpty: createSequence }, title: 'Диаграмма последовательности', description: 'Участники и последовательность сообщений.', format: 'UML' },
   { notation: epcNotation, title: 'Событийная цепочка процесса', description: 'События, функции, операторы и ресурсы процесса.', format: 'EPC' },
+  { notation: archimateNotation, title: 'Архитектурная диаграмма', description: 'Бизнес, приложения, технологии, стратегия и миграция на одной схеме.', format: 'ArchiMate' },
 ];
 
 export const modelDefinitions = registered.map(({ notation, title, description, format }) => ({ id: notation.id, title, description, format }));

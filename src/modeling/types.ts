@@ -14,7 +14,14 @@ export interface DiagramNode {
   labelBounds?: DiagramBounds;
   compartments?: { attributes: string[]; operations: string[] };
 }
-export interface DiagramEdge {
+export interface ConnectionAppearance {
+  lineStyle?: 'solid' | 'dotted' | 'dashed';
+  startMarker?: 'circle' | 'circle-filled' | 'diamond' | 'diamond-filled';
+  arrowStyle?: 'open' | 'filled' | 'triangle' | 'half-open';
+  arrowStart?: boolean;
+  arrowEnd?: boolean;
+}
+export interface DiagramEdge extends ConnectionAppearance {
   id: string;
   type: string;
   label: string;
@@ -24,11 +31,7 @@ export interface DiagramEdge {
   to: string;
   points: DiagramPoint[];
   labelBounds?: DiagramBounds;
-  lineStyle?: 'solid' | 'dotted' | 'dashed';
-  startMarker?: 'circle' | 'diamond' | 'diamond-filled';
-  arrowStyle?: 'open' | 'filled' | 'triangle';
-  arrowStart?: boolean;
-  arrowEnd?: boolean;
+
   labelEditable?: boolean;
   routeEditable?: boolean;
 }
@@ -45,14 +48,14 @@ export interface DiagramTimeline {
   moveMessage: (source: string, id: string, sendY: number, receiveY: number) => string;
   editMessage?: (source: string, id: string, changes: { kind?: string; from?: string; to?: string }) => string;
 }
-export type DiagramShape = 'circle' | 'double-circle' | 'rounded-rectangle' | 'diamond' | 'document' | 'annotation' | 'data-store' | 'rectangle' | 'ellipse' | 'actor' | 'bar' | 'hexagon' | 'lifeline' | 'circle-cross' | 'class-box' | 'pointed-right' | 'frame';
+export type DiagramShape = 'circle' | 'double-circle' | 'rounded-rectangle' | 'diamond' | 'document' | 'annotation' | 'data-store' | 'rectangle' | 'ellipse' | 'actor' | 'bar' | 'hexagon' | 'lifeline' | 'circle-cross' | 'class-box' | 'pointed-right' | 'frame' | 'chamfered-rectangle';
 export interface DiagramSymbol {
   type: string;
   title: string;
   shape: DiagramShape;
   stereotype?: string;
   /** Цвет и расположение подписи задаются нотацией, не данными модели. */
-  appearance?: { fill: string; stroke: string; labelInside?: boolean; emptyLabel?: string; textColor?: string; icon?: string };
+  appearance?: { fill: string; stroke: string; labelInside?: boolean; emptyLabel?: string; textColor?: string; icon?: string; outlineDash?: string };
   glyph?: 'person' | 'service' | 'cross' | 'plus' | 'manual' | 'send' | 'receive' | 'business-rule' | 'script' | 'inclusive' | 'complex' | 'event-based-exclusive' | 'collapsed-subprocess' | 'xor' | 'or' | 'filled';
   /** Данные маркера нотации для её собственного рендерера. */
   detail?: { marker: string; filled: boolean };
@@ -73,10 +76,12 @@ export interface DiagramNotation {
   fileAccept: string;
   mimeType: string;
   symbols: DiagramSymbol[];
+  paletteViews?: readonly { id: string; title: string; groups: readonly string[] }[];
+  automaticConnectionType?: string;
   timeline?: DiagramTimeline;
   /** Рисует маркер в координатах 0..24; движок масштабирует его одинаково в палитре и узле. */
   renderSymbolDetail?: (symbol: DiagramSymbol) => ReactNode;
-  connectionTypes?: { id: string; title: string; stereotype?: string; appearance?: { lineStyle?: 'solid' | 'dotted' | 'dashed'; startMarker?: 'circle' | 'diamond' | 'diamond-filled'; arrowStart?: boolean; arrowEnd?: boolean; arrowStyle?: 'open' | 'filled' | 'triangle' } }[];
+  connectionTypes?: { id: string; title: string; stereotype?: string; appearance?: ConnectionAppearance }[];
   read: (source: string) => { diagram: Diagram; readOnlyReason?: string };
   validateDiagram?: (diagram: Diagram) => { id: string; message: string }[];
   autoLayout?: (source: string) => string;

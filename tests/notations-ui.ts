@@ -4,7 +4,7 @@ const pause = () => new Promise(resolve => setTimeout(resolve, 150));
 const assert = (v:unknown, message:string) => { if (!v) throw new Error(message); };
 const frame = document.createElement('iframe'); frame.style.cssText = 'width:1000px;height:700px'; document.body.append(frame);
 try {
-  for (const [type, first, second] of [['uml-class','Класс','Класс'],['uml-use-case','Актор','Вариант использования'],['uml-activity','Начальный узел','Действие'],['epc','Событие','Функция']]) {
+  for (const [type, first, second] of [['uml-class','Класс','Класс'],['uml-use-case','Актор','Вариант использования'],['uml-activity','Начальный узел','Действие'],['epc','Событие','Функция'],['archimate','Бизнес-процесс','Сервис приложения']]) {
     frame.src = `/tests/notation-editor.html?type=${type}`; await new Promise<void>(resolve => { frame.onload = () => resolve(); }); await pause();
     const win=frame.contentWindow! as Window & typeof globalThis, doc=win.document;
     const svg=doc.querySelector<SVGSVGElement>('.diagram-surface')!;
@@ -56,6 +56,6 @@ try {
     if (type === 'uml-class') assert(parsed.diagram.edges[0].ends?.to.multiplicity === '0..*', 'Кратность не сохранилась');
     assert(doc.querySelectorAll('[data-diagram-node]').length===2 && doc.querySelectorAll('[data-diagram-edge]').length===1,`${type}: диаграмма не открылась повторно`);
   }
-  result.textContent='Успешно: создание, связи, сохранение и повторное открытие UML и EPC через общий редактор.';result.dataset.status='passed';
+  result.textContent='Успешно: создание, связи, сохранение и повторное открытие UML, EPC и ArchiMate через общий редактор.';result.dataset.status='passed';
 } catch(e) { result.textContent=`Ошибка: ${e instanceof Error ? e.message : String(e)}`;result.dataset.status='failed'; }
 export {};
