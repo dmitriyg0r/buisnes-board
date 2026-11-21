@@ -13,6 +13,10 @@ export interface DiagramNode {
   height: number;
   labelBounds?: DiagramBounds;
   compartments?: { attributes: string[]; operations: string[] };
+  extensionPoints?: string[];
+  associationId?: string;
+  ownerId?: string;
+  operands?: { y: number; guard: string }[];
 }
 export interface ConnectionAppearance {
   lineStyle?: 'solid' | 'dotted' | 'dashed';
@@ -26,6 +30,8 @@ export interface DiagramEdge extends ConnectionAppearance {
   type: string;
   label: string;
   ends?: { from: { role: string; multiplicity: string }; to: { role: string; multiplicity: string } };
+  guard?: string;
+  extensionPoint?: string;
   stereotype?: string;
   from: string;
   to: string;
@@ -41,18 +47,22 @@ export interface Diagram { nodes: DiagramNode[]; edges: DiagramEdge[]; regions?:
 /** Дополнительный режим связей, привязанных к позициям на временных линиях. */
 export interface DiagramTimeline {
   project: (source: string) => {
-    lifelines: { id: string; lineStart: DiagramPoint; lineEnd: DiagramPoint }[];
+    lifelines: { id: string; lineStart: DiagramPoint; lineEnd: DiagramPoint; destruction?: DiagramPoint }[];
+    executions?: (DiagramBounds & { id: string; lifelineId: string; label: string; startY: number; endY: number })[];
     messages: { id: string; label: string; kind: string; points: DiagramPoint[]; send: { lifelineId: string; y: number }; receive: { lifelineId: string; y: number }; lineStyle: 'solid' | 'dashed'; arrowStyle: 'open' | 'filled' }[];
   };
   addMessage: (source: string, from: string, to: string, y: number, type?: string) => string;
   moveMessage: (source: string, id: string, sendY: number, receiveY: number) => string;
   editMessage?: (source: string, id: string, changes: { kind?: string; from?: string; to?: string }) => string;
+  addExecution?: (source: string, lifelineId: string, startY: number, mode?: 'nested') => string;
+  editExecution?: (source: string, id: string, startY: number, endY: number) => string;
 }
-export type DiagramShape = 'circle' | 'double-circle' | 'rounded-rectangle' | 'diamond' | 'document' | 'annotation' | 'data-store' | 'rectangle' | 'ellipse' | 'actor' | 'bar' | 'hexagon' | 'lifeline' | 'circle-cross' | 'class-box' | 'pointed-right' | 'frame' | 'chamfered-rectangle';
+export type DiagramShape = 'circle' | 'double-circle' | 'rounded-rectangle' | 'diamond' | 'document' | 'annotation' | 'data-store' | 'rectangle' | 'ellipse' | 'actor' | 'bar' | 'hexagon' | 'lifeline' | 'circle-cross' | 'class-box' | 'pointed-right' | 'notched-left' | 'frame' | 'package' | 'partition' | 'interaction-frame' | 'chamfered-rectangle';
 export interface DiagramSymbol {
   type: string;
   title: string;
   shape: DiagramShape;
+  italicLabel?: boolean;
   stereotype?: string;
   /** Цвет и расположение подписи задаются нотацией, не данными модели. */
   appearance?: { fill: string; stroke: string; labelInside?: boolean; emptyLabel?: string; textColor?: string; icon?: string; outlineDash?: string };
@@ -67,6 +77,8 @@ export interface DiagramSymbol {
   singleConnectionPortPerSide?: boolean;
   /** Фоновая граница; не является препятствием для внутренних связей. */
   container?: boolean;
+  /** При размещении фигура привязывается к границе совместимого владельца. */
+  ownerTypes?: readonly string[];
 }
 /** Нотация отвечает за формат и правила, движок — за взаимодействие и отрисовку. */
 export interface DiagramNotation {
@@ -85,7 +97,7 @@ export interface DiagramNotation {
   read: (source: string) => { diagram: Diagram; readOnlyReason?: string };
   validateDiagram?: (diagram: Diagram) => { id: string; message: string }[];
   autoLayout?: (source: string) => string;
-  addNode: (source: string, type: string, at: DiagramPoint) => string;
+  addNode: (source: string, type: string, at: DiagramPoint, ownerId?: string) => string;
   regionTitle?: string;
   regionPlacementSize?: { width: number; height: number };
   poolPlacementSize?: { width: number; height: number };
@@ -99,6 +111,14 @@ export interface DiagramNotation {
   setNodeCompartments?: (source: string, id: string, sections: { attributes: string[]; operations: string[] }) => string;
   setEdgeEnds?: (source: string, id: string, ends: NonNullable<DiagramEdge['ends']>) => string;
   edgeEndProperties?: (edge: DiagramEdge) => boolean;
+  allowedEdgeTypes?: (source: string, id: string) => string[];
+  setEdgeType?: (source: string, id: string, type: string) => string;
+  edgeGuard?: (edge: DiagramEdge) => boolean;
+  setEdgeGuard?: (source: string, id: string, guard: string) => string;
+  setExtensionPoints?: (source: string, id: string, points: string[]) => string;
+  setExtensionPoint?: (source: string, id: string, point: string) => string;
+  setAssociationClassLink?: (source: string, id: string, edgeId: string) => string;
+  setOperands?: (source: string, id: string, operands: NonNullable<DiagramNode['operands']>) => string;
   moveNode: (source: string, id: string, at: DiagramPoint) => string;
   rename: (source: string, id: string, name: string) => string;
   connect: (source: string, from: string, to: string, type?: string) => string;

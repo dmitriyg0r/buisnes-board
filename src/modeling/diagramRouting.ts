@@ -3,9 +3,11 @@ import type { DiagramNode, DiagramPoint, DiagramShape } from './types';
 
 const directions: Direction[] = ['right', 'left', 'down', 'up'];
 const center = (n: DiagramNode) => ({ x: n.x + n.width / 2, y: n.y + n.height / 2 });
+// Постоянная доля ширины сохраняет положение портов на контуре при изменении размера.
+export const signalNotch = (width: number) => width * .12;
 function endpoint(n: DiagramNode, side: Direction, point?: DiagramPoint, shape?: DiagramShape): { endpoint: RouteEndpoint; actual: DiagramPoint } {
   const c = center(n);
-  const actual = point ?? (side === 'left' ? { x: n.x, y: c.y } : side === 'right' ? { x: n.x + n.width, y: c.y } : side === 'up' ? { x: c.x, y: n.y + (shape === 'data-store' ? 0.5 : 0) } : { x: c.x, y: n.y + n.height - (shape === 'data-store' ? 0.5 : 0) });
+  const actual = point ?? (side === 'left' ? { x: n.x + (shape === 'notched-left' ? signalNotch(n.width) : 0), y: c.y } : side === 'right' ? { x: n.x + n.width, y: c.y } : side === 'up' ? { x: c.x, y: n.y + (shape === 'data-store' ? 0.5 : 0) } : { x: c.x, y: n.y + n.height - (shape === 'data-store' ? 0.5 : 0) });
   const projected = side === 'left' ? { x: n.x, y: actual.y } : side === 'right' ? { x: n.x + n.width, y: actual.y } : side === 'up' ? { x: actual.x, y: n.y } : { x: actual.x, y: n.y + n.height };
   return { endpoint: { point: projected, normal: side, bounds: n }, actual };
 }
@@ -18,6 +20,11 @@ function pointSides(n: DiagramNode, p: DiagramPoint): Direction[] {
 export function endpointsFaceOutward(points: readonly DiagramPoint[], from: DiagramNode, to: DiagramNode, shapeOf?: (node: DiagramNode) => DiagramShape | undefined): boolean {
   if (points.length < 2) return false;
   const outward = (node: DiagramNode, at: DiagramPoint, next: DiagramPoint) => {
+    if (shapeOf?.(node) === 'notched-left' && at.x < node.x + node.width / 2 && at.y === next.y && next.x < at.x) {
+      const y = (at.y - node.y) / node.height;
+      const notch = node.x + signalNotch(node.width) * (1 - Math.abs(y * 2 - 1));
+      if (y >= 0 && y <= 1 && Math.abs(at.x - notch) < 1e-6) return true;
+    }
     if (shapeOf?.(node) === 'hexagon') {
       const cx = node.x + node.width / 2, cy = node.y + node.height / 2;
       const dx = (at.x - cx) / (node.width / 2), dy = (at.y - cy) / (node.height / 2);
@@ -41,12 +48,33 @@ export function segmentCrossesNode(a: DiagramPoint, b: DiagramPoint, n: DiagramN
   }
   return low < high;
 }
+/** Центр пина находится на контуре его действия. */
+export function pinPosition(pin: Pick<DiagramNode, 'type' | 'width' | 'height'>, owner: DiagramNode, y: number): DiagramPoint {
+  const offset = pin.type === 'output-pin' ? owner.width : 0;
+  const py = Math.max(owner.y, Math.min(owner.y + Math.max(0, owner.height - pin.height), y));
+  const notch = signalNotch(owner.width) * Math.min(1, Math.abs(2 * (py + pin.height / 2 - owner.y) / owner.height - 1));
+  const inset = pin.type === 'output-pin' && owner.type === 'send-signal' ? -notch : pin.type === 'input-pin' && owner.type === 'accept-signal' ? signalNotch(owner.width) - notch : 0;
+  return { x: owner.x + offset + inset - pin.width / 2, y: py };
+}
+
+export function isAttachedRouteObstacle(node: DiagramNode, from: DiagramNode, to: DiagramNode): boolean {
+  return node.id !== from.ownerId && node.id !== to.ownerId && node.ownerId !== from.id && node.ownerId !== to.id;
+}
+
 /** Маршрут с необязательными точными точками привязки; null означает отказ без небезопасного fallback. */
 export function routeBetweenNodes(nodes: readonly DiagramNode[], from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint, shapeOf?: (node: DiagramNode) => DiagramShape | undefined, routes?: readonly (readonly DiagramPoint[])[]): DiagramPoint[] | null {
   if (from.id === to.id) return null;
-  const obstacles = nodes.filter(n => n.id !== from.id && n.id !== to.id);
-  const starts = start ? pointSides(from, start) : shapeOf?.(from) === 'annotation' ? ['left' as const] : directions;
-  const ends = end ? pointSides(to, end) : shapeOf?.(to) === 'annotation' ? ['left' as const] : directions;
+  const obstacles = nodes.filter(n => n.id !== from.id && n.id !== to.id && isAttachedRouteObstacle(n, from, to));
+  const sides = (node: DiagramNode, p: DiagramPoint): Direction[] => {
+    if (shapeOf?.(node) === 'notched-left' && p.x < node.x + node.width / 2) {
+      const y = (p.y - node.y) / node.height;
+      if (y > 0 && y < 1 && Math.abs(p.x - node.x - signalNotch(node.width) * (1 - Math.abs(y * 2 - 1))) < 1e-6) return ['left'];
+    }
+    return pointSides(node, p);
+  };
+  const automaticSides = (node: DiagramNode): Direction[] => node.type === 'input-pin' || shapeOf?.(node) === 'annotation' ? ['left'] : node.type === 'output-pin' ? ['right'] : shapeOf?.(node) === 'package' ? ['right', 'left', 'down'] : directions;
+  const starts = start ? sides(from, start) : automaticSides(from);
+  const ends = end ? sides(to, end) : automaticSides(to);
   let best: DiagramPoint[] | null = null; let bestCost = Infinity;
   for (const a of starts) for (const b of ends) {
     const s = endpoint(from, a, start, shapeOf?.(from)), t = endpoint(to, b, end, shapeOf?.(to));
