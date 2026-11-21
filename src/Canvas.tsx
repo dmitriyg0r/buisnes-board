@@ -1,5 +1,5 @@
-import { NodeShape, nodeLabelBounds, labelLines } from './modeling/DiagramEditor';
-import { createContext, lazy, Suspense, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { AssociationClassLinks, NodeShape, nodeLabelBounds, labelLines, pathMiddle, SequenceDestruction, sequenceMessageLabel } from './modeling/DiagramEditor';
+import { createContext, lazy, Suspense, useContext, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { isLinkable, projectNodes, splitRef } from './bpmn';
 import { DOC_SIZE, GATEWAY_SIZE, HTML_SIZE, MODEL_SIZE, SOURCE_SIZE, type CardLink, type CardSide, type Doc, type Issue, type Source, type Model } from './data';
 import { splitMarkdown } from './markdown';
@@ -78,6 +78,7 @@ interface Props {
 
 /** Только чтение: адаптер не изменяет исходные данные карточки. */
 export function IndependentModelPreview({ model }: { model: IndependentModel }) {
+  const markerId = useId();
   try {
     const notation = getModelNotation(model.notation);
     if (!notation) return <p className="pnote" style={{ padding: 20 }}>Неизвестная нотация: предпросмотр недоступен.</p>;
@@ -98,8 +99,12 @@ export function IndependentModelPreview({ model }: { model: IndependentModel }) 
     return <svg role="img" aria-label={`Предпросмотр модели: ${model.title}`} viewBox={`${minX} ${minY} ${width} ${height}`} preserveAspectRatio="xMidYMid meet" style={{ position: 'absolute', top: 54, left: 4, width: 'calc(100% - 8px)', height: 'calc(100% - 58px)', pointerEvents: 'none' }}>
       {regions.map(r => <g key={r.id}><rect x={r.x} y={r.y} width={r.width} height={r.height} fill="#f8fafc" stroke="#94a3b8" /><text x={r.x + 8} y={r.y + 18} fontSize="13" fill="#334155">{r.label}</text></g>)}
       {timeline?.lifelines.map(line => <line key={line.id} x1={line.lineStart.x} y1={line.lineStart.y} x2={line.lineEnd.x} y2={line.lineEnd.y} stroke="#475569" strokeDasharray="6 4" />)}
-      {timeline?.messages.map(message => <polyline key={message.id} points={message.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={message.lineStyle === 'dashed' ? '8 5' : undefined} />)}
-      {edges.map(e => <polyline key={e.id} points={e.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={e.lineStyle === 'dashed' ? '8 5' : e.lineStyle === 'dotted' ? '2 4' : undefined} />)}
+      {timeline && <defs><marker id={`${markerId}-filled`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 L9 5 L1 9 Z" fill="#475569" /></marker><marker id={`${markerId}-open`} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M1 1 L9 5 L1 9" fill="none" stroke="#475569" strokeWidth="1.3" /></marker></defs>}
+      {timeline?.executions?.map(item => <g key={item.id} data-preview-execution={item.id}><rect x={item.x} y={item.y} width={item.width} height={item.height} fill="#e7eff9" stroke="#475569" />{item.label && <text className="diagram-edge-label" x={item.x + item.width + 8} y={item.y + 13}>{item.label}</text>}</g>)}
+      {timeline?.messages.map(message => { const middle = pathMiddle(message.points); return <g key={message.id}><polyline points={message.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={message.lineStyle === 'dashed' ? '8 5' : undefined} markerEnd={`url(#${markerId}-${message.arrowStyle})`} />{sequenceMessageLabel(message) && <text className="diagram-edge-label" x={middle.x} y={middle.y - 8}>{sequenceMessageLabel(message)}</text>}</g>; })}
+      {timeline?.lifelines.map(line => line.destruction && <SequenceDestruction key={line.id} at={line.destruction} />)}
+      {edges.map(e => { const middle = e.guard ? pathMiddle(e.points) : undefined; return <g key={e.id}><polyline points={e.points.map(p => `${p.x},${p.y}`).join(' ')} fill="none" stroke="#475569" strokeWidth="2" strokeDasharray={e.lineStyle === 'dashed' ? '8 5' : e.lineStyle === 'dotted' ? '2 4' : undefined} />{middle && <text className="diagram-edge-label" x={middle.x} y={middle.y - 8} textAnchor="middle">[{e.guard}]</text>}</g>; })}
+      {notation.setAssociationClassLink && <AssociationClassLinks diagram={result.diagram} symbols={notation.symbols} />}
       {nodes.map(n => {
         const symbol = notation.symbols.find(s => s.type === n.type);
         const bounds = nodeLabelBounds(n, symbol);

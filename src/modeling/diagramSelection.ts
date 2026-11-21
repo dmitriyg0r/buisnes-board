@@ -15,5 +15,5 @@ export function moveSelectedNodes(notation: DiagramNotation, source: string, ids
   const wanted = new Set(ids);
   const nodes = notation.read(source).diagram.nodes.filter(node => wanted.has(node.id));
   if (nodes.length !== wanted.size) throw new Error('Один из выделенных элементов больше не существует.');
-  return nodes.reduce((xml, node) => notation.moveNode(xml, node.id, { x: node.x + delta.x, y: node.y + delta.y }), source);
+  return nodes.filter(node => !node.ownerId || !wanted.has(node.ownerId)).reduce((xml, node) => notation.moveNode(xml, node.id, { x: node.x + delta.x, y: node.y + delta.y }), source);
 }

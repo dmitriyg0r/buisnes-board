@@ -1,5 +1,5 @@
 import { layoutDiagram } from './diagramLayout';
-import { endpointsFaceOutward, routeBetweenNodes, segmentCrossesNode } from './diagramRouting';
+import { endpointsFaceOutward, isAttachedRouteObstacle, pinPosition, routeBetweenNodes, segmentCrossesNode } from './diagramRouting';
 import { hasSelfIntersections, simplifyRoute } from './orthogonalRouting';
 import type { Diagram, DiagramBounds, DiagramEdge, DiagramNode, DiagramNotation, DiagramPoint, DiagramSymbol } from './types';
 
@@ -11,6 +11,10 @@ export interface GraphConfig {
   defaultLabel?: (symbol: DiagramSymbol) => string;
   connectionTypes: NonNullable<DiagramNotation['connectionTypes']>;
   edgeEndProperties?: string[];
+  editableEdgeTypes?: boolean;
+  guardTypes?: string[];
+  extensions?: boolean;
+  associationClass?: boolean;
   canConnect: (fromType: string, toType: string, edgeType: string) => boolean;
   defaultConnection: (fromType: string, toType: string) => string | undefined;
 }
@@ -36,6 +40,10 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
   const container = (node: DiagramNode) => !!config.symbols.find(s => s.type === node.type)?.container;
   const contains = (a: DiagramNode, b: DiagramNode) => a.id !== b.id && b.x >= a.x && b.y >= a.y + 40 && b.x + b.width <= a.x + a.width && b.y + b.height <= a.y + a.height;
   const shapeOf = (node: DiagramNode) => config.symbols.find(symbol => symbol.type === node.type)?.shape;
+  const ownerTypes = (type: string) => config.symbols.find(symbol => symbol.type === type)?.ownerTypes;
+  const attached = pinPosition;
+  const names = (value: unknown): value is string[] => Array.isArray(value) && value.every(s => typeof s === 'string' && s.trim() === s && s && !/[\r\n]/.test(s)) && new Set(value).size === value.length;
+  const isAssociation = (edge: DiagramEdge) => !!config.edgeEndProperties?.includes(edge.type);
   const serialize = (graph: Graph) => {
     const result = JSON.stringify(graph, null, 2);
     if (inspect(result).readOnlyReason) throw new Error('Изменение привело к некорректной геометрии диаграммы.');
@@ -53,7 +61,8 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
     for (const node of data.nodes) {
       if (!isObject(node) || typeof node.id !== 'string' || !node.id || ids.has(node.id) || typeof node.type !== 'string' || !config.symbols.some(s => s.type === node.type) || typeof node.label !== 'string' || !isBounds(node) || (node.labelBounds !== undefined && !isBounds(node.labelBounds))) return refuse('Некорректный или неизвестный элемент диаграммы.');
       ids.add(node.id);
-      unknown ||= !hasOnly(node, ['id', 'type', 'label', ...boundsKeys, 'labelBounds', 'compartments']);
+      unknown ||= !hasOnly(node, ['id', 'type', 'label', ...boundsKeys, 'labelBounds', 'compartments', ...(config.extensions ? ['extensionPoints'] : []), ...(config.associationClass ? ['associationId'] : []), ...(ownerTypes(node.type) ? ['ownerId'] : [])]);
+      if (config.extensions && node.extensionPoints !== undefined && (node.type !== 'use-case' || !names(node.extensionPoints))) return refuse('Некорректные точки расширения.');
       if (isObject(node.labelBounds)) unknown ||= !hasOnly(node.labelBounds, boundsKeys);
       if (node.compartments !== undefined) {
         if (config.symbols.find(symbol => symbol.type === node.type)?.shape !== 'class-box' || !isObject(node.compartments) || !Array.isArray(node.compartments.attributes) || !Array.isArray(node.compartments.operations) || !node.compartments.attributes.every(value => typeof value === 'string') || !node.compartments.operations.every(value => typeof value === 'string')) return refuse('Некорректные разделы элемента диаграммы.');
@@ -62,17 +71,32 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
     }
     const nodes = data.nodes as DiagramNode[];
     const nodeIds = new Set(nodes.map(node => node.id));
+    for (const pin of nodes.filter(node => ownerTypes(node.type))) {
+      const owner = nodes.find(node => node.id === pin.ownerId && ownerTypes(pin.type)?.includes(node.type));
+      if (!owner) return refuse('У пина нет действия-владельца.');
+      const p = attached(pin, owner, pin.y);
+      if (Math.abs(p.x - pin.x) > 1e-6 || Math.abs(p.y - pin.y) > 1e-6) return refuse('Пин находится вне границы действия.');
+    }
     for (const edge of data.edges) {
       if (!isObject(edge) || typeof edge.id !== 'string' || !edge.id || ids.has(edge.id) || typeof edge.type !== 'string' || !config.connectionTypes.some(t => t.id === edge.type) || typeof edge.label !== 'string' || typeof edge.from !== 'string' || typeof edge.to !== 'string' || !nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to || !Array.isArray(edge.points) || edge.points.length < 2 || !edge.points.every(isPoint) || (edge.labelBounds !== undefined && !isBounds(edge.labelBounds))) return refuse('Некорректная или неизвестная связь диаграммы.');
       const from = nodes.find(node => node.id === edge.from)!; const to = nodes.find(node => node.id === edge.to)!;
       if (!config.canConnect(from.type, to.type, edge.type)) return refuse('Недопустимая связь диаграммы.');
       ids.add(edge.id);
-      unknown ||= !hasOnly(edge, ['id', 'type', 'label', 'from', 'to', 'points', 'labelBounds', 'ends']);
+      unknown ||= !hasOnly(edge, ['id', 'type', 'label', 'from', 'to', 'points', 'labelBounds', 'ends', ...(config.guardTypes ? ['guard'] : []), ...(config.extensions ? ['extensionPoint'] : [])]);
+      if (config.extensions && edge.extensionPoint !== undefined && (edge.type !== 'extend' || typeof edge.extensionPoint !== 'string' || !to.extensionPoints?.includes(edge.extensionPoint))) return refuse('Связь указывает на отсутствующую точку расширения.');
+      if (config.guardTypes && edge.guard !== undefined && (!config.guardTypes.includes(edge.type) || typeof edge.guard !== 'string' || /[\r\n]/.test(edge.guard))) return refuse('Некорректное условие перехода.');
       if (edge.ends !== undefined && (!config.edgeEndProperties?.includes(edge.type) || !isObject(edge.ends) || !hasOnly(edge.ends, ['from', 'to']) || !validEnd(edge.ends.from) || !validEnd(edge.ends.to))) return refuse('Некорректные свойства концов связи.');
       if (isObject(edge.labelBounds)) unknown ||= !hasOnly(edge.labelBounds, boundsKeys);
       for (const point of edge.points) if (isObject(point)) unknown ||= !hasOnly(point, pointKeys);
     }
     const graph = data as unknown as Graph;
+    if (config.associationClass) {
+      const used = new Set<string>();
+      for (const node of nodes) if (node.associationId !== undefined) {
+        if (node.type !== 'association-class' || used.has(node.associationId) || !graph.edges.some(edge => edge.id === node.associationId && isAssociation(edge) && edge.from !== node.id && edge.to !== node.id)) return refuse('Некорректная привязка класса ассоциации.');
+        used.add(node.associationId);
+      }
+    }
     const diagram: Diagram = { nodes: [...graph.nodes].sort((a, b) => Number(container(b)) - Number(container(a))), edges: graph.edges.map(edge => { const type = config.connectionTypes.find(item => item.id === edge.type); return { ...edge, ...type?.appearance, ...(type?.stereotype ? { stereotype: type.stereotype } : {}) }; }) };
     return { graph, diagram, ...(unknown ? { readOnlyReason: 'Диаграмма содержит неподдерживаемые данные; редактирование отключено для их сохранения.' } : {}) };
   };
@@ -98,8 +122,9 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
     do { id = globalThis.crypto.randomUUID(); } while (graph.nodes.some(n => n.id === id) || graph.edges.some(e => e.id === id));
     return id;
   };
+  const obstacles = (graph: Graph, from: DiagramNode, to: DiagramNode) => graph.nodes.filter(n => !container(n) && isAttachedRouteObstacle(n, from, to));
   const findRoute = (graph: Graph, from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint) =>
-    routeBetweenNodes(graph.nodes.filter(n => !container(n)), from, to, start, end, shapeOf, graph.edges.filter(e => e.from !== from.id || e.to !== to.id).map(e => e.points));
+    routeBetweenNodes(obstacles(graph, from, to), from, to, start, end, shapeOf, graph.edges.filter(e => e.from !== from.id || e.to !== to.id).map(e => e.points));
   const route = (graph: Graph, from: DiagramNode, to: DiagramNode, start?: DiagramPoint, end?: DiagramPoint) => {
     const points = findRoute(graph, from, to, start, end);
     if (!points) throw new Error('Не удалось построить маршрут связи.');
@@ -115,13 +140,13 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
   const validRoute = (graph: Graph, from: DiagramNode, to: DiagramNode, candidate: DiagramPoint[]) => {
     const cleaned = simplifyRoute(candidate);
     if (cleaned.length < 2 || cleaned.slice(1).some((p, i) => p.x !== cleaned[i].x && p.y !== cleaned[i].y) || hasSelfIntersections(cleaned) || !endpointsFaceOutward(cleaned, from, to, shapeOf)) return false;
-    return cleaned.slice(1).every((end, i) => graph.nodes.every(n =>
+    return cleaned.slice(1).every((end, i) => obstacles(graph, from, to).every(n =>
       (i === 0 && n.id === from.id) || (i === cleaned.length - 2 && n.id === to.id) || container(n) || !segmentCrossesNode(cleaned[i], end, n)));
   };
-  const reroute = (graph: Graph, id: string, before: DiagramBounds) => {
+  const reroute = (graph: Graph, id: string, before: DiagramBounds, edgeId?: string) => {
     const node = nodeById(graph, id);
     for (const edge of graph.edges) {
-      if (edge.from !== id && edge.to !== id) continue;
+      if ((edgeId && edge.id !== edgeId) || (edge.from !== id && edge.to !== id)) continue;
       const from = nodeById(graph, edge.from), to = nodeById(graph, edge.to);
       const reverse = edge.to === id;
       const points = (reverse ? [...edge.points].reverse() : edge.points).map(point => ({ ...point }));
@@ -156,21 +181,98 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
       else edge.points = candidate;
     }
   };
+  const shift = (node: DiagramNode, at: DiagramPoint) => {
+    if (node.labelBounds) { node.labelBounds.x += at.x - node.x; node.labelBounds.y += at.y - node.y; }
+    Object.assign(node, at);
+  };
+  const syncPins = (graph: Graph, owner: DiagramNode, before: DiagramBounds) => {
+    for (const pin of graph.nodes.filter(n => n.ownerId === owner.id)) {
+      const old = { ...pin };
+      shift(pin, attached(pin, owner, owner.y + (pin.y - before.y) * owner.height / before.height));
+      if (pin.x !== old.x || pin.y !== old.y) reroute(graph, pin.id, old);
+    }
+  };
+  const keepsReferences = (graph: Graph, edge: DiagramEdge, type: string) => (!edge.extensionPoint || type === 'extend') && (!!config.edgeEndProperties?.includes(type) || !graph.nodes.some(n => n.associationId === edge.id));
   return {
     id: config.id, title: config.title, fileExtension: config.fileExtension, fileAccept: `.${config.fileExtension}`, mimeType: 'application/json',
     symbols: config.symbols, connectionTypes: config.connectionTypes,
+    ...(config.extensions ? {
+      setExtensionPoints: (source: string, id: string, points: string[]) => {
+        const graph = writable(source), node = nodeById(graph, id);
+        if (node.type !== 'use-case' || !names(points)) throw new Error('Укажите разные непустые имена точек расширения.');
+        if (graph.edges.some(e => e.to === id && e.extensionPoint && !points.includes(e.extensionPoint))) throw new Error('Сначала снимите привязку используемой точки расширения.');
+        if (points.length) node.extensionPoints = [...points]; else delete node.extensionPoints;
+        return serialize(graph);
+      },
+      setExtensionPoint: (source: string, id: string, point: string) => {
+        const graph = writable(source), edge = edgeById(graph, id);
+        if (edge.type !== 'extend' || (point !== '' && !nodeById(graph, edge.to).extensionPoints?.includes(point))) throw new Error('Выберите точку на целевом варианте использования.');
+        if (point) edge.extensionPoint = point; else delete edge.extensionPoint;
+        return serialize(graph);
+      },
+    } : {}),
+    ...(config.associationClass ? { setAssociationClassLink: (source: string, id: string, edgeId: string) => {
+      const graph = writable(source), node = nodeById(graph, id);
+      if (node.type !== 'association-class') throw new Error('Выберите класс ассоциации.');
+      if (edgeId) {
+        const edge = edgeById(graph, edgeId);
+        if (!isAssociation(edge) || edge.from === id || edge.to === id || graph.nodes.some(n => n.id !== id && n.associationId === edgeId)) throw new Error('Выберите свободную ассоциацию между другими элементами.');
+        node.associationId = edgeId;
+      } else delete node.associationId;
+      return serialize(graph);
+    } } : {}),
+    ...(config.editableEdgeTypes ? {
+      allowedEdgeTypes: (source: string, id: string) => {
+        const graph = writable(source), edge = edgeById(graph, id);
+        return config.connectionTypes.filter(type => {
+          if (type.id === edge.type) return true;
+          if (!keepsReferences(graph, edge, type.id)) return false;
+          if (edge.ends && Object.values(edge.ends).some(end => end.role || end.multiplicity) && !config.edgeEndProperties?.includes(type.id)) return false;
+          if (edge.guard && !config.guardTypes?.includes(type.id)) return false;
+          try { validateConnection(graph, edge.from, edge.to, type.id, id); return true; } catch { return false; }
+        }).map(type => type.id);
+      },
+      setEdgeType: (source: string, id: string, type: string) => {
+        const graph = writable(source), edge = edgeById(graph, id);
+        if (edge.type === type) return source;
+        validateConnection(graph, edge.from, edge.to, type, id);
+        if (!keepsReferences(graph, edge, type)) throw new Error('Сначала снимите привязку точки расширения или класса ассоциации.');
+        if (edge.ends && !config.edgeEndProperties?.includes(type)) {
+          if (Object.values(edge.ends).some(end => end.role || end.multiplicity)) throw new Error('Сначала очистите роли и кратности на концах связи.');
+          delete edge.ends;
+        }
+        if (edge.guard && !config.guardTypes?.includes(type)) throw new Error('Сначала очистите условие перехода.');
+        if (edge.guard === '' && !config.guardTypes?.includes(type)) delete edge.guard;
+        edge.type = type;
+        return serialize(graph);
+      },
+    } : {}),
+    ...(config.guardTypes ? {
+      edgeGuard: (edge: DiagramEdge) => config.guardTypes!.includes(edge.type),
+      setEdgeGuard: (source: string, id: string, guard: string) => {
+        const graph = writable(source), edge = edgeById(graph, id);
+        if (!config.guardTypes!.includes(edge.type) || typeof guard !== 'string' || /[\r\n]/.test(guard)) throw new Error('Условие перехода должно быть одной строкой.');
+        const next = guard.trim();
+        if (next === (edge.guard ?? '')) return source;
+        if (next) edge.guard = next; else delete edge.guard;
+        return serialize(graph);
+      },
+    } : {}),
     ...(config.edgeEndProperties ? {
       edgeEndProperties: (edge: DiagramEdge) => config.edgeEndProperties!.includes(edge.type),
       setEdgeEnds: (source: string, id: string, ends: NonNullable<DiagramEdge['ends']>) => {
         const graph = writable(source); const edge = edgeById(graph, id);
         if (!config.edgeEndProperties!.includes(edge.type) || !isObject(ends) || !hasOnly(ends, ['from', 'to']) || !validEnd(ends.from) || !validEnd(ends.to)) throw new Error('Укажите кратность, например 1, *, 0..1 или 1..*.');
-        edge.ends = { from: { ...ends.from }, to: { ...ends.to } }; return serialize(graph);
+        if (Object.values(ends).every(end => !end.role && !end.multiplicity)) delete edge.ends;
+        else edge.ends = { from: { ...ends.from }, to: { ...ends.to } };
+        return serialize(graph);
       },
     } : {}),
     createEmpty: () => serialize({ format: FORMAT, version: VERSION, notation: config.id, nodes: [], edges: [] }),
     read: source => { const { diagram, readOnlyReason } = inspect(source); return { diagram, ...(readOnlyReason ? { readOnlyReason } : {}) }; },
     autoLayout: source => {
       const graph = writable(source);
+      if (graph.nodes.some(node => node.ownerId || ['package', 'partition'].includes(shapeOf(node) ?? ''))) throw new Error('Автораскладка недоступна для схем с пакетами, дорожками или пинами.');
       const frames = graph.nodes.filter(container);
       if (config.id === 'uml-use-case') {
         const cases = graph.nodes.filter(n => n.type === 'use-case'), actors = graph.nodes.filter(n => n.type === 'actor');
@@ -218,38 +320,53 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
       }
       return serialize(graph);
     },
-    addNode: (source, type, at) => {
+    addNode: (source, type, at, ownerId) => {
       const graph = writable(source); const symbol = config.symbols.find(item => item.type === type);
       if (!symbol) throw new Error('Неизвестный тип элемента.');
       if (!isPoint(at) || !Number.isFinite(symbol.width) || !Number.isFinite(symbol.height) || symbol.width <= 0 || symbol.height <= 0) throw new Error('Некорректная геометрия элемента.');
-      graph.nodes.push({ id: newId(graph), type, label: config.defaultLabel?.(symbol) ?? '', x: at.x, y: at.y, width: symbol.width, height: symbol.height });
+      const node: DiagramNode = { id: newId(graph), type, label: config.defaultLabel?.(symbol) ?? '', x: at.x, y: at.y, width: symbol.width, height: symbol.height };
+      if (symbol.ownerTypes) {
+        const owner = graph.nodes.find(n => n.id === ownerId && symbol.ownerTypes?.includes(n.type));
+        if (!owner) throw new Error('Выберите действие, которому принадлежит пин.');
+        node.ownerId = owner.id; Object.assign(node, attached(node, owner, node.y));
+      }
+      graph.nodes.push(node);
       return serialize(graph);
     },
     moveNode: (source, id, at) => {
       const graph = writable(source); const node = nodeById(graph, id);
       if (!isPoint(at)) throw new Error('Некорректное положение элемента.');
+      if (node.ownerId) at = attached(node, nodeById(graph, node.ownerId), at.y);
       if (at.x === node.x && at.y === node.y) return source;
       const before = { x: node.x, y: node.y, width: node.width, height: node.height };
       if (node.labelBounds) { node.labelBounds.x += at.x - node.x; node.labelBounds.y += at.y - node.y; }
       if (container(node)) {
-        const members = graph.nodes.filter(n => contains(node, n)), ids = new Set([id, ...members.map(n => n.id)]);
+        const inside = graph.nodes.filter(n => !n.ownerId && contains(node, n));
+        const ids = new Set([id, ...inside.map(n => n.id)]);
+        const members = [...inside, ...graph.nodes.filter(n => n.ownerId && ids.has(n.ownerId))];
+        for (const member of members) ids.add(member.id);
+        const previous = new Map(members.map(member => [member.id, { ...member }]));
         const dx = at.x - node.x, dy = at.y - node.y;
         for (const member of members) { member.x += dx; member.y += dy; if (member.labelBounds) { member.labelBounds.x += dx; member.labelBounds.y += dy; } }
         node.x = at.x; node.y = at.y;
         for (const edge of graph.edges) {
           if (ids.has(edge.from) && ids.has(edge.to)) { edge.points = edge.points.map(p => ({ x: p.x + dx, y: p.y + dy })); if (edge.labelBounds) { edge.labelBounds.x += dx; edge.labelBounds.y += dy; } }
-          else if (ids.has(edge.from) || ids.has(edge.to)) edge.points = route(graph, nodeById(graph, edge.from), nodeById(graph, edge.to));
+          else if (ids.has(edge.from) || ids.has(edge.to)) {
+            const moved = ids.has(edge.from) ? edge.from : edge.to;
+            reroute(graph, moved, previous.get(moved) ?? before, edge.id);
+          }
         }
-      } else { node.x = at.x; node.y = at.y; reroute(graph, id, before); }
+      } else { node.x = at.x; node.y = at.y; reroute(graph, id, before); syncPins(graph, node, before); }
       return serialize(graph);
     },
     resizeNode: (source, id, width, height) => {
       const graph = writable(source); const node = nodeById(graph, id);
+      if (node.ownerId) throw new Error('Размер пина фиксирован.');
       if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) throw new Error('Некорректный размер элемента.');
       if (width === node.width && height === node.height) return source;
       const before = { x: node.x, y: node.y, width: node.width, height: node.height };
       if (node.labelBounds) { node.labelBounds.x = node.x + (node.labelBounds.x - node.x) * width / node.width; node.labelBounds.y = node.y + (node.labelBounds.y - node.y) * height / node.height; node.labelBounds.width *= width / node.width; node.labelBounds.height *= height / node.height; }
-      node.width = width; node.height = height; reroute(graph, id, before); return serialize(graph);
+      node.width = width; node.height = height; reroute(graph, id, before); syncPins(graph, node, before); return serialize(graph);
     },
     setLabelBounds: (source, id, bounds) => {
       const graph = writable(source); const item = itemById(graph, id);
@@ -275,6 +392,8 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
     editEdge: (source, id, from, to, points) => {
       const graph = writable(source); const edge = edgeById(graph, id);
       const [a, b] = validateConnection(graph, from, to, edge.type, id);
+      if (edge.extensionPoint && to !== edge.to) throw new Error('Сначала снимите привязку точки расширения.');
+      if (graph.nodes.some(n => n.associationId === id && (n.id === from || n.id === to))) throw new Error('Класс ассоциации не может быть концом той же связи.');
       if (!Array.isArray(points) || points.length < 2 || !points.every(isPoint)) throw new Error('Некорректный маршрут связи.');
       if (!validRoute(graph, a, b, points)) throw new Error('Небезопасный маршрут связи.');
       edge.from = from; edge.to = to; edge.points = points.map(point => ({ x: point.x, y: point.y })); return serialize(graph);
@@ -285,8 +404,11 @@ export function createGraphNotation(config: GraphConfig): DiagramNotation & { cr
     },
     remove: (source, id) => {
       const graph = writable(source); itemById(graph, id);
-      graph.nodes = graph.nodes.filter(node => node.id !== id);
-      graph.edges = graph.edges.filter(edge => edge.id !== id && edge.from !== id && edge.to !== id); return serialize(graph);
+      const removed = new Set([id, ...graph.nodes.filter(n => n.ownerId === id).map(n => n.id)]);
+      const removedEdges = new Set(graph.edges.filter(e => e.id === id || removed.has(e.from) || removed.has(e.to)).map(e => e.id));
+      graph.nodes = graph.nodes.filter(n => !removed.has(n.id));
+      for (const n of graph.nodes) if (n.associationId && removedEdges.has(n.associationId)) delete n.associationId;
+      graph.edges = graph.edges.filter(e => !removedEdges.has(e.id)); return serialize(graph);
     },
   };
 }
